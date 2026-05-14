@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
 import { ArrowLeft, Pencil, FileText } from "lucide-react";
 import Link from "next/link";
-import { SupplierModal } from "../page";
+import { SupplierModal } from "../supplier-modal";
 
 export default function SupplierDetailPage() {
   const { id } = useParams<{ id: string }>();

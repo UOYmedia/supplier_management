@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
 import { ArrowLeft, Truck, Package, X } from "lucide-react";
 import Link from "next/link";
-import { OrderStatusBadge } from "../page";
+import { OrderStatusBadge } from "../order-status-badge";
 
 const FULFILL_STATUSES = ["unfulfilled", "pending", "shipped", "delivered", "cancelled"];
 

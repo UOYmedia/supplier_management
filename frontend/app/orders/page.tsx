@@ -5,6 +5,7 @@ import { ordersApi } from "@/lib/api";
 import toast from "react-hot-toast";
 import { Plus, ChevronRight, RefreshCw } from "lucide-react";
 import Link from "next/link";
+import { OrderStatusBadge } from "./order-status-badge";
 
 const STATUSES = ["", "pending", "processing", "partially_fulfilled", "fulfilled", "cancelled"];
 const MARKETS = ["", "amazon", "shopify", "manual"];
@@ -74,14 +75,3 @@ export default function OrdersPage() {
   );
 }
 
-export function OrderStatusBadge({ status }: { status: string }) {
-  const map: Record<string, string> = {
-    pending: "badge-yellow",
-    processing: "badge-blue",
-    partially_fulfilled: "badge-blue",
-    fulfilled: "badge-green",
-    cancelled: "badge-red",
-    refunded: "badge-gray",
-  };
-  return <span className={map[status] || "badge-gray"}>{status.replace(/_/g, " ")}</span>;
-}

@@ -1,0 +1,106 @@
+from app.integrations.base import MarketplaceSyncer
+from app.integrations.shopify.client import ShopifyClient
+from app.models.marketplace import MarketplaceConnection, MarketplaceListing
+from app.models.product import Product
+from app.models.order import Order, OrderLineItem
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from datetime import datetime, timezone
+
+
+class ShopifySync(MarketplaceSyncer):
+    def __init__(self, connection: MarketplaceConnection):
+        super().__init__(connection)
+        creds = self.credentials
+        self.client = ShopifyClient(
+            shop_url=connection.shop_url or creds.get("shop_url", ""),
+            access_token=creds.get("access_token", ""),
+        )
+
+    async def test_connection(self) -> bool:
+        try:
+            await self.client.get("/shop.json")
+            return True
+        except Exception:
+            return False
+
+    async def push_product(self, product: Product, price: float | None = None) -> str:
+        """Create product on Shopify and return product ID."""
+        body = {
+            "product": {
+                "title": product.name,
+                "variants": [
+                    {
+                        "sku": product.sku,
+                        "price": str(price or 0),
+                        "weight": float(product.weight or 0),
+                        "weight_unit": "kg",
+                        "inventory_management": "shopify",
+                    }
+                ],
+                "body_html": product.description or "",
+            }
+        }
+        result = await self.client.post("/products.json", body)
+        shopify_product = result.get("product", {})
+        return str(shopify_product.get("id", ""))
+
+    async def sync_orders(self, db: AsyncSession) -> int:
+        """Fetch unfulfilled Shopify orders and upsert into local DB."""
+        try:
+            data = await self.client.get("/orders.json", params={"fulfillment_status": "unfulfilled", "status": "open", "limit": 250})
+        except Exception:
+            return 0
+
+        count = 0
+        for od in data.get("orders", []):
+            ext_id = str(od["id"])
+            existing = await db.execute(select(Order).where(Order.external_order_id == ext_id))
+            if existing.scalar_one_or_none():
+                continue
+
+            sa = od.get("shipping_address") or {}
+            order = Order(
+                connection_id=self.connection.id,
+                marketplace="shopify",
+                external_order_id=ext_id,
+                buyer_name=od.get("customer", {}).get("first_name", "") + " " + od.get("customer", {}).get("last_name", ""),
+                buyer_email=od.get("email"),
+                shipping_address={
+                    "name": sa.get("name"),
+                    "line1": sa.get("address1"),
+                    "line2": sa.get("address2"),
+                    "city": sa.get("city"),
+                    "state": sa.get("province"),
+                    "zip": sa.get("zip"),
+                    "country": sa.get("country_code"),
+                    "phone": sa.get("phone"),
+                },
+                total=float(od.get("total_price", 0)),
+                currency=od.get("currency", "USD"),
+                ordered_at=datetime.fromisoformat(od.get("created_at", datetime.now(timezone.utc).isoformat())),
+            )
+            db.add(order)
+            await db.flush()
+
+            for item in od.get("line_items", []):
+                listing = await db.execute(
+                    select(MarketplaceListing).where(
+                        MarketplaceListing.marketplace_sku == item.get("sku"),
+                        MarketplaceListing.connection_id == self.connection.id,
+                    )
+                )
+                listing_obj = listing.scalar_one_or_none()
+                db.add(OrderLineItem(
+                    order_id=order.id,
+                    product_id=listing_obj.product_id if listing_obj else None,
+                    listing_id=listing_obj.id if listing_obj else None,
+                    external_line_item_id=str(item.get("id")),
+                    product_name=item.get("title", ""),
+                    sku=item.get("sku"),
+                    quantity=item.get("quantity", 1),
+                    price=float(item.get("price", 0)),
+                ))
+            count += 1
+
+        return count

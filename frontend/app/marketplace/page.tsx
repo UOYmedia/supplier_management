@@ -40,7 +40,7 @@ export default function MarketplacePage() {
         <h1 className="page-title">Marketplace Connections</h1>
         <div className="flex gap-2">
           <a
-            href={`${process.env.NEXT_PUBLIC_API_URL?.replace("/api/v1", "")}/api/v1/shopify/auth?shop=gingerglow.myshopify.com`}
+            href="/api/v1/shopify/auth?shop=gingerglow.myshopify.com"
             className="btn-secondary flex items-center gap-1 text-sm"
           >
             <Link2 className="w-4 h-4" /> Connect Shopify

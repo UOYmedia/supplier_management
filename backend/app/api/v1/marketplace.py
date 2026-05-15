@@ -181,6 +181,13 @@ async def sync_orders(conn_id: int, background_tasks: BackgroundTasks, db: Async
     return {"message": "Order sync started in background"}
 
 
+@router.post("/connections/{conn_id}/sync-products")
+async def sync_products(conn_id: int, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    conn = await _get_conn_or_404(conn_id, db)
+    background_tasks.add_task(_do_sync_products, conn_id)
+    return {"message": "Product sync started in background"}
+
+
 async def _do_sync_orders(conn_id: int):
     from app.core.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
@@ -189,6 +196,18 @@ async def _do_sync_orders(conn_id: int):
             return
         syncer = _get_syncer(conn)
         await syncer.sync_orders(db)
+        conn.last_synced_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+async def _do_sync_products(conn_id: int):
+    from app.core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        conn = await db.get(MarketplaceConnection, conn_id)
+        if not conn:
+            return
+        syncer = _get_syncer(conn)
+        await syncer.sync_products(db)
         conn.last_synced_at = datetime.now(timezone.utc)
         await db.commit()
 

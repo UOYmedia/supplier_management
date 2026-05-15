@@ -1,6 +1,6 @@
 from app.integrations.base import MarketplaceSyncer
 from app.integrations.shopify.client import ShopifyClient
-from app.models.marketplace import MarketplaceConnection, MarketplaceListing
+from app.models.marketplace import MarketplaceConnection, MarketplaceListing, ListingStatus
 from app.models.product import Product
 from app.models.order import Order, OrderLineItem
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +44,92 @@ class ShopifySync(MarketplaceSyncer):
         result = await self.client.post("/products.json", body)
         shopify_product = result.get("product", {})
         return str(shopify_product.get("id", ""))
+
+    async def sync_products(self, db: AsyncSession) -> int:
+        """Fetch all Shopify products and upsert into local DB as Products + MarketplaceListings."""
+        count = 0
+        page_info = None
+
+        while True:
+            params: dict = {"limit": 250}
+            if page_info:
+                params["page_info"] = page_info
+
+            try:
+                data = await self.client.get("/products.json", params=params)
+            except Exception:
+                break
+
+            products = data.get("products", [])
+            if not products:
+                break
+
+            for sp in products:
+                # Each Shopify product may have multiple variants — treat each as a SKU
+                for variant in sp.get("variants", []):
+                    sku = variant.get("sku") or f"SHOPIFY-{sp['id']}-{variant['id']}"
+                    external_id = str(sp["id"])
+
+                    # Upsert Product
+                    result = await db.execute(
+                        select(Product).where(Product.sku == sku)
+                    )
+                    product = result.scalar_one_or_none()
+
+                    price = float(variant.get("price") or 0)
+                    weight = float(variant.get("weight") or 0)
+                    title = sp.get("title", "")
+                    if len(sp.get("variants", [])) > 1:
+                        title = f"{title} - {variant.get('title', '')}"
+
+                    if not product:
+                        product = Product(
+                            name=title,
+                            sku=sku,
+                            description=sp.get("body_html", "") or "",
+                            weight=weight,
+                            marketplace="shopify",
+                        )
+                        db.add(product)
+                        await db.flush()
+                    else:
+                        product.name = title
+                        product.weight = weight
+
+                    # Upsert MarketplaceListing
+                    listing_result = await db.execute(
+                        select(MarketplaceListing).where(
+                            MarketplaceListing.external_id == external_id,
+                            MarketplaceListing.connection_id == self.connection.id,
+                            MarketplaceListing.marketplace_sku == sku,
+                        )
+                    )
+                    listing = listing_result.scalar_one_or_none()
+                    if not listing:
+                        db.add(MarketplaceListing(
+                            product_id=product.id,
+                            connection_id=self.connection.id,
+                            external_id=external_id,
+                            marketplace_sku=sku,
+                            title=title,
+                            price=price,
+                            status=ListingStatus.active,
+                            synced_at=datetime.now(timezone.utc),
+                        ))
+                    else:
+                        listing.title = title
+                        listing.price = price
+                        listing.synced_at = datetime.now(timezone.utc)
+
+                    count += 1
+
+            # Shopify cursor-based pagination
+            # (basic: if fewer than limit returned, we're done)
+            if len(products) < 250:
+                break
+
+        await db.commit()
+        return count
 
     async def sync_orders(self, db: AsyncSession) -> int:
         """Fetch unfulfilled Shopify orders and upsert into local DB."""

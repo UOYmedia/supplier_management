@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { marketplaceApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, RefreshCw, Zap, Trash2, CheckCircle, XCircle, X } from "lucide-react";
+import { Plus, RefreshCw, Zap, Trash2, CheckCircle, XCircle, X, Package, Link2 } from "lucide-react";
 
 export default function MarketplacePage() {
   const qc = useQueryClient();
@@ -24,18 +24,31 @@ export default function MarketplacePage() {
     },
   });
 
-  const syncMut = useMutation({
+  const syncOrdersMut = useMutation({
     mutationFn: (id: number) => marketplaceApi.syncOrders(id),
     onSuccess: () => toast.success("Order sync started"),
+  });
+
+  const syncProductsMut = useMutation({
+    mutationFn: (id: number) => marketplaceApi.syncProducts(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["products"] }); toast.success("Product sync started"); },
   });
 
   return (
     <div>
       <div className="page-header">
         <h1 className="page-title">Marketplace Connections</h1>
-        <button className="btn-primary" onClick={() => setShowCreate(true)}>
-          <Plus className="w-4 h-4" /> Add Connection
-        </button>
+        <div className="flex gap-2">
+          <a
+            href={`${process.env.NEXT_PUBLIC_API_URL?.replace("/api/v1", "")}/api/v1/shopify/auth?shop=gingerglow.myshopify.com`}
+            className="btn-secondary flex items-center gap-1 text-sm"
+          >
+            <Link2 className="w-4 h-4" /> Connect Shopify
+          </a>
+          <button className="btn-primary" onClick={() => setShowCreate(true)}>
+            <Plus className="w-4 h-4" /> Add Connection
+          </button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -50,7 +63,8 @@ export default function MarketplacePage() {
           {connections.map((c: any) => (
             <ConnectionCard key={c.id} conn={c}
               onTest={() => testMut.mutate(c.id)}
-              onSync={() => syncMut.mutate(c.id)}
+              onSyncOrders={() => syncOrdersMut.mutate(c.id)}
+              onSyncProducts={() => syncProductsMut.mutate(c.id)}
               onDelete={() => confirm("Delete?") && deleteMut.mutate(c.id)}
             />
           ))}
@@ -62,7 +76,7 @@ export default function MarketplacePage() {
   );
 }
 
-function ConnectionCard({ conn, onTest, onSync, onDelete }: any) {
+function ConnectionCard({ conn, onTest, onSyncOrders, onSyncProducts, onDelete }: any) {
   const statusIcon = conn.status === "active" ? (
     <CheckCircle className="w-4 h-4 text-green-500" />
   ) : conn.status === "error" ? (
@@ -92,12 +106,15 @@ function ConnectionCard({ conn, onTest, onSync, onDelete }: any) {
       <div className="text-xs text-gray-400 mb-4">
         Last synced: {conn.last_synced_at ? new Date(conn.last_synced_at).toLocaleString() : "Never"}
       </div>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <button className="btn-secondary text-xs py-1 flex-1" onClick={onTest}>
           <Zap className="w-3 h-3" /> Test
         </button>
-        <button className="btn-secondary text-xs py-1 flex-1" onClick={onSync}>
+        <button className="btn-secondary text-xs py-1 flex-1" onClick={onSyncOrders}>
           <RefreshCw className="w-3 h-3" /> Sync Orders
+        </button>
+        <button className="btn-secondary text-xs py-1 flex-1" onClick={onSyncProducts}>
+          <Package className="w-3 h-3" /> Sync Products
         </button>
         <button className="p-1.5 hover:text-red-500 text-gray-400" onClick={onDelete}>
           <Trash2 className="w-4 h-4" />

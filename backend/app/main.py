@@ -16,9 +16,28 @@ async def lifespan(app: FastAPI):
         print("Database tables created/verified.", flush=True)
         # Column migrations for existing tables (idempotent)
         await _run_migrations()
+        # Seed default admin user
+        await _seed_admin()
     except Exception as e:
         print(f"WARNING: DB init failed (will retry on first request): {e}", flush=True)
     yield
+
+
+async def _seed_admin():
+    """Create default admin user if no users exist."""
+    from sqlalchemy import select
+    from app.core.database import AsyncSessionLocal
+    from app.core.security import hash_password
+    from app.models.user import User, UserRole
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(User).where(User.username == "admin"))
+            if not result.scalar_one_or_none():
+                db.add(User(username="admin", hashed_password=hash_password("admin"), role=UserRole.admin))
+                await db.commit()
+                print("Default admin user created (admin/admin).", flush=True)
+    except Exception as e:
+        print(f"WARNING: seed admin failed: {e}", flush=True)
 
 
 async def _run_migrations():

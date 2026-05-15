@@ -1,7 +1,7 @@
 /**
  * Runtime proxy — forwards all /api/v1/* requests to the backend.
- * process.env.BACKEND_URL is read at request time (not build time),
- * so Railway's runtime env var is always used.
+ * Reads BACKEND_URL at request time (not build time) so Railway env var works.
+ * Forwards Authorization header so admin auth passes through.
  */
 import { NextRequest, NextResponse } from "next/server";
 
@@ -16,28 +16,25 @@ async function proxy(req: NextRequest, { params }: { params: { path: string[] } 
     "Content-Type": "application/json",
   };
 
+  // Forward Authorization header (needed for admin + supplier auth)
+  const auth = req.headers.get("authorization");
+  if (auth) headers["Authorization"] = auth;
+
   let body: string | undefined;
   if (req.method !== "GET" && req.method !== "HEAD") {
     const ct = req.headers.get("content-type") || "";
     if (ct.includes("multipart/form-data")) {
-      // Pass through as-is for file uploads
       const formData = await req.formData();
-      const resp = await fetch(targetUrl, {
-        method: req.method,
-        body: formData,
-      });
+      const fwdHeaders: Record<string, string> = {};
+      if (auth) fwdHeaders["Authorization"] = auth;
+      const resp = await fetch(targetUrl, { method: req.method, headers: fwdHeaders, body: formData });
       const data = await resp.json().catch(() => null);
       return NextResponse.json(data, { status: resp.status });
     }
     body = await req.text();
   }
 
-  const resp = await fetch(targetUrl, {
-    method: req.method,
-    headers,
-    body,
-  });
-
+  const resp = await fetch(targetUrl, { method: req.method, headers, body });
   const data = await resp.json().catch(() => null);
   return NextResponse.json(data, { status: resp.status });
 }

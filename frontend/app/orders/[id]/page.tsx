@@ -1,10 +1,10 @@
 "use client";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ordersApi, suppliersApi, productsApi } from "@/lib/api";
+import { ordersApi, suppliersApi, easypostApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag } from "lucide-react";
 import Link from "next/link";
 import { OrderStatusBadge } from "../order-status-badge";
 
@@ -159,7 +159,6 @@ export default function OrderDetailPage() {
           orderId={oid}
           supplierId={showLabel.supplierId}
           lineItemIds={showLabel.lineItemIds}
-          shippingAddress={addr}
           onClose={() => setShowLabel(null)}
         />
       )}
@@ -325,77 +324,170 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   );
 }
 
-function LabelModal({ orderId, supplierId, lineItemIds, shippingAddress, onClose }: {
+/** Multi-step EasyPost label purchase modal */
+function LabelModal({ orderId, supplierId, lineItemIds, onClose }: {
   orderId: number;
   supplierId: number;
   lineItemIds: number[];
-  shippingAddress: any;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [form, setForm] = useState({
-    carrier: "USPS",
-    service: "",
-    tracking_number: "",
-    label_url: "",
-    cost: "0",
+
+  // Step 1: parcel form
+  const [parcel, setParcel] = useState({ weight: "", length: "", width: "", height: "" });
+  // Step 2: rates
+  const [shipmentId, setShipmentId] = useState<string | null>(null);
+  const [rates, setRates] = useState<any[]>([]);
+  const [selectedRate, setSelectedRate] = useState<string | null>(null);
+  const [step, setStep] = useState<"parcel" | "rates" | "done">("parcel");
+
+  const getRatesMut = useMutation({
+    mutationFn: () =>
+      easypostApi.getRates(orderId, {
+        supplier_id: supplierId,
+        line_item_ids: lineItemIds,
+        parcel: {
+          weight: parseFloat(parcel.weight),
+          length: parseFloat(parcel.length),
+          width: parseFloat(parcel.width),
+          height: parseFloat(parcel.height),
+        },
+      }),
+    onSuccess: (data) => {
+      setShipmentId(data.shipment_id);
+      setRates(data.rates);
+      if (data.rates.length > 0) setSelectedRate(data.rates[0].id);
+      setStep("rates");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to get rates"),
   });
 
-  const mut = useMutation({
-    mutationFn: (data: object) => ordersApi.createLabel(orderId, data),
+  const buyMut = useMutation({
+    mutationFn: () =>
+      easypostApi.buyLabel(orderId, {
+        supplier_id: supplierId,
+        shipment_id: shipmentId,
+        rate_id: selectedRate,
+        line_item_ids: lineItemIds,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["labels", orderId] });
       qc.invalidateQueries({ queryKey: ["order", orderId] });
-      toast.success("Label created — items moved to Pending");
+      toast.success("Label purchased via USPS — items moved to Pending");
       onClose();
     },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Purchase failed"),
   });
 
-  const f = (k: string) => (e: any) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  const pf = (k: string) => (e: any) => setParcel((p) => ({ ...p, [k]: e.target.value }));
+  const parcelValid = parcel.weight && parcel.length && parcel.width && parcel.height;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="card w-full max-w-md p-6">
+      <div className="card w-full max-w-lg p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold">Buy Shipping Label</h2>
+          <div>
+            <h2 className="font-semibold">Buy USPS Label via EasyPost</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {step === "parcel" ? "Step 1 of 2 — Parcel dimensions" : "Step 2 of 2 — Select rate"}
+            </p>
+          </div>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
 
-        <div className="mb-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
-          Covers {lineItemIds.length} item(s). After saving, items will move to <strong>Pending</strong> and appear in the supplier's dashboard.
-        </div>
+        {/* Step 1 — Parcel */}
+        {step === "parcel" && (
+          <>
+            <div className="mb-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
+              Covers <strong>{lineItemIds.length}</strong> item(s). Enter parcel dimensions to get live USPS rates.
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">Weight (oz) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 16" value={parcel.weight} onChange={pf("weight")} />
+              </div>
+              <div>
+                <label className="label">Length (in) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 12" value={parcel.length} onChange={pf("length")} />
+              </div>
+              <div>
+                <label className="label">Width (in) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 9" value={parcel.width} onChange={pf("width")} />
+              </div>
+              <div>
+                <label className="label">Height (in) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 4" value={parcel.height} onChange={pf("height")} />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button className="btn-secondary" onClick={onClose}>Cancel</button>
+              <button
+                className="btn-primary flex items-center gap-1.5"
+                disabled={!parcelValid || getRatesMut.isPending}
+                onClick={() => getRatesMut.mutate()}
+              >
+                {getRatesMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Tag className="w-4 h-4" />}
+                {getRatesMut.isPending ? "Getting rates…" : "Get Rates"}
+              </button>
+            </div>
+          </>
+        )}
 
-        <div className="space-y-3">
-          <div>
-            <label className="label">Carrier *</label>
-            <select className="input" value={form.carrier} onChange={f("carrier")}>
-              {["USPS", "UPS", "FedEx", "DHL", "Other"].map((c) => <option key={c}>{c}</option>)}
-            </select>
-          </div>
-          <div><label className="label">Service</label><input className="input" value={form.service} onChange={f("service")} placeholder="e.g. Priority Mail" /></div>
-          <div><label className="label">Tracking Number</label><input className="input" value={form.tracking_number} onChange={f("tracking_number")} /></div>
-          <div><label className="label">Label URL</label><input className="input" value={form.label_url} onChange={f("label_url")} placeholder="https://…" /></div>
-          <div><label className="label">Cost ($)</label><input className="input" type="number" step="0.01" value={form.cost} onChange={f("cost")} /></div>
-        </div>
-
-        <div className="flex justify-end gap-2 mt-4">
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button
-            className="btn-primary flex items-center gap-1.5"
-            onClick={() => mut.mutate({
-              ...form,
-              supplier_id: supplierId,
-              cost: parseFloat(form.cost),
-              to_address: shippingAddress,
-              line_item_ids: lineItemIds,
-            })}
-            disabled={mut.isPending}
-          >
-            <Truck className="w-4 h-4" />
-            {mut.isPending ? "Saving…" : "Save Label"}
-          </button>
-        </div>
+        {/* Step 2 — Rates */}
+        {step === "rates" && (
+          <>
+            {rates.length === 0 ? (
+              <div className="text-center text-gray-400 py-8">No rates available for this shipment.</div>
+            ) : (
+              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {rates.map((r) => (
+                  <label
+                    key={r.id}
+                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                      selectedRate === r.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="rate"
+                      value={r.id}
+                      checked={selectedRate === r.id}
+                      onChange={() => setSelectedRate(r.id)}
+                      className="accent-blue-600"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-sm">{r.carrier}</span>
+                        <span className="text-xs text-gray-500">{r.service}</span>
+                      </div>
+                      {(r.delivery_days || r.est_delivery_days) && (
+                        <div className="text-xs text-gray-400">
+                          {r.delivery_days ?? r.est_delivery_days} business day(s)
+                          {r.delivery_date && ` · by ${new Date(r.delivery_date).toLocaleDateString()}`}
+                        </div>
+                      )}
+                    </div>
+                    <span className="font-semibold text-sm text-gray-800">${parseFloat(r.rate).toFixed(2)} {r.currency}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-between gap-2 mt-5">
+              <button className="btn-secondary" onClick={() => setStep("parcel")}>← Back</button>
+              <div className="flex gap-2">
+                <button className="btn-secondary" onClick={onClose}>Cancel</button>
+                <button
+                  className="btn-primary flex items-center gap-1.5"
+                  disabled={!selectedRate || buyMut.isPending}
+                  onClick={() => buyMut.mutate()}
+                >
+                  {buyMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />}
+                  {buyMut.isPending ? "Purchasing…" : "Buy Label"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

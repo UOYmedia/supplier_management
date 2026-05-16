@@ -63,6 +63,14 @@ export const suppliersApi = {
   updateInvoice: (id: number, invId: number, data: object) => api.patch(`/suppliers/${id}/invoices/${invId}`, data).then((r) => r.data),
 };
 
+// EasyPost
+export const easypostApi = {
+  getRates: (orderId: number, data: object) =>
+    api.post(`/orders/${orderId}/easypost/rates`, data).then((r) => r.data),
+  buyLabel: (orderId: number, data: object) =>
+    api.post(`/orders/${orderId}/easypost/buy`, data).then((r) => r.data),
+};
+
 // Orders
 export const ordersApi = {
   list: (params?: object) => api.get("/orders", { params }).then((r) => r.data),

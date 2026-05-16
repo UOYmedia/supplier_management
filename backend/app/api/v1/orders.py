@@ -3,12 +3,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timezone
 from app.core.database import get_db
-from app.models.order import Order, OrderLineItem, ShippingLabel
+from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus
 from app.models.product import Product, ProductSupplier
 from app.models.supplier import Supplier
 from app.schemas.order import (
     OrderCreate, OrderUpdate, OrderOut, OrderLineItemUpdate,
-    OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut
+    OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut, AssignSupplierBody,
 )
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -52,7 +52,6 @@ async def create_order(body: OrderCreate, db: AsyncSession = Depends(get_db)):
     for li in body.line_items:
         supplier_id = li.supplier_id
         base_cost = li.base_cost
-        # auto-assign preferred supplier if not provided
         if not supplier_id and li.product_id:
             ps_result = await db.execute(
                 select(ProductSupplier)
@@ -120,6 +119,63 @@ async def update_line_item(order_id: int, li_id: int, body: OrderLineItemUpdate,
         setattr(li, k, v)
     if body.fulfill_status and body.fulfill_status == "shipped" and not li.fulfilled_at:
         li.fulfilled_at = datetime.now(timezone.utc)
+
+    order = await _get_or_404(order_id, db)
+    await _recalculate_order_status(order, db)
+    await db.commit()
+    await db.refresh(li)
+    return await _line_item_out(li, db)
+
+
+@router.patch("/{order_id}/line-items/{li_id}/assign-supplier", response_model=OrderLineItemOut)
+async def assign_supplier_to_line_item(
+    order_id: int,
+    li_id: int,
+    body: AssignSupplierBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """Assign a supplier to a line item. Optionally creates ProductSupplier for future auto-assignment."""
+    result = await db.execute(
+        select(OrderLineItem).where(OrderLineItem.id == li_id, OrderLineItem.order_id == order_id)
+    )
+    li = result.scalar_one_or_none()
+    if not li:
+        raise HTTPException(404, "Line item not found")
+
+    supplier = await db.get(Supplier, body.supplier_id)
+    if not supplier:
+        raise HTTPException(404, "Supplier not found")
+
+    li.supplier_id = body.supplier_id
+    if body.base_cost is not None:
+        li.base_cost = body.base_cost
+
+    # Create ProductSupplier relationship for future auto-assignment
+    if li.product_id and body.create_product_supplier:
+        ps_result = await db.execute(
+            select(ProductSupplier).where(
+                ProductSupplier.product_id == li.product_id,
+                ProductSupplier.supplier_id == body.supplier_id,
+            )
+        )
+        ps = ps_result.scalar_one_or_none()
+        if not ps:
+            ps = ProductSupplier(
+                product_id=li.product_id,
+                supplier_id=body.supplier_id,
+                cost=body.base_cost if body.base_cost is not None else li.base_cost,
+                is_preferred=body.is_preferred,
+            )
+            db.add(ps)
+        elif body.is_preferred:
+            # If setting this as preferred, clear others
+            all_ps = await db.execute(
+                select(ProductSupplier).where(ProductSupplier.product_id == li.product_id)
+            )
+            for other in all_ps.scalars().all():
+                other.is_preferred = False
+            ps.is_preferred = True
+
     await db.commit()
     await db.refresh(li)
     return await _line_item_out(li, db)
@@ -129,7 +185,7 @@ async def update_line_item(order_id: int, li_id: int, body: OrderLineItemUpdate,
 
 @router.post("/{order_id}/labels", response_model=ShippingLabelOut, status_code=201)
 async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSession = Depends(get_db)):
-    await _get_or_404(order_id, db)
+    order = await _get_or_404(order_id, db)
     label = ShippingLabel(
         supplier_id=body.supplier_id,
         carrier=body.carrier,
@@ -143,8 +199,20 @@ async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSessio
     db.add(label)
     await db.flush()
 
-    # link line items to this label
-    for li_id in body.line_item_ids:
+    # Determine which line items to link:
+    # Use explicitly provided IDs, or auto-select all unshipped items for this supplier
+    li_ids = body.line_item_ids
+    if not li_ids:
+        auto_result = await db.execute(
+            select(OrderLineItem).where(
+                OrderLineItem.order_id == order_id,
+                OrderLineItem.supplier_id == body.supplier_id,
+                OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+            )
+        )
+        li_ids = [li.id for li in auto_result.scalars().all()]
+
+    for li_id in li_ids:
         result = await db.execute(
             select(OrderLineItem).where(OrderLineItem.id == li_id, OrderLineItem.order_id == order_id)
         )
@@ -153,7 +221,11 @@ async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSessio
             li.label_id = label.id
             if body.tracking_number:
                 li.tracking_number = body.tracking_number
+            # Label bought → move to pending (awaiting shipment by supplier)
+            if li.fulfill_status == FulfillStatus.unfulfilled:
+                li.fulfill_status = FulfillStatus.pending
 
+    await _recalculate_order_status(order, db)
     await db.commit()
     await db.refresh(label)
     return label
@@ -171,6 +243,28 @@ async def list_labels(order_id: int, db: AsyncSession = Depends(get_db)):
 
 
 # --- Helpers ---
+
+async def _recalculate_order_status(order: Order, db: AsyncSession):
+    """Update order.status based on aggregate of line item fulfill_status values."""
+    result = await db.execute(select(OrderLineItem).where(OrderLineItem.order_id == order.id))
+    items = result.scalars().all()
+    if not items:
+        return
+
+    statuses = [li.fulfill_status for li in items]
+    active = [s for s in statuses if s != FulfillStatus.cancelled]
+
+    if not active:
+        order.status = OrderStatus.cancelled
+    elif all(s in (FulfillStatus.shipped, FulfillStatus.delivered) for s in active):
+        order.status = OrderStatus.fulfilled
+    elif any(s in (FulfillStatus.shipped, FulfillStatus.delivered) for s in active):
+        order.status = OrderStatus.partially_fulfilled
+    elif any(s == FulfillStatus.pending for s in active):
+        order.status = OrderStatus.processing
+    else:
+        order.status = OrderStatus.pending
+
 
 async def _get_or_404(order_id: int, db: AsyncSession) -> Order:
     o = await db.get(Order, order_id)

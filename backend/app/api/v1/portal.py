@@ -12,6 +12,7 @@ from app.core.security import verify_password, create_access_token, decode_token
 from app.models.supplier import Supplier, Invoice
 from app.models.product import Product, ProductSupplier
 from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus
+from app.api.v1.orders import _recalculate_order_status
 
 router = APIRouter(prefix="/portal", tags=["supplier-portal"])
 
@@ -138,6 +139,11 @@ async def mark_shipped(
     item.fulfill_status = FulfillStatus.shipped
     item.tracking_number = body.get("tracking_number") or item.tracking_number
     item.fulfilled_at = datetime.now(timezone.utc)
+
+    order = await db.get(Order, item.order_id)
+    if order:
+        await _recalculate_order_status(order, db)
+
     await db.commit()
     return {"status": "shipped", "tracking_number": item.tracking_number}
 

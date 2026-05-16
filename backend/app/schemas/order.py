@@ -88,6 +88,13 @@ class OrderOut(BaseModel):
     line_items: list[OrderLineItemOut] = []
 
 
+class AssignSupplierBody(BaseModel):
+    supplier_id: int
+    base_cost: Decimal | None = None
+    create_product_supplier: bool = True
+    is_preferred: bool = False
+
+
 class ShippingLabelCreate(BaseModel):
     supplier_id: int
     carrier: str

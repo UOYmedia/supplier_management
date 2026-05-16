@@ -71,6 +71,8 @@ export const ordersApi = {
   update: (id: number, data: object) => api.patch(`/orders/${id}`, data).then((r) => r.data),
   updateLineItem: (orderId: number, liId: number, data: object) =>
     api.patch(`/orders/${orderId}/line-items/${liId}`, data).then((r) => r.data),
+  assignSupplier: (orderId: number, liId: number, data: object) =>
+    api.patch(`/orders/${orderId}/line-items/${liId}/assign-supplier`, data).then((r) => r.data),
   createLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/labels`, data).then((r) => r.data),
   listLabels: (orderId: number) => api.get(`/orders/${orderId}/labels`).then((r) => r.data),
 };

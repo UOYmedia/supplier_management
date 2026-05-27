@@ -99,10 +99,15 @@ class ShippingLabel(Base):
     carrier: Mapped[str] = mapped_column(String(50))
     service: Mapped[str | None] = mapped_column(String(100))
     tracking_number: Mapped[str | None] = mapped_column(String(255))
-    label_url: Mapped[str | None] = mapped_column(String(500))
+    label_url: Mapped[str | None] = mapped_column(Text)          # EasyPost URL or data-URL
+    label_data: Mapped[str | None] = mapped_column(Text)         # base64 PDF from Amazon MFN
     cost: Mapped[Decimal] = mapped_column(Numeric(8, 2), default=0)
     from_address: Mapped[dict | None] = mapped_column(JSON)
     to_address: Mapped[dict | None] = mapped_column(JSON)
     purchased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     supplier: Mapped["Supplier"] = relationship(back_populates="shipping_labels")
+
+    @property
+    def has_label_data(self) -> bool:
+        return self.label_data is not None

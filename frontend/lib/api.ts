@@ -83,6 +83,16 @@ export const easypostApi = {
     api.post(`/orders/${orderId}/easypost/buy`, data).then((r) => r.data),
 };
 
+// Amazon shipping (MFN)
+export const amazonShippingApi = {
+  getRates: (orderId: number, data: object) =>
+    api.post(`/orders/${orderId}/amazon/rates`, data).then((r) => r.data),
+  buyLabel: (orderId: number, data: object) =>
+    api.post(`/orders/${orderId}/amazon/buy`, data).then((r) => r.data),
+  downloadLabelUrl: (orderId: number, labelId: number) =>
+    `/api/v1/orders/${orderId}/labels/${labelId}/download`,
+};
+
 // Orders
 export const ordersApi = {
   list: (params?: object) => api.get("/orders", { params }).then((r) => r.data),
@@ -99,6 +109,7 @@ export const ordersApi = {
     api.patch(`/orders/${orderId}/line-items/${liId}/fulfillments/${fiId}`, data).then((r) => r.data),
   createLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/labels`, data).then((r) => r.data),
   listLabels: (orderId: number) => api.get(`/orders/${orderId}/labels`).then((r) => r.data),
+  labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,
 };
 
 // Marketplace
@@ -111,6 +122,7 @@ export const marketplaceApi = {
   syncOrders: (id: number) => api.post(`/marketplace/connections/${id}/sync-orders`).then((r) => r.data),
   syncProducts: (id: number) => api.post(`/marketplace/connections/${id}/sync-products`).then((r) => r.data),
   syncLocations: (id: number) => api.post(`/marketplace/connections/${id}/sync-locations`).then((r) => r.data),
+  syncListings: (id: number) => api.post(`/marketplace/connections/${id}/sync-listings`).then((r) => r.data),
   listListings: (params?: object) => api.get("/marketplace/listings", { params }).then((r) => r.data),
   createListing: (data: object) => api.post("/marketplace/listings", data).then((r) => r.data),
   updateListing: (id: number, data: object) => api.patch(`/marketplace/listings/${id}`, data).then((r) => r.data),

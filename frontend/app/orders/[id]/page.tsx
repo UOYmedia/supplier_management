@@ -1,10 +1,10 @@
 "use client";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ordersApi, suppliersApi, easypostApi } from "@/lib/api";
+import { ordersApi, suppliersApi, easypostApi, amazonShippingApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag } from "lucide-react";
+import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag, ExternalLink, Download } from "lucide-react";
 import Link from "next/link";
 import { OrderStatusBadge } from "../order-status-badge";
 
@@ -15,7 +15,7 @@ export default function OrderDetailPage() {
   const oid = parseInt(id);
   const qc = useQueryClient();
   const [showLabel, setShowLabel] = useState<{ supplierId: number; lineItemIds: number[] } | null>(null);
-  const [assigningItem, setAssigningItem] = useState<number | null>(null); // line_item_id
+  const [assigningItem, setAssigningItem] = useState<number | null>(null);
 
   const { data: order } = useQuery({ queryKey: ["order", oid], queryFn: () => ordersApi.get(oid) });
   const { data: labels = [] } = useQuery({ queryKey: ["labels", oid], queryFn: () => ordersApi.listLabels(oid) });
@@ -41,6 +41,7 @@ export default function OrderDetailPage() {
 
   const addr = order.shipping_address || {};
   const supplierGroups = groupBySupplier(order.line_items);
+  const isAmazonOrder = order.marketplace === "amazon" && !!order.external_order_id;
 
   const openBuyLabel = (supplierId: number | null, items: any[]) => {
     const sid = supplierId ?? -1;
@@ -54,7 +55,12 @@ export default function OrderDetailPage() {
         <Link href="/orders" className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"><ArrowLeft className="w-4 h-4" /></Link>
         <div className="flex-1">
           <h1 className="page-title">Order #{order.id}</h1>
-          <p className="text-sm text-gray-500 capitalize">{order.marketplace} · {new Date(order.ordered_at).toLocaleString()}</p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <p className="text-sm text-gray-500 capitalize">{order.marketplace} · {new Date(order.ordered_at).toLocaleString()}</p>
+            {order.external_order_id && (
+              <span className="text-xs font-mono text-gray-400">{order.external_order_id}</span>
+            )}
+          </div>
         </div>
         <OrderStatusBadge status={order.status} />
       </div>
@@ -82,6 +88,9 @@ export default function OrderDetailPage() {
             <div className="flex justify-between"><span className="text-gray-500">Total</span><span className="font-semibold">${parseFloat(order.total).toFixed(2)}</span></div>
             <div className="flex justify-between"><span className="text-gray-500">Currency</span><span>{order.currency}</span></div>
             <div className="flex justify-between"><span className="text-gray-500">Items</span><span>{order.line_items.length}</span></div>
+            {isAmazonOrder && (
+              <div className="flex justify-between"><span className="text-gray-500">Source</span><span className="badge-orange text-xs">Amazon</span></div>
+            )}
           </div>
         </div>
       </div>
@@ -147,7 +156,20 @@ export default function OrderDetailPage() {
                 {l.service && <span className="text-gray-500 text-xs">{l.service}</span>}
                 <span className="font-mono text-xs">{l.tracking_number || "—"}</span>
                 <span className="text-gray-500">${parseFloat(l.cost).toFixed(2)}</span>
-                {l.label_url && <a href={l.label_url} target="_blank" className="text-blue-600 hover:underline text-xs">Download</a>}
+                {l.has_label_data && (
+                  <a
+                    href={ordersApi.labelDownloadUrl(oid, l.id)}
+                    target="_blank"
+                    className="flex items-center gap-1 text-blue-600 hover:underline text-xs"
+                  >
+                    <Download className="w-3 h-3" /> Download PDF
+                  </a>
+                )}
+                {!l.has_label_data && l.label_url && (
+                  <a href={l.label_url} target="_blank" className="flex items-center gap-1 text-blue-600 hover:underline text-xs">
+                    <ExternalLink className="w-3 h-3" /> Download
+                  </a>
+                )}
               </div>
             ))}
           </div>
@@ -159,6 +181,8 @@ export default function OrderDetailPage() {
           orderId={oid}
           supplierId={showLabel.supplierId}
           lineItemIds={showLabel.lineItemIds}
+          isAmazonOrder={isAmazonOrder}
+          amazonOrderId={order.external_order_id}
           onClose={() => setShowLabel(null)}
         />
       )}
@@ -324,22 +348,240 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   );
 }
 
-/** Multi-step EasyPost label purchase modal */
-function LabelModal({ orderId, supplierId, lineItemIds, onClose }: {
+/** Label modal — choose Amazon MFN or EasyPost */
+function LabelModal({ orderId, supplierId, lineItemIds, isAmazonOrder, amazonOrderId, onClose }: {
   orderId: number;
   supplierId: number;
   lineItemIds: number[];
+  isAmazonOrder: boolean;
+  amazonOrderId?: string | null;
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
+  const [provider, setProvider] = useState<"amazon" | "easypost">(isAmazonOrder ? "amazon" : "easypost");
 
-  // Step 1: parcel form
+  if (provider === "amazon" && isAmazonOrder) {
+    return (
+      <AmazonLabelModal
+        orderId={orderId}
+        supplierId={supplierId}
+        lineItemIds={lineItemIds}
+        amazonOrderId={amazonOrderId!}
+        onClose={onClose}
+        onSwitchToEasyPost={() => setProvider("easypost")}
+      />
+    );
+  }
+
+  return (
+    <EasyPostLabelModal
+      orderId={orderId}
+      supplierId={supplierId}
+      lineItemIds={lineItemIds}
+      showAmazonOption={isAmazonOrder}
+      onClose={onClose}
+      onSwitchToAmazon={isAmazonOrder ? () => setProvider("amazon") : undefined}
+    />
+  );
+}
+
+/** Amazon MFN shipping modal */
+function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onClose, onSwitchToEasyPost }: {
+  orderId: number;
+  supplierId: number;
+  lineItemIds: number[];
+  amazonOrderId: string;
+  onClose: () => void;
+  onSwitchToEasyPost: () => void;
+}) {
+  const qc = useQueryClient();
   const [parcel, setParcel] = useState({ weight: "", length: "", width: "", height: "" });
-  // Step 2: rates
+  const [services, setServices] = useState<any[]>([]);
+  const [selectedService, setSelectedService] = useState<any>(null);
+  const [step, setStep] = useState<"parcel" | "services">("parcel");
+
+  const getRatesMut = useMutation({
+    mutationFn: () =>
+      amazonShippingApi.getRates(orderId, {
+        supplier_id: supplierId,
+        line_item_ids: lineItemIds,
+        parcel: {
+          weight: parseFloat(parcel.weight),
+          length: parseFloat(parcel.length),
+          width: parseFloat(parcel.width),
+          height: parseFloat(parcel.height),
+        },
+      }),
+    onSuccess: (data) => {
+      setServices(data.services);
+      if (data.services.length > 0) setSelectedService(data.services[0]);
+      setStep("services");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to get Amazon rates"),
+  });
+
+  const buyMut = useMutation({
+    mutationFn: () =>
+      amazonShippingApi.buyLabel(orderId, {
+        supplier_id: supplierId,
+        amazon_order_id: amazonOrderId,
+        shipping_service_id: selectedService.shipping_service_id,
+        shipping_service_offer_id: selectedService.shipping_service_offer_id,
+        line_item_ids: lineItemIds,
+        parcel: {
+          weight: parseFloat(parcel.weight),
+          length: parseFloat(parcel.length),
+          width: parseFloat(parcel.width),
+          height: parseFloat(parcel.height),
+        },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["labels", orderId] });
+      qc.invalidateQueries({ queryKey: ["order", orderId] });
+      toast.success("Amazon label purchased — items moved to Pending");
+      onClose();
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Purchase failed"),
+  });
+
+  const pf = (k: string) => (e: any) => setParcel((p) => ({ ...p, [k]: e.target.value }));
+  const parcelValid = parcel.weight && parcel.length && parcel.width && parcel.height;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-lg p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="font-semibold">Buy Label via Amazon</h2>
+              <span className="badge-orange text-xs">Amazon MFN</span>
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {step === "parcel" ? "Step 1 of 2 — Parcel dimensions" : "Step 2 of 2 — Select service"}
+            </p>
+          </div>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        {step === "parcel" && (
+          <>
+            <div className="mb-4 p-3 bg-orange-50 rounded-lg text-xs text-orange-700">
+              Amazon Order: <strong className="font-mono">{amazonOrderId}</strong> · {lineItemIds.length} item(s)
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">Weight (oz) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 16" value={parcel.weight} onChange={pf("weight")} />
+              </div>
+              <div>
+                <label className="label">Length (in) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 12" value={parcel.length} onChange={pf("length")} />
+              </div>
+              <div>
+                <label className="label">Width (in) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 9" value={parcel.width} onChange={pf("width")} />
+              </div>
+              <div>
+                <label className="label">Height (in) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 4" value={parcel.height} onChange={pf("height")} />
+              </div>
+            </div>
+            <div className="flex items-center justify-between mt-5">
+              <button className="text-xs text-blue-600 hover:underline" onClick={onSwitchToEasyPost}>
+                Use EasyPost instead →
+              </button>
+              <div className="flex gap-2">
+                <button className="btn-secondary" onClick={onClose}>Cancel</button>
+                <button
+                  className="btn-primary flex items-center gap-1.5"
+                  disabled={!parcelValid || getRatesMut.isPending}
+                  onClick={() => getRatesMut.mutate()}
+                >
+                  {getRatesMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Tag className="w-4 h-4" />}
+                  {getRatesMut.isPending ? "Getting rates…" : "Get Amazon Rates"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {step === "services" && (
+          <>
+            {services.length === 0 ? (
+              <div className="text-center text-gray-400 py-8">
+                No Amazon shipping services available.<br />
+                <button className="text-sm text-blue-600 hover:underline mt-2" onClick={onSwitchToEasyPost}>Try EasyPost instead</button>
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {services.map((s) => (
+                  <label
+                    key={s.shipping_service_id}
+                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                      selectedService?.shipping_service_id === s.shipping_service_id
+                        ? "border-orange-500 bg-orange-50"
+                        : "border-gray-200 hover:border-gray-300"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="amz-service"
+                      checked={selectedService?.shipping_service_id === s.shipping_service_id}
+                      onChange={() => setSelectedService(s)}
+                      className="accent-orange-500"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-sm">{s.carrier}</span>
+                        <span className="text-xs text-gray-500">{s.name}</span>
+                      </div>
+                      {(s.earliest_delivery || s.latest_delivery) && (
+                        <div className="text-xs text-gray-400">
+                          Est. {s.earliest_delivery ? new Date(s.earliest_delivery).toLocaleDateString() : "—"}
+                          {s.latest_delivery ? ` – ${new Date(s.latest_delivery).toLocaleDateString()}` : ""}
+                        </div>
+                      )}
+                    </div>
+                    <span className="font-semibold text-sm">${s.rate.toFixed(2)} {s.currency}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-between gap-2 mt-5">
+              <button className="btn-secondary" onClick={() => setStep("parcel")}>← Back</button>
+              <div className="flex gap-2">
+                <button className="btn-secondary" onClick={onClose}>Cancel</button>
+                <button
+                  className="btn-primary flex items-center gap-1.5"
+                  disabled={!selectedService || buyMut.isPending}
+                  onClick={() => buyMut.mutate()}
+                >
+                  {buyMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />}
+                  {buyMut.isPending ? "Purchasing…" : "Buy Amazon Label"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** EasyPost shipping modal */
+function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption, onClose, onSwitchToAmazon }: {
+  orderId: number;
+  supplierId: number;
+  lineItemIds: number[];
+  showAmazonOption?: boolean;
+  onClose: () => void;
+  onSwitchToAmazon?: () => void;
+}) {
+  const qc = useQueryClient();
+  const [parcel, setParcel] = useState({ weight: "", length: "", width: "", height: "" });
   const [shipmentId, setShipmentId] = useState<string | null>(null);
   const [rates, setRates] = useState<any[]>([]);
   const [selectedRate, setSelectedRate] = useState<string | null>(null);
-  const [step, setStep] = useState<"parcel" | "rates" | "done">("parcel");
+  const [step, setStep] = useState<"parcel" | "rates">("parcel");
 
   const getRatesMut = useMutation({
     mutationFn: () =>
@@ -373,7 +615,7 @@ function LabelModal({ orderId, supplierId, lineItemIds, onClose }: {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["labels", orderId] });
       qc.invalidateQueries({ queryKey: ["order", orderId] });
-      toast.success("Label purchased via USPS — items moved to Pending");
+      toast.success("Label purchased — items moved to Pending");
       onClose();
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Purchase failed"),
@@ -387,7 +629,7 @@ function LabelModal({ orderId, supplierId, lineItemIds, onClose }: {
       <div className="card w-full max-w-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="font-semibold">Buy USPS Label via EasyPost</h2>
+            <h2 className="font-semibold">Buy Label via EasyPost</h2>
             <p className="text-xs text-gray-500 mt-0.5">
               {step === "parcel" ? "Step 1 of 2 — Parcel dimensions" : "Step 2 of 2 — Select rate"}
             </p>
@@ -395,11 +637,10 @@ function LabelModal({ orderId, supplierId, lineItemIds, onClose }: {
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
 
-        {/* Step 1 — Parcel */}
         {step === "parcel" && (
           <>
             <div className="mb-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
-              Covers <strong>{lineItemIds.length}</strong> item(s). Enter parcel dimensions to get live USPS rates.
+              Covers <strong>{lineItemIds.length}</strong> item(s). Enter parcel dimensions for live carrier rates.
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -419,21 +660,27 @@ function LabelModal({ orderId, supplierId, lineItemIds, onClose }: {
                 <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 4" value={parcel.height} onChange={pf("height")} />
               </div>
             </div>
-            <div className="flex justify-end gap-2 mt-5">
-              <button className="btn-secondary" onClick={onClose}>Cancel</button>
-              <button
-                className="btn-primary flex items-center gap-1.5"
-                disabled={!parcelValid || getRatesMut.isPending}
-                onClick={() => getRatesMut.mutate()}
-              >
-                {getRatesMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Tag className="w-4 h-4" />}
-                {getRatesMut.isPending ? "Getting rates…" : "Get Rates"}
-              </button>
+            <div className="flex items-center justify-between mt-5">
+              {showAmazonOption && onSwitchToAmazon ? (
+                <button className="text-xs text-orange-600 hover:underline" onClick={onSwitchToAmazon}>
+                  Use Amazon Buy Shipping instead →
+                </button>
+              ) : <span />}
+              <div className="flex gap-2">
+                <button className="btn-secondary" onClick={onClose}>Cancel</button>
+                <button
+                  className="btn-primary flex items-center gap-1.5"
+                  disabled={!parcelValid || getRatesMut.isPending}
+                  onClick={() => getRatesMut.mutate()}
+                >
+                  {getRatesMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Tag className="w-4 h-4" />}
+                  {getRatesMut.isPending ? "Getting rates…" : "Get Rates"}
+                </button>
+              </div>
             </div>
           </>
         )}
 
-        {/* Step 2 — Rates */}
         {step === "rates" && (
           <>
             {rates.length === 0 ? (
@@ -449,7 +696,7 @@ function LabelModal({ orderId, supplierId, lineItemIds, onClose }: {
                   >
                     <input
                       type="radio"
-                      name="rate"
+                      name="ep-rate"
                       value={r.id}
                       checked={selectedRate === r.id}
                       onChange={() => setSelectedRate(r.id)}

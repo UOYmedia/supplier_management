@@ -139,5 +139,6 @@ class ShippingLabelOut(BaseModel):
     service: str | None
     tracking_number: str | None
     label_url: str | None
+    has_label_data: bool = False   # true when Amazon PDF is stored; use /labels/{id}/download
     cost: Decimal
     purchased_at: datetime

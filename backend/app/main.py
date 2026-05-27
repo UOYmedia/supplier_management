@@ -55,6 +55,9 @@ async def _run_migrations():
         # shopify location sync
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS shopify_location_id VARCHAR(100)",
         "CREATE INDEX IF NOT EXISTS ix_suppliers_shopify_location_id ON suppliers(shopify_location_id) WHERE shopify_location_id IS NOT NULL",
+        # Amazon MFN: base64 PDF label storage + wider label_url
+        "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS label_data TEXT",
+        "ALTER TABLE shipping_labels ALTER COLUMN label_url TYPE TEXT",
     ]
     try:
         async with engine.begin() as conn:

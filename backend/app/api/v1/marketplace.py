@@ -188,9 +188,15 @@ async def sync_locations(conn_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/connections/{conn_id}/sync-orders")
-async def sync_orders(conn_id: int, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def sync_orders(
+    conn_id: int,
+    background_tasks: BackgroundTasks,
+    created_after: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Sync orders from marketplace. Pass created_after (ISO8601) for full re-sync."""
     conn = await _get_conn_or_404(conn_id, db)
-    background_tasks.add_task(_do_sync_orders, conn_id)
+    background_tasks.add_task(_do_sync_orders, conn_id, created_after)
     return {"message": "Order sync started in background"}
 
 
@@ -201,14 +207,41 @@ async def sync_products(conn_id: int, background_tasks: BackgroundTasks, db: Asy
     return {"message": "Product sync started in background"}
 
 
-async def _do_sync_orders(conn_id: int):
+@router.post("/connections/{conn_id}/sync-listings")
+async def sync_listings(conn_id: int, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    """Pull active listings from Amazon (FBA inventory) into local MarketplaceListing records."""
+    conn = await _get_conn_or_404(conn_id, db)
+    if conn.marketplace != MarketplaceType.amazon:
+        raise HTTPException(400, "Listing sync is only supported for Amazon connections")
+    background_tasks.add_task(_do_sync_listings, conn_id)
+    return {"message": "Listing sync started in background"}
+
+
+async def _do_sync_orders(conn_id: int, created_after: str | None = None):
     from app.core.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         conn = await db.get(MarketplaceConnection, conn_id)
         if not conn:
             return
         syncer = _get_syncer(conn)
-        await syncer.sync_orders(db)
+        if conn.marketplace == MarketplaceType.amazon:
+            from app.integrations.amazon.sync import AmazonSync
+            await syncer.sync_orders(db, created_after=created_after)
+        else:
+            await syncer.sync_orders(db)
+        conn.last_synced_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+async def _do_sync_listings(conn_id: int):
+    from app.core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        conn = await db.get(MarketplaceConnection, conn_id)
+        if not conn:
+            return
+        from app.integrations.amazon.sync import AmazonSync
+        syncer = AmazonSync(conn)
+        await syncer.sync_listings(db)
         conn.last_synced_at = datetime.now(timezone.utc)
         await db.commit()
 

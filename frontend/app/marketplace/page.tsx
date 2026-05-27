@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { marketplaceApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, RefreshCw, Zap, Trash2, CheckCircle, XCircle, X, Package, Link2, MapPin } from "lucide-react";
+import { Plus, RefreshCw, Zap, Trash2, CheckCircle, XCircle, X, Package, Link2, MapPin, List } from "lucide-react";
 
 export default function MarketplacePage() {
   const qc = useQueryClient();
@@ -43,6 +43,12 @@ export default function MarketplacePage() {
     onError: (e: any) => toast.error(e.response?.data?.detail || "Location sync failed"),
   });
 
+  const syncListingsMut = useMutation({
+    mutationFn: (id: number) => marketplaceApi.syncListings(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["listings"] }); toast.success("Listing sync started"); },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Listing sync failed"),
+  });
+
   return (
     <div>
       <div className="page-header">
@@ -75,6 +81,7 @@ export default function MarketplacePage() {
               onSyncOrders={() => syncOrdersMut.mutate(c.id)}
               onSyncProducts={() => syncProductsMut.mutate(c.id)}
               onSyncLocations={() => syncLocationsMut.mutate(c.id)}
+              onSyncListings={() => syncListingsMut.mutate(c.id)}
               onDelete={() => confirm("Delete?") && deleteMut.mutate(c.id)}
             />
           ))}
@@ -86,7 +93,7 @@ export default function MarketplacePage() {
   );
 }
 
-function ConnectionCard({ conn, onTest, onSyncOrders, onSyncProducts, onSyncLocations, onDelete }: any) {
+function ConnectionCard({ conn, onTest, onSyncOrders, onSyncProducts, onSyncLocations, onSyncListings, onDelete }: any) {
   const statusIcon = conn.status === "active" ? (
     <CheckCircle className="w-4 h-4 text-green-500" />
   ) : conn.status === "error" ? (
@@ -129,6 +136,11 @@ function ConnectionCard({ conn, onTest, onSyncOrders, onSyncProducts, onSyncLoca
         {conn.marketplace === "shopify" && (
           <button className="btn-secondary text-xs py-1 flex-1" onClick={onSyncLocations}>
             <MapPin className="w-3 h-3" /> Sync Locations
+          </button>
+        )}
+        {conn.marketplace === "amazon" && (
+          <button className="btn-secondary text-xs py-1 flex-1" onClick={onSyncListings}>
+            <List className="w-3 h-3" /> Sync Listings
           </button>
         )}
         <button className="p-1.5 hover:text-red-500 text-gray-400" onClick={onDelete}>

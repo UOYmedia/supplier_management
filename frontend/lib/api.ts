@@ -45,6 +45,12 @@ export const productsApi = {
   addSupplier: (id: number, data: object) => api.post(`/products/${id}/suppliers`, data).then((r) => r.data),
   updateSupplier: (id: number, psId: number, data: object) => api.patch(`/products/${id}/suppliers/${psId}`, data).then((r) => r.data),
   removeSupplier: (id: number, psId: number) => api.delete(`/products/${id}/suppliers/${psId}`),
+  // Product components
+  listComponents: (id: number) => api.get(`/products/${id}/components`).then((r) => r.data),
+  addComponent: (id: number, data: object) => api.post(`/products/${id}/components`, data).then((r) => r.data),
+  updateComponent: (id: number, compId: number, data: object) =>
+    api.patch(`/products/${id}/components/${compId}`, data).then((r) => r.data),
+  removeComponent: (id: number, compId: number) => api.delete(`/products/${id}/components/${compId}`),
 };
 
 // Suppliers
@@ -57,6 +63,12 @@ export const suppliersApi = {
   inventory: (id: number) => api.get(`/suppliers/${id}/inventory`).then((r) => r.data),
   updateStock: (id: number, psId: number, stock: number) =>
     api.patch(`/suppliers/${id}/inventory/${psId}`, null, { params: { stock } }).then((r) => r.data),
+  // Supplier product catalog
+  listProducts: (id: number) => api.get(`/suppliers/${id}/products`).then((r) => r.data),
+  createProduct: (id: number, data: object) => api.post(`/suppliers/${id}/products`, data).then((r) => r.data),
+  updateProduct: (id: number, spId: number, data: object) =>
+    api.patch(`/suppliers/${id}/products/${spId}`, data).then((r) => r.data),
+  deleteProduct: (id: number, spId: number) => api.delete(`/suppliers/${id}/products/${spId}`),
   orders: (id: number, params?: object) => api.get(`/suppliers/${id}/orders`, { params }).then((r) => r.data),
   invoices: (id: number) => api.get(`/suppliers/${id}/invoices`).then((r) => r.data),
   createInvoice: (id: number, data: object) => api.post(`/suppliers/${id}/invoices`, data).then((r) => r.data),
@@ -81,6 +93,10 @@ export const ordersApi = {
     api.patch(`/orders/${orderId}/line-items/${liId}`, data).then((r) => r.data),
   assignSupplier: (orderId: number, liId: number, data: object) =>
     api.patch(`/orders/${orderId}/line-items/${liId}/assign-supplier`, data).then((r) => r.data),
+  listFulfillments: (orderId: number, liId: number) =>
+    api.get(`/orders/${orderId}/line-items/${liId}/fulfillments`).then((r) => r.data),
+  updateFulfillment: (orderId: number, liId: number, fiId: number, data: object) =>
+    api.patch(`/orders/${orderId}/line-items/${liId}/fulfillments/${fiId}`, data).then((r) => r.data),
   createLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/labels`, data).then((r) => r.data),
   listLabels: (orderId: number) => api.get(`/orders/${orderId}/labels`).then((r) => r.data),
 };

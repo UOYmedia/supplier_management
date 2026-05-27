@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, Numeric, ForeignKey, DateTime, Text, Enum as SAEnum
+from sqlalchemy import String, Numeric, ForeignKey, DateTime, Text, Enum as SAEnum, Integer, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 import enum
@@ -34,9 +34,29 @@ class Supplier(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     product_suppliers: Mapped[list["ProductSupplier"]] = relationship(back_populates="supplier")
+    supplier_products: Mapped[list["SupplierProduct"]] = relationship(back_populates="supplier", cascade="all, delete-orphan")
     order_line_items: Mapped[list["OrderLineItem"]] = relationship(back_populates="supplier")
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="supplier", cascade="all, delete-orphan")
     shipping_labels: Mapped[list["ShippingLabel"]] = relationship(back_populates="supplier")
+
+
+class SupplierProduct(Base):
+    """Supplier's own product catalog (inventory items)."""
+    __tablename__ = "supplier_products"
+    __table_args__ = (UniqueConstraint("supplier_id", "sku"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(255))
+    sku: Mapped[str] = mapped_column(String(100), index=True)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
+    stock_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    supplier: Mapped["Supplier"] = relationship(back_populates="supplier_products")
+    components: Mapped[list["ProductComponent"]] = relationship(back_populates="supplier_product", cascade="all, delete-orphan")
+    fulfillment_items: Mapped[list["OrderFulfillmentItem"]] = relationship(back_populates="supplier_product")
 
 
 class Invoice(Base):

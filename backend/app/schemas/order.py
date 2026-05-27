@@ -35,6 +35,29 @@ class OrderLineItemUpdate(BaseModel):
     fulfilled_at: datetime | None = None
 
 
+class OrderFulfillmentItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    order_line_item_id: int
+    supplier_product_id: int
+    quantity: int
+    fulfill_status: FulfillStatus
+    tracking_number: str | None
+    label_id: int | None
+    fulfilled_at: datetime | None
+    supplier_product_name: str | None = None
+    supplier_product_sku: str | None = None
+    supplier_id: int | None = None
+    supplier_name: str | None = None
+
+
+class OrderFulfillmentItemUpdate(BaseModel):
+    fulfill_status: FulfillStatus | None = None
+    tracking_number: str | None = None
+    label_id: int | None = None
+    fulfilled_at: datetime | None = None
+
+
 class OrderLineItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -51,6 +74,7 @@ class OrderLineItemOut(BaseModel):
     label_id: int | None
     fulfilled_at: datetime | None
     supplier_name: str | None = None
+    fulfillment_items: list[OrderFulfillmentItemOut] = []
 
 
 class OrderCreate(BaseModel):

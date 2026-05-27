@@ -2,12 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
-from app.models.supplier import Supplier, Invoice, InvoiceLineItem
+from app.models.supplier import Supplier, Invoice, InvoiceLineItem, SupplierProduct
 from app.models.product import ProductSupplier
-from app.models.order import OrderLineItem
+from app.models.order import OrderLineItem, OrderFulfillmentItem, FulfillStatus
 from app.schemas.supplier import (
     SupplierCreate, SupplierUpdate, SupplierOut, SupplierListOut,
     InvoiceCreate, InvoiceUpdate, InvoiceOut
+)
+from app.schemas.supplier_product import (
+    SupplierProductCreate, SupplierProductUpdate, SupplierProductOut
 )
 import uuid
 from datetime import datetime, timezone
@@ -84,7 +87,7 @@ async def delete_supplier(supplier_id: int, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
 
-# --- Supplier inventory ---
+# --- Supplier inventory (legacy ProductSupplier-based, kept for backward compat) ---
 
 @router.get("/{supplier_id}/inventory")
 async def supplier_inventory(supplier_id: int, db: AsyncSession = Depends(get_db)):
@@ -124,6 +127,59 @@ async def update_stock(
     ps.stock = stock
     await db.commit()
     return {"stock": stock}
+
+
+# --- Supplier product catalog ---
+
+@router.get("/{supplier_id}/products", response_model=list[SupplierProductOut])
+async def list_supplier_products(supplier_id: int, db: AsyncSession = Depends(get_db)):
+    await _get_or_404(supplier_id, db)
+    result = await db.execute(
+        select(SupplierProduct).where(SupplierProduct.supplier_id == supplier_id)
+    )
+    products = result.scalars().all()
+    return [await _supplier_product_out(sp, db) for sp in products]
+
+
+@router.post("/{supplier_id}/products", response_model=SupplierProductOut, status_code=201)
+async def create_supplier_product(
+    supplier_id: int, body: SupplierProductCreate, db: AsyncSession = Depends(get_db)
+):
+    await _get_or_404(supplier_id, db)
+    sp = SupplierProduct(supplier_id=supplier_id, **body.model_dump())
+    db.add(sp)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(400, f"SKU '{body.sku}' already exists for this supplier")
+    await db.refresh(sp)
+    return await _supplier_product_out(sp, db)
+
+
+@router.get("/{supplier_id}/products/{sp_id}", response_model=SupplierProductOut)
+async def get_supplier_product(supplier_id: int, sp_id: int, db: AsyncSession = Depends(get_db)):
+    sp = await _get_sp_or_404(supplier_id, sp_id, db)
+    return await _supplier_product_out(sp, db)
+
+
+@router.patch("/{supplier_id}/products/{sp_id}", response_model=SupplierProductOut)
+async def update_supplier_product(
+    supplier_id: int, sp_id: int, body: SupplierProductUpdate, db: AsyncSession = Depends(get_db)
+):
+    sp = await _get_sp_or_404(supplier_id, sp_id, db)
+    for k, v in body.model_dump(exclude_none=True).items():
+        setattr(sp, k, v)
+    await db.commit()
+    await db.refresh(sp)
+    return await _supplier_product_out(sp, db)
+
+
+@router.delete("/{supplier_id}/products/{sp_id}", status_code=204)
+async def delete_supplier_product(supplier_id: int, sp_id: int, db: AsyncSession = Depends(get_db)):
+    sp = await _get_sp_or_404(supplier_id, sp_id, db)
+    await db.delete(sp)
+    await db.commit()
 
 
 # --- Supplier orders (only own line items) ---
@@ -229,3 +285,43 @@ async def _get_or_404(supplier_id: int, db: AsyncSession) -> Supplier:
     if not s:
         raise HTTPException(404, "Supplier not found")
     return s
+
+
+async def _get_sp_or_404(supplier_id: int, sp_id: int, db: AsyncSession) -> SupplierProduct:
+    result = await db.execute(
+        select(SupplierProduct).where(
+            SupplierProduct.id == sp_id,
+            SupplierProduct.supplier_id == supplier_id,
+        )
+    )
+    sp = result.scalar_one_or_none()
+    if not sp:
+        raise HTTPException(404, "Supplier product not found")
+    return sp
+
+
+async def _supplier_product_out(sp: SupplierProduct, db: AsyncSession) -> SupplierProductOut:
+    pending_result = await db.execute(
+        select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
+            OrderFulfillmentItem.supplier_product_id == sp.id,
+            OrderFulfillmentItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+        )
+    )
+    sold_result = await db.execute(
+        select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
+            OrderFulfillmentItem.supplier_product_id == sp.id,
+            OrderFulfillmentItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
+        )
+    )
+    return SupplierProductOut(
+        id=sp.id,
+        supplier_id=sp.supplier_id,
+        name=sp.name,
+        sku=sp.sku,
+        unit_price=sp.unit_price,
+        stock_quantity=sp.stock_quantity,
+        pending_quantity=int(pending_result.scalar()),
+        sold_quantity=int(sold_result.scalar()),
+        created_at=sp.created_at,
+        updated_at=sp.updated_at,
+    )

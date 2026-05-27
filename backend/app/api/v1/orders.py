@@ -3,12 +3,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timezone
 from app.core.database import get_db
-from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus
-from app.models.product import Product, ProductSupplier
-from app.models.supplier import Supplier
+from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus, OrderFulfillmentItem
+from app.models.product import Product, ProductSupplier, ProductComponent
+from app.models.supplier import Supplier, SupplierProduct
 from app.schemas.order import (
     OrderCreate, OrderUpdate, OrderOut, OrderLineItemUpdate,
     OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut, AssignSupplierBody,
+    OrderFulfillmentItemOut, OrderFulfillmentItemUpdate,
 )
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -52,6 +53,8 @@ async def create_order(body: OrderCreate, db: AsyncSession = Depends(get_db)):
     for li in body.line_items:
         supplier_id = li.supplier_id
         base_cost = li.base_cost
+
+        # Auto-assign from preferred ProductSupplier if no supplier given
         if not supplier_id and li.product_id:
             ps_result = await db.execute(
                 select(ProductSupplier)
@@ -62,7 +65,7 @@ async def create_order(body: OrderCreate, db: AsyncSession = Depends(get_db)):
                 supplier_id = ps.supplier_id
                 base_cost = ps.cost
 
-        db.add(OrderLineItem(
+        line_item = OrderLineItem(
             order_id=order.id,
             product_id=li.product_id,
             supplier_id=supplier_id,
@@ -72,7 +75,21 @@ async def create_order(body: OrderCreate, db: AsyncSession = Depends(get_db)):
             quantity=li.quantity,
             price=li.price,
             base_cost=base_cost,
-        ))
+        )
+        db.add(line_item)
+        await db.flush()  # need line_item.id for fulfillment items
+
+        # Auto-expand ProductComponents into OrderFulfillmentItems
+        if li.product_id:
+            comp_result = await db.execute(
+                select(ProductComponent).where(ProductComponent.product_id == li.product_id)
+            )
+            for comp in comp_result.scalars().all():
+                db.add(OrderFulfillmentItem(
+                    order_line_item_id=line_item.id,
+                    supplier_product_id=comp.supplier_product_id,
+                    quantity=comp.quantity * li.quantity,
+                ))
 
     await db.commit()
     await db.refresh(order)
@@ -181,6 +198,45 @@ async def assign_supplier_to_line_item(
     return await _line_item_out(li, db)
 
 
+# --- Fulfillment items ---
+
+@router.get("/{order_id}/line-items/{li_id}/fulfillments", response_model=list[OrderFulfillmentItemOut])
+async def list_fulfillment_items(order_id: int, li_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li_id)
+    )
+    items = result.scalars().all()
+    return [await _fulfillment_item_out(fi, db) for fi in items]
+
+
+@router.patch("/{order_id}/line-items/{li_id}/fulfillments/{fi_id}", response_model=OrderFulfillmentItemOut)
+async def update_fulfillment_item(
+    order_id: int, li_id: int, fi_id: int,
+    body: OrderFulfillmentItemUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(OrderFulfillmentItem).where(
+            OrderFulfillmentItem.id == fi_id,
+            OrderFulfillmentItem.order_line_item_id == li_id,
+        )
+    )
+    fi = result.scalar_one_or_none()
+    if not fi:
+        raise HTTPException(404, "Fulfillment item not found")
+
+    for k, v in body.model_dump(exclude_none=True).items():
+        setattr(fi, k, v)
+    if body.fulfill_status == FulfillStatus.shipped and not fi.fulfilled_at:
+        fi.fulfilled_at = datetime.now(timezone.utc)
+
+    order = await _get_or_404(order_id, db)
+    await _recalculate_order_status(order, db)
+    await db.commit()
+    await db.refresh(fi)
+    return await _fulfillment_item_out(fi, db)
+
+
 # --- Shipping labels ---
 
 @router.post("/{order_id}/labels", response_model=ShippingLabelOut, status_code=201)
@@ -273,10 +329,26 @@ async def _get_or_404(order_id: int, db: AsyncSession) -> Order:
     return o
 
 
+async def _fulfillment_item_out(fi: OrderFulfillmentItem, db: AsyncSession) -> OrderFulfillmentItemOut:
+    sp = await db.get(SupplierProduct, fi.supplier_product_id)
+    sup = await db.get(Supplier, sp.supplier_id) if sp else None
+    data = {c.name: getattr(fi, c.name) for c in fi.__table__.columns}
+    data["supplier_product_name"] = sp.name if sp else None
+    data["supplier_product_sku"] = sp.sku if sp else None
+    data["supplier_id"] = sp.supplier_id if sp else None
+    data["supplier_name"] = sup.name if sup else None
+    return OrderFulfillmentItemOut(**data)
+
+
 async def _line_item_out(li: OrderLineItem, db: AsyncSession) -> OrderLineItemOut:
     sup = await db.get(Supplier, li.supplier_id) if li.supplier_id else None
+    fi_result = await db.execute(
+        select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+    )
+    fulfillment_items = [await _fulfillment_item_out(fi, db) for fi in fi_result.scalars().all()]
     data = {c.name: getattr(li, c.name) for c in li.__table__.columns}
     data["supplier_name"] = sup.name if sup else None
+    data["fulfillment_items"] = fulfillment_items
     return OrderLineItemOut(**data)
 
 

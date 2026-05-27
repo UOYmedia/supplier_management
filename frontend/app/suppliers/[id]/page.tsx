@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { suppliersApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Pencil, FileText } from "lucide-react";
+import { ArrowLeft, Pencil, Plus, Trash2, X, Pencil as PencilIcon } from "lucide-react";
 import Link from "next/link";
 import { SupplierModal } from "../supplier-modal";
 
@@ -12,17 +12,20 @@ export default function SupplierDetailPage() {
   const { id } = useParams<{ id: string }>();
   const sid = parseInt(id);
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"inventory" | "orders" | "invoices">("inventory");
+  const [tab, setTab] = useState<"catalog" | "orders" | "invoices">("catalog");
   const [showEdit, setShowEdit] = useState(false);
+  const [showAddProduct, setShowAddProduct] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<any>(null);
 
   const { data: supplier } = useQuery({ queryKey: ["supplier", sid], queryFn: () => suppliersApi.get(sid) });
-  const { data: inventory = [] } = useQuery({ queryKey: ["supplier-inventory", sid], queryFn: () => suppliersApi.inventory(sid) });
+  const { data: catalog = [] } = useQuery({ queryKey: ["supplier-catalog", sid], queryFn: () => suppliersApi.listProducts(sid) });
   const { data: orders = [] } = useQuery({ queryKey: ["supplier-orders", sid], queryFn: () => suppliersApi.orders(sid) });
   const { data: invoices = [] } = useQuery({ queryKey: ["supplier-invoices", sid], queryFn: () => suppliersApi.invoices(sid) });
 
-  const updateStockMut = useMutation({
-    mutationFn: ({ psId, stock }: { psId: number; stock: number }) => suppliersApi.updateStock(sid, psId, stock),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["supplier-inventory", sid] }); toast.success("Stock updated"); },
+  const deleteMut = useMutation({
+    mutationFn: (spId: number) => suppliersApi.deleteProduct(sid, spId),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["supplier-catalog", sid] }); toast.success("Deleted"); },
+    onError: () => toast.error("Cannot delete — product is used by components"),
   });
 
   const markPaidMut = useMutation({
@@ -49,26 +52,60 @@ export default function SupplierDetailPage() {
       </div>
 
       <div className="flex gap-1 mb-5 border-b border-gray-200">
-        {(["inventory", "orders", "invoices"] as const).map((t) => (
+        {(["catalog", "orders", "invoices"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm font-medium capitalize border-b-2 transition-colors ${tab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
-            {t}
+            {t === "catalog" ? `Catalog (${catalog.length})` : t}
           </button>
         ))}
       </div>
 
-      {tab === "inventory" && (
-        <div className="card table-wrapper">
-          <table>
-            <thead><tr><th>Product ID</th><th>Supplier SKU</th><th>Cost</th><th>Stock</th><th>Lead (days)</th><th>Update Stock</th></tr></thead>
-            <tbody>
-              {inventory.length === 0 ? (
-                <tr><td colSpan={6} className="text-center py-6 text-gray-400">No inventory.</td></tr>
-              ) : inventory.map((item: any) => (
-                <StockRow key={item.product_supplier_id} item={item} onUpdate={(psId, stock) => updateStockMut.mutate({ psId, stock })} />
-              ))}
-            </tbody>
-          </table>
+      {tab === "catalog" && (
+        <div>
+          <div className="flex justify-end mb-3">
+            <button className="btn-primary" onClick={() => setShowAddProduct(true)}>
+              <Plus className="w-4 h-4" /> Add Product
+            </button>
+          </div>
+          <div className="card table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>SKU</th>
+                  <th>Unit Price</th>
+                  <th>Stock</th>
+                  <th>Pending</th>
+                  <th>Sold</th>
+                  <th>Total</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {catalog.length === 0 ? (
+                  <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products in catalog. Add one to start tracking inventory.</td></tr>
+                ) : catalog.map((item: any) => (
+                  <CatalogRow
+                    key={item.id}
+                    item={item}
+                    onEdit={() => setEditingProduct(item)}
+                    onDelete={() => {
+                      if (confirm(`Delete "${item.name}"?`)) deleteMut.mutate(item.id);
+                    }}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* Summary row */}
+          {catalog.length > 0 && (
+            <div className="mt-3 flex gap-6 text-sm text-gray-500 px-1">
+              <span>Total products: <strong className="text-gray-800">{catalog.length}</strong></span>
+              <span>Total stock: <strong className="text-gray-800">{catalog.reduce((s: number, i: any) => s + i.stock_quantity, 0)}</strong></span>
+              <span>Total pending: <strong className="text-yellow-700">{catalog.reduce((s: number, i: any) => s + i.pending_quantity, 0)}</strong></span>
+              <span>Total sold: <strong className="text-green-700">{catalog.reduce((s: number, i: any) => s + i.sold_quantity, 0)}</strong></span>
+            </div>
+          )}
         </div>
       )}
 
@@ -125,25 +162,137 @@ export default function SupplierDetailPage() {
       )}
 
       {showEdit && <SupplierModal supplier={supplier} onClose={() => setShowEdit(false)} />}
+
+      {showAddProduct && (
+        <ProductFormModal
+          supplierId={sid}
+          onClose={() => setShowAddProduct(false)}
+        />
+      )}
+
+      {editingProduct && (
+        <ProductFormModal
+          supplierId={sid}
+          existing={editingProduct}
+          onClose={() => setEditingProduct(null)}
+        />
+      )}
     </div>
   );
 }
 
-function StockRow({ item, onUpdate }: { item: any; onUpdate: (psId: number, stock: number) => void }) {
-  const [val, setVal] = useState(String(item.stock));
+function CatalogRow({ item, onEdit, onDelete }: { item: any; onEdit: () => void; onDelete: () => void }) {
+  const total = item.stock_quantity + item.pending_quantity + item.sold_quantity;
   return (
     <tr>
-      <td>{item.product_id}</td>
-      <td className="font-mono text-xs">{item.supplier_sku || "—"}</td>
-      <td>${item.cost.toFixed(2)}</td>
+      <td className="font-medium">{item.name}</td>
+      <td className="font-mono text-xs text-gray-500">{item.sku}</td>
+      <td>${parseFloat(item.unit_price).toFixed(2)}</td>
       <td>
-        <input type="number" className="input w-20 text-center" value={val} onChange={(e) => setVal(e.target.value)} />
+        <span className={item.stock_quantity === 0 ? "text-red-500 font-medium" : "text-gray-800"}>
+          {item.stock_quantity}
+        </span>
       </td>
-      <td>{item.lead_time_days}</td>
       <td>
-        <button className="text-xs text-blue-600 hover:underline" onClick={() => onUpdate(item.product_supplier_id, parseInt(val))}>Save</button>
+        <span className={item.pending_quantity > 0 ? "text-yellow-700 font-medium" : "text-gray-500"}>
+          {item.pending_quantity}
+        </span>
+      </td>
+      <td>
+        <span className={item.sold_quantity > 0 ? "text-green-700 font-medium" : "text-gray-500"}>
+          {item.sold_quantity}
+        </span>
+      </td>
+      <td className="text-gray-600">{total}</td>
+      <td>
+        <div className="flex items-center gap-2">
+          <button className="p-1 hover:text-blue-600 text-gray-400" onClick={onEdit}><PencilIcon className="w-4 h-4" /></button>
+          <button className="p-1 hover:text-red-500 text-gray-400" onClick={onDelete}><Trash2 className="w-4 h-4" /></button>
+        </div>
       </td>
     </tr>
+  );
+}
+
+function ProductFormModal({
+  supplierId,
+  existing,
+  onClose,
+}: {
+  supplierId: number;
+  existing?: any;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const isEdit = !!existing;
+  const [form, setForm] = useState({
+    name: existing?.name ?? "",
+    sku: existing?.sku ?? "",
+    unit_price: existing?.unit_price ? String(existing.unit_price) : "0",
+    stock_quantity: existing?.stock_quantity != null ? String(existing.stock_quantity) : "0",
+  });
+
+  const mut = useMutation({
+    mutationFn: (data: object) =>
+      isEdit
+        ? suppliersApi.updateProduct(supplierId, existing.id, data)
+        : suppliersApi.createProduct(supplierId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supplier-catalog", supplierId] });
+      toast.success(isEdit ? "Updated" : "Product added");
+      onClose();
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
+  });
+
+  const f = (k: string) => (e: any) => setForm((p) => ({ ...p, [k]: e.target.value }));
+
+  const handleSubmit = () => {
+    mut.mutate({
+      name: form.name,
+      sku: form.sku,
+      unit_price: parseFloat(form.unit_price) || 0,
+      stock_quantity: parseInt(form.stock_quantity) || 0,
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-md p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">{isEdit ? "Edit Product" : "Add Product to Catalog"}</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="label">Product Name *</label>
+            <input className="input" value={form.name} onChange={f("name")} placeholder="e.g. Red T-Shirt Size M" />
+          </div>
+          <div>
+            <label className="label">SKU *</label>
+            <input className="input" value={form.sku} onChange={f("sku")} placeholder="Supplier's internal SKU" />
+          </div>
+          <div>
+            <label className="label">Unit Price ($)</label>
+            <input className="input" type="number" step="0.01" min="0" value={form.unit_price} onChange={f("unit_price")} />
+          </div>
+          <div>
+            <label className="label">Stock Quantity</label>
+            <input className="input" type="number" min="0" value={form.stock_quantity} onChange={f("stock_quantity")} />
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button
+            className="btn-primary"
+            disabled={!form.name || !form.sku || mut.isPending}
+            onClick={handleSubmit}
+          >
+            {isEdit ? "Save" : "Add"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

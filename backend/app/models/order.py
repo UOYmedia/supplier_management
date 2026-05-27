@@ -70,6 +70,25 @@ class OrderLineItem(Base):
     supplier: Mapped["Supplier | None"] = relationship(back_populates="order_line_items")
     listing: Mapped["MarketplaceListing | None"] = relationship()
     label: Mapped["ShippingLabel | None"] = relationship(foreign_keys=[label_id])
+    fulfillment_items: Mapped[list["OrderFulfillmentItem"]] = relationship(back_populates="order_line_item", cascade="all, delete-orphan")
+
+
+class OrderFulfillmentItem(Base):
+    """Supplier-side allocation created when an order line item has product components."""
+    __tablename__ = "order_fulfillment_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_line_item_id: Mapped[int] = mapped_column(ForeignKey("order_line_items.id", ondelete="CASCADE"))
+    supplier_product_id: Mapped[int] = mapped_column(ForeignKey("supplier_products.id"))
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    fulfill_status: Mapped[FulfillStatus] = mapped_column(SAEnum(FulfillStatus), default=FulfillStatus.unfulfilled)
+    tracking_number: Mapped[str | None] = mapped_column(String(255))
+    label_id: Mapped[int | None] = mapped_column(ForeignKey("shipping_labels.id"))
+    fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    order_line_item: Mapped["OrderLineItem"] = relationship(back_populates="fulfillment_items")
+    supplier_product: Mapped["SupplierProduct"] = relationship(back_populates="fulfillment_items")
+    label: Mapped["ShippingLabel | None"] = relationship(foreign_keys=[label_id])
 
 
 class ShippingLabel(Base):

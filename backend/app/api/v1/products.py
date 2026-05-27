@@ -2,11 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
-from app.models.product import Product, ProductSupplier
-from app.models.supplier import Supplier
+from app.models.product import Product, ProductSupplier, ProductComponent
+from app.models.supplier import Supplier, SupplierProduct
 from app.schemas.product import (
     ProductCreate, ProductUpdate, ProductOut, ProductListOut,
     ProductSupplierCreate, ProductSupplierUpdate, ProductSupplierOut
+)
+from app.schemas.supplier_product import (
+    ProductComponentCreate, ProductComponentUpdate, ProductComponentOut
 )
 import pandas as pd
 import io
@@ -137,6 +140,67 @@ async def remove_product_supplier(product_id: int, ps_id: int, db: AsyncSession 
     await db.commit()
 
 
+# --- Product components (new inventory linking) ---
+
+@router.get("/{product_id}/components", response_model=list[ProductComponentOut])
+async def list_components(product_id: int, db: AsyncSession = Depends(get_db)):
+    await _get_or_404(product_id, db)
+    result = await db.execute(
+        select(ProductComponent).where(ProductComponent.product_id == product_id)
+    )
+    components = result.scalars().all()
+    return [await _component_out(c, db) for c in components]
+
+
+@router.post("/{product_id}/components", response_model=ProductComponentOut, status_code=201)
+async def add_component(product_id: int, body: ProductComponentCreate, db: AsyncSession = Depends(get_db)):
+    await _get_or_404(product_id, db)
+    sp = await db.get(SupplierProduct, body.supplier_product_id)
+    if not sp:
+        raise HTTPException(404, "Supplier product not found")
+    comp = ProductComponent(product_id=product_id, **body.model_dump())
+    db.add(comp)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(400, "This supplier product is already linked to this product")
+    await db.refresh(comp)
+    return await _component_out(comp, db)
+
+
+@router.patch("/{product_id}/components/{comp_id}", response_model=ProductComponentOut)
+async def update_component(
+    product_id: int, comp_id: int, body: ProductComponentUpdate, db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(ProductComponent).where(
+            ProductComponent.id == comp_id, ProductComponent.product_id == product_id
+        )
+    )
+    comp = result.scalar_one_or_none()
+    if not comp:
+        raise HTTPException(404, "Component not found")
+    comp.quantity = body.quantity
+    await db.commit()
+    await db.refresh(comp)
+    return await _component_out(comp, db)
+
+
+@router.delete("/{product_id}/components/{comp_id}", status_code=204)
+async def remove_component(product_id: int, comp_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(ProductComponent).where(
+            ProductComponent.id == comp_id, ProductComponent.product_id == product_id
+        )
+    )
+    comp = result.scalar_one_or_none()
+    if not comp:
+        raise HTTPException(404, "Component not found")
+    await db.delete(comp)
+    await db.commit()
+
+
 # --- CSV Import ---
 
 @router.post("/import/csv", status_code=201)
@@ -185,6 +249,22 @@ async def _get_or_404(product_id: int, db: AsyncSession) -> Product:
     if not p:
         raise HTTPException(404, "Product not found")
     return p
+
+
+async def _component_out(comp: ProductComponent, db: AsyncSession) -> ProductComponentOut:
+    sp = await db.get(SupplierProduct, comp.supplier_product_id)
+    sup = await db.get(Supplier, sp.supplier_id) if sp else None
+    return ProductComponentOut(
+        id=comp.id,
+        product_id=comp.product_id,
+        supplier_product_id=comp.supplier_product_id,
+        quantity=comp.quantity,
+        supplier_product_name=sp.name if sp else None,
+        supplier_product_sku=sp.sku if sp else None,
+        supplier_id=sp.supplier_id if sp else None,
+        supplier_name=sup.name if sup else None,
+        unit_price=sp.unit_price if sp else None,
+    )
 
 
 async def _product_out(product: Product, db: AsyncSession) -> ProductOut:

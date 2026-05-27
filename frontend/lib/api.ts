@@ -126,6 +126,7 @@ export const marketplaceApi = {
   listListings: (params?: object) => api.get("/marketplace/listings", { params }).then((r) => r.data),
   createListing: (data: object) => api.post("/marketplace/listings", data).then((r) => r.data),
   updateListing: (id: number, data: object) => api.patch(`/marketplace/listings/${id}`, data).then((r) => r.data),
+  autoMap: () => api.post("/marketplace/auto-map").then((r) => r.data),
   push: (data: object) => api.post("/marketplace/push", data).then((r) => r.data),
 };
 

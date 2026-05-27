@@ -7,7 +7,7 @@ from app.models.product import Product
 from app.schemas.marketplace import (
     ConnectionCreate, ConnectionUpdate, ConnectionOut,
     ListingCreate, ListingUpdate, ListingOut,
-    PushListingRequest, SyncResult
+    PushListingRequest, SyncResult, AutoMapResult
 )
 from app.integrations.amazon.sync import AmazonSync
 from app.integrations.shopify.sync import ShopifySync
@@ -75,6 +75,7 @@ async def test_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
 async def list_listings(
     connection_id: int | None = None,
     product_id: int | None = None,
+    unlinked: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
     q = select(MarketplaceListing)
@@ -82,11 +83,13 @@ async def list_listings(
         q = q.where(MarketplaceListing.connection_id == connection_id)
     if product_id:
         q = q.where(MarketplaceListing.product_id == product_id)
+    if unlinked:
+        q = q.where(MarketplaceListing.product_id.is_(None))
     result = await db.execute(q)
     listings = result.scalars().all()
     out = []
     for l in listings:
-        p = await db.get(Product, l.product_id)
+        p = await db.get(Product, l.product_id) if l.product_id else None
         data = {c.name: getattr(l, c.name) for c in l.__table__.columns}
         data["product_name"] = p.name if p else None
         data["product_sku"] = p.sku if p else None
@@ -112,15 +115,42 @@ async def update_listing(listing_id: int, body: ListingUpdate, db: AsyncSession 
     listing = await db.get(MarketplaceListing, listing_id)
     if not listing:
         raise HTTPException(404, "Listing not found")
-    for k, v in body.model_dump(exclude_none=True).items():
+    for k, v in body.model_dump(exclude_unset=True).items():
         setattr(listing, k, v)
     await db.commit()
     await db.refresh(listing)
-    p = await db.get(Product, listing.product_id)
+    p = await db.get(Product, listing.product_id) if listing.product_id else None
     data = {c.name: getattr(listing, c.name) for c in listing.__table__.columns}
     data["product_name"] = p.name if p else None
     data["product_sku"] = p.sku if p else None
     return ListingOut(**data)
+
+
+@router.post("/auto-map", response_model=AutoMapResult)
+async def auto_map_listings(db: AsyncSession = Depends(get_db)):
+    """Match unlinked listings to products by marketplace_sku = product.sku."""
+    q = await db.execute(
+        select(MarketplaceListing).where(MarketplaceListing.product_id.is_(None))
+    )
+    unlinked = q.scalars().all()
+
+    mapped = 0
+    unmatched = []
+    for listing in unlinked:
+        sku = listing.marketplace_sku
+        if not sku:
+            unmatched.append(f"(no SKU) {listing.title or listing.external_id or ''}")
+            continue
+        prod_result = await db.execute(select(Product).where(Product.sku == sku))
+        product = prod_result.scalar_one_or_none()
+        if product:
+            listing.product_id = product.id
+            mapped += 1
+        else:
+            unmatched.append(f"{sku} — {listing.title or ''}")
+
+    await db.commit()
+    return AutoMapResult(mapped=mapped, unmatched=unmatched)
 
 
 # --- Push to marketplace ---

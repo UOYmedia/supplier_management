@@ -45,7 +45,7 @@ class MarketplaceListing(Base):
     __tablename__ = "marketplace_listings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
     connection_id: Mapped[int] = mapped_column(ForeignKey("marketplace_connections.id", ondelete="CASCADE"))
     external_id: Mapped[str | None] = mapped_column(String(255), index=True)  # ASIN or Shopify product/variant ID
     marketplace_sku: Mapped[str | None] = mapped_column(String(100))
@@ -56,5 +56,5 @@ class MarketplaceListing(Base):
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    product: Mapped["Product"] = relationship(back_populates="listings")
+    product: Mapped["Product | None"] = relationship(back_populates="listings")
     connection: Mapped["MarketplaceConnection"] = relationship(back_populates="listings")

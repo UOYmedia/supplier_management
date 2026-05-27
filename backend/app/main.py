@@ -58,6 +58,8 @@ async def _run_migrations():
         # Amazon MFN: base64 PDF label storage + wider label_url
         "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS label_data TEXT",
         "ALTER TABLE shipping_labels ALTER COLUMN label_url TYPE TEXT",
+        # Allow marketplace listings without a linked shop product (for sync + mapping flow)
+        "ALTER TABLE marketplace_listings ALTER COLUMN product_id DROP NOT NULL",
     ]
     try:
         async with engine.begin() as conn:

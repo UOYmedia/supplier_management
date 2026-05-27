@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { marketplaceApi } from "@/lib/api";
 import toast from "react-hot-toast";
 import { Plus, RefreshCw, Zap, Trash2, CheckCircle, XCircle, X, Package, Link2, MapPin, List } from "lucide-react";
+import NextLink from "next/link";
 
 export default function MarketplacePage() {
   const qc = useQueryClient();
@@ -54,6 +55,9 @@ export default function MarketplacePage() {
       <div className="page-header">
         <h1 className="page-title">Marketplace Connections</h1>
         <div className="flex gap-2">
+          <NextLink href="/marketplace/listings" className="btn-secondary flex items-center gap-1 text-sm">
+            <List className="w-4 h-4" /> Listings Mapping
+          </NextLink>
           <a
             href="/api/v1/shopify/auth?shop=gingerglow.myshopify.com"
             className="btn-secondary flex items-center gap-1 text-sm"

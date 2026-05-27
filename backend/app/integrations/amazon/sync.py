@@ -106,6 +106,7 @@ class AmazonSync(MarketplaceSyncer):
 
                 try:
                     items_data = await self.client.get(f"/orders/v0/orders/{ext_id}/orderItems")
+                    created_lis = []
                     for item in items_data.get("payload", {}).get("OrderItems", []):
                         listing = await db.execute(
                             select(MarketplaceListing).where(
@@ -114,16 +115,22 @@ class AmazonSync(MarketplaceSyncer):
                             )
                         )
                         listing_obj = listing.scalar_one_or_none()
-                        db.add(OrderLineItem(
+                        li = OrderLineItem(
                             order_id=order.id,
                             product_id=listing_obj.product_id if listing_obj else None,
                             listing_id=listing_obj.id if listing_obj else None,
-                            external_line_item_id=item.get("OrderItemId"),   # needed for MFN shipping
+                            external_line_item_id=item.get("OrderItemId"),
                             product_name=item.get("Title", ""),
                             sku=item.get("SellerSKU"),
                             quantity=int(item.get("QuantityOrdered", 1)),
                             price=float(item.get("ItemPrice", {}).get("Amount", 0)),
-                        ))
+                        )
+                        db.add(li)
+                        created_lis.append(li)
+                    await db.flush()
+                    from app.integrations.fulfillment_helper import create_fulfillment_items_for_line_item
+                    for li in created_lis:
+                        await create_fulfillment_items_for_line_item(db, li)
                 except Exception:
                     pass
 

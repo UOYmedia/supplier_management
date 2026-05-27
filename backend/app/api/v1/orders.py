@@ -234,6 +234,11 @@ async def update_fulfillment_item(
     await _recalculate_order_status(order, db)
     await db.commit()
     await db.refresh(fi)
+
+    # Auto-push tracking to marketplace after commit (best-effort)
+    if body.fulfill_status == FulfillStatus.shipped and fi.tracking_number:
+        await _push_tracking_to_marketplace(fi, order, db)
+
     return await _fulfillment_item_out(fi, db)
 
 
@@ -350,6 +355,65 @@ async def _line_item_out(li: OrderLineItem, db: AsyncSession) -> OrderLineItemOu
     data["supplier_name"] = sup.name if sup else None
     data["fulfillment_items"] = fulfillment_items
     return OrderLineItemOut(**data)
+
+
+async def _push_tracking_to_marketplace(fi: OrderFulfillmentItem, order: Order, db: AsyncSession) -> None:
+    """Push tracking number to AMZ/Shopify after a fulfillment item is marked shipped."""
+    try:
+        li = await db.get(OrderLineItem, fi.order_line_item_id)
+        if not li or not li.external_line_item_id or not fi.tracking_number:
+            return
+        if not order.connection_id or not order.external_order_id:
+            return
+
+        from app.models.marketplace import MarketplaceConnection
+        conn = await db.get(MarketplaceConnection, order.connection_id)
+        if not conn:
+            return
+
+        creds = conn.credentials or {}
+        sp = await db.get(SupplierProduct, fi.supplier_product_id)
+        carrier = "Other"
+        if li.label_id:
+            label = await db.get(ShippingLabel, li.label_id)
+            if label:
+                carrier = label.carrier or "Other"
+
+        if order.marketplace == "amazon":
+            from app.integrations.amazon.client import AmazonSPClient
+            from app.integrations.amazon.fulfillment import AmazonFulfillment
+            client = AmazonSPClient(
+                client_id=creds.get("client_id", ""),
+                client_secret=creds.get("client_secret", ""),
+                refresh_token=creds.get("refresh_token", ""),
+                marketplace_id=conn.marketplace_id or "ATVPDKIKX0DER",
+            )
+            await AmazonFulfillment(client).confirm_shipment(
+                amazon_order_id=order.external_order_id,
+                order_item_id=li.external_line_item_id,
+                quantity=li.quantity,
+                tracking_number=fi.tracking_number,
+                carrier_code=carrier,
+            )
+
+        elif order.marketplace == "shopify":
+            from app.integrations.shopify.client import ShopifyClient
+            from app.integrations.shopify.fulfillment import ShopifyFulfillment
+            client = ShopifyClient(
+                shop_url=conn.shop_url or creds.get("shop_url", ""),
+                access_token=creds.get("access_token", ""),
+            )
+            sup = await db.get(Supplier, li.supplier_id) if li.supplier_id else None
+            location_id = int(sup.shopify_location_id) if sup and sup.shopify_location_id else None
+            await ShopifyFulfillment(client).create_fulfillment(
+                shopify_order_id=order.external_order_id,
+                line_item_id=li.external_line_item_id,
+                tracking_number=fi.tracking_number,
+                carrier=carrier,
+                location_id=location_id,
+            )
+    except Exception as e:
+        print(f"WARNING: push tracking to marketplace failed: {e}", flush=True)
 
 
 async def _order_out(order: Order, db: AsyncSession) -> OrderOut:

@@ -268,6 +268,11 @@ class ShopifySync(MarketplaceSyncer):
 
             await db.flush()
 
+            # Create fulfillment items for products with components
+            from app.integrations.fulfillment_helper import create_fulfillment_items_for_line_item
+            for li in li_by_shopify_id.values():
+                await create_fulfillment_items_for_line_item(db, li)
+
             # Assign suppliers via fulfillment_orders (best effort — skip on error)
             if location_supplier_map:
                 await self._assign_suppliers_from_fulfillment_orders(

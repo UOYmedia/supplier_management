@@ -5,7 +5,7 @@ from sqlalchemy import select, func
 from app.core.database import get_db
 from app.models.supplier import Supplier, Invoice, InvoiceLineItem, SupplierProduct
 from app.models.product import ProductSupplier
-from app.models.order import OrderLineItem, OrderFulfillmentItem, FulfillStatus
+from app.models.order import Order, OrderLineItem, OrderFulfillmentItem, FulfillStatus
 from app.schemas.supplier import (
     SupplierCreate, SupplierUpdate, SupplierOut, SupplierListOut,
     InvoiceCreate, InvoiceUpdate, InvoiceOut
@@ -326,13 +326,28 @@ async def supplier_orders(
     result = await db.execute(
         select(OrderLineItem)
         .where(OrderLineItem.supplier_id == supplier_id)
+        .order_by(OrderLineItem.id.desc())
         .offset(skip).limit(limit)
     )
-    items = result.scalars().all()
-    return [
-        {
+    items = list(result.scalars().all())
+
+    order_ids = list({li.order_id for li in items})
+    orders_map: dict[int, Order] = {}
+    if order_ids:
+        order_q = await db.execute(select(Order).where(Order.id.in_(order_ids)))
+        orders_map = {o.id: o for o in order_q.scalars().all()}
+
+    out = []
+    for li in items:
+        order = orders_map.get(li.order_id)
+        out.append({
             "id": li.id,
             "order_id": li.order_id,
+            "external_order_id": order.external_order_id if order else None,
+            "marketplace": order.marketplace if order else None,
+            "ordered_at": order.ordered_at.isoformat() if order else None,
+            "buyer_name": order.buyer_name if order else None,
+            "order_status": order.status if order else None,
             "product_id": li.product_id,
             "product_name": li.product_name,
             "sku": li.sku,
@@ -341,9 +356,9 @@ async def supplier_orders(
             "base_cost": float(li.base_cost),
             "fulfill_status": li.fulfill_status,
             "tracking_number": li.tracking_number,
-        }
-        for li in items
-    ]
+            "label_id": li.label_id,
+        })
+    return out
 
 
 # --- Invoices ---

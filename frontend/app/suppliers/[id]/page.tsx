@@ -346,6 +346,10 @@ function ProductFormModal({
     sku: existing?.sku ?? "",
     unit_price: existing?.unit_price ? String(existing.unit_price) : "0",
     stock_quantity: existing?.stock_quantity != null ? String(existing.stock_quantity) : "0",
+    weight: existing?.weight != null ? String(existing.weight) : "",
+    length: existing?.length != null ? String(existing.length) : "",
+    width: existing?.width != null ? String(existing.width) : "",
+    height: existing?.height != null ? String(existing.height) : "",
   });
 
   const mut = useMutation({
@@ -364,11 +368,16 @@ function ProductFormModal({
   const f = (k: string) => (e: any) => setForm((p) => ({ ...p, [k]: e.target.value }));
 
   const handleSubmit = () => {
+    const parseOpt = (s: string) => (s === "" ? null : parseFloat(s) || 0);
     mut.mutate({
       name: form.name,
       sku: form.sku,
       unit_price: parseFloat(form.unit_price) || 0,
       stock_quantity: parseInt(form.stock_quantity) || 0,
+      weight: parseOpt(form.weight),
+      length: parseOpt(form.length),
+      width: parseOpt(form.width),
+      height: parseOpt(form.height),
     });
   };
 
@@ -395,6 +404,28 @@ function ProductFormModal({
           <div>
             <label className="label">Stock Quantity</label>
             <input className="input" type="number" min="0" value={form.stock_quantity} onChange={f("stock_quantity")} />
+          </div>
+          <div className="border-t border-gray-100 pt-3 mt-1">
+            <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Per-unit shipping dimensions</div>
+            <p className="text-xs text-gray-400 mb-2">Used to auto-estimate parcel size when buying labels. Leave blank if unknown.</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="label">Weight (oz)</label>
+                <input className="input" type="number" step="0.01" min="0" value={form.weight} onChange={f("weight")} />
+              </div>
+              <div>
+                <label className="label">Length (in)</label>
+                <input className="input" type="number" step="0.1" min="0" value={form.length} onChange={f("length")} />
+              </div>
+              <div>
+                <label className="label">Width (in)</label>
+                <input className="input" type="number" step="0.1" min="0" value={form.width} onChange={f("width")} />
+              </div>
+              <div>
+                <label className="label">Height (in)</label>
+                <input className="input" type="number" step="0.1" min="0" value={form.height} onChange={f("height")} />
+              </div>
+            </div>
           </div>
         </div>
         <div className="flex justify-end gap-2 mt-5">

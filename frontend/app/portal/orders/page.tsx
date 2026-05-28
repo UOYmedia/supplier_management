@@ -255,6 +255,27 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
   const [rates, setRates] = useState<any[]>([]);
   const [selectedRate, setSelectedRate] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [estimateInfo, setEstimateInfo] = useState<{ complete: boolean; missing: any[] } | null>(null);
+
+  useEffect(() => {
+    const token = localStorage.getItem("supplier_token");
+    if (!token) return;
+    fetch(`/api/v1/portal/orders/${orderId}/parcel-estimate`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((est: any) => {
+        if (!est) return;
+        setParcel({
+          weight: est.weight > 0 ? String(est.weight) : "",
+          length: est.length > 0 ? String(est.length) : "",
+          width: est.width > 0 ? String(est.width) : "",
+          height: est.height > 0 ? String(est.height) : "",
+        });
+        setEstimateInfo({ complete: !!est.complete, missing: est.missing || [] });
+      })
+      .catch(() => {});
+  }, [orderId]);
 
   const pf = (k: string) => (e: any) => setParcel((p) => ({ ...p, [k]: e.target.value }));
   const parcelValid = parcel.weight && parcel.length && parcel.width && parcel.height;
@@ -341,6 +362,15 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
             <div className="mb-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
               Enter parcel dimensions to get live USPS rates. Label cost will be recorded against the company.
             </div>
+            {estimateInfo && (
+              <div className={`mb-3 p-2 rounded-lg text-xs ${
+                estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
+              }`}>
+                {estimateInfo.complete
+                  ? "✓ Auto-filled from catalog dimensions. Adjust if needed."
+                  : `Partial auto-fill — ${estimateInfo.missing.length} item(s) missing dimensions.`}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="label">Weight (oz) *</label>

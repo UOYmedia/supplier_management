@@ -207,6 +207,22 @@ async def _supplier_line_items_for_order(
     return list(res.scalars().all())
 
 
+@router.get("/orders/{order_id}/parcel-estimate")
+async def portal_parcel_estimate(
+    order_id: int,
+    supplier: Supplier = Depends(get_current_supplier),
+    db: AsyncSession = Depends(get_db),
+):
+    """Same parcel estimate as the admin endpoint but scoped to the current supplier."""
+    from app.api.v1.orders import estimate_parcel
+    return await estimate_parcel(
+        order_id=order_id,
+        supplier_id=supplier.id,
+        line_item_ids=None,
+        db=db,
+    )
+
+
 @router.post("/orders/easypost/rates", response_model=RatesResponse)
 async def portal_easypost_rates(
     body: PortalRatesRequest,

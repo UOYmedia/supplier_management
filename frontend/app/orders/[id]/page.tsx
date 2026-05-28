@@ -565,6 +565,22 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
   const [services, setServices] = useState<any[]>([]);
   const [selectedService, setSelectedService] = useState<any>(null);
   const [step, setStep] = useState<"parcel" | "services">("parcel");
+  const [estimateInfo, setEstimateInfo] = useState<{ complete: boolean; missing: any[] } | null>(null);
+
+  useEffect(() => {
+    ordersApi
+      .parcelEstimate(orderId, { supplier_id: supplierId, line_item_ids: lineItemIds })
+      .then((est: any) => {
+        setParcel({
+          weight: est.weight > 0 ? String(est.weight) : "",
+          length: est.length > 0 ? String(est.length) : "",
+          width: est.width > 0 ? String(est.width) : "",
+          height: est.height > 0 ? String(est.height) : "",
+        });
+        setEstimateInfo({ complete: !!est.complete, missing: est.missing || [] });
+      })
+      .catch(() => {});
+  }, [orderId, supplierId]);
 
   const getRatesMut = useMutation({
     mutationFn: () =>
@@ -634,6 +650,15 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
             <div className="mb-4 p-3 bg-orange-50 rounded-lg text-xs text-orange-700">
               Amazon Order: <strong className="font-mono">{amazonOrderId}</strong> · {lineItemIds.length} item(s)
             </div>
+            {estimateInfo && (
+              <div className={`mb-3 p-2 rounded-lg text-xs ${
+                estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
+              }`}>
+                {estimateInfo.complete
+                  ? "✓ Auto-filled from catalog dimensions. Adjust if needed."
+                  : `Partial auto-fill — ${estimateInfo.missing.length} item(s) missing dimensions.`}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="label">Weight (oz) *</label>
@@ -749,6 +774,22 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
   const [rates, setRates] = useState<any[]>([]);
   const [selectedRate, setSelectedRate] = useState<string | null>(null);
   const [step, setStep] = useState<"parcel" | "rates">("parcel");
+  const [estimateInfo, setEstimateInfo] = useState<{ complete: boolean; missing: any[] } | null>(null);
+
+  useEffect(() => {
+    ordersApi
+      .parcelEstimate(orderId, { supplier_id: supplierId, line_item_ids: lineItemIds })
+      .then((est: any) => {
+        setParcel({
+          weight: est.weight > 0 ? String(est.weight) : "",
+          length: est.length > 0 ? String(est.length) : "",
+          width: est.width > 0 ? String(est.width) : "",
+          height: est.height > 0 ? String(est.height) : "",
+        });
+        setEstimateInfo({ complete: !!est.complete, missing: est.missing || [] });
+      })
+      .catch(() => {});
+  }, [orderId, supplierId]);
 
   const getRatesMut = useMutation({
     mutationFn: () =>
@@ -809,6 +850,15 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
             <div className="mb-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
               Covers <strong>{lineItemIds.length}</strong> item(s). Enter parcel dimensions for live carrier rates.
             </div>
+            {estimateInfo && (
+              <div className={`mb-3 p-2 rounded-lg text-xs ${
+                estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
+              }`}>
+                {estimateInfo.complete
+                  ? "✓ Auto-filled from catalog dimensions. Adjust if needed."
+                  : `Partial auto-fill — ${estimateInfo.missing.length} item(s) missing dimensions. Edit any field below or set per-unit dimensions on the supplier catalog.`}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="label">Weight (oz) *</label>

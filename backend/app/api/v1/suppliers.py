@@ -161,7 +161,14 @@ async def create_supplier_product(
     return await _supplier_product_out(sp, db)
 
 
-CATALOG_CSV_COLUMNS = ["name", "sku", "unit_price", "stock_quantity"]
+CATALOG_CSV_COLUMNS = [
+    "name", "sku", "unit_price", "stock_quantity",
+    "weight", "length", "width", "height",
+]
+
+
+def _fmt_dim(v) -> str:
+    return "" if v is None else f"{v}"
 
 
 @router.get("/{supplier_id}/products/export.csv")
@@ -176,7 +183,10 @@ async def export_supplier_catalog(supplier_id: int, db: AsyncSession = Depends(g
     writer = csv.writer(buf)
     writer.writerow(CATALOG_CSV_COLUMNS)
     for sp in products:
-        writer.writerow([sp.name, sp.sku, f"{sp.unit_price:.2f}", sp.stock_quantity])
+        writer.writerow([
+            sp.name, sp.sku, f"{sp.unit_price:.2f}", sp.stock_quantity,
+            _fmt_dim(sp.weight), _fmt_dim(sp.length), _fmt_dim(sp.width), _fmt_dim(sp.height),
+        ])
 
     safe_name = "".join(c if c.isalnum() else "_" for c in supplier.name)[:40] or "supplier"
     filename = f"{safe_name}_catalog_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
@@ -193,7 +203,7 @@ async def supplier_catalog_template(supplier_id: int, db: AsyncSession = Depends
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(CATALOG_CSV_COLUMNS)
-    writer.writerow(["Example Product", "SKU-001", "9.99", "100"])
+    writer.writerow(["Example Product", "SKU-001", "9.99", "100", "8.5", "12", "9", "4"])
     return Response(
         content=buf.getvalue(),
         media_type="text/csv",
@@ -266,11 +276,32 @@ async def import_supplier_catalog(
             errors.append(f"Row {idx} (SKU {sku}): invalid stock_quantity")
             continue
 
+        def _opt_dec(key: str):
+            raw = norm.get(key) or ""
+            if not raw:
+                return None
+            try:
+                return Decimal(raw)
+            except InvalidOperation:
+                errors.append(f"Row {idx} (SKU {sku}): invalid {key}")
+                return "__INVALID__"
+
+        weight = _opt_dec("weight")
+        length = _opt_dec("length")
+        width = _opt_dec("width")
+        height = _opt_dec("height")
+        if any(v == "__INVALID__" for v in (weight, length, width, height)):
+            continue
+
         sp = by_sku.get(sku)
         if sp:
             sp.name = name
             sp.unit_price = unit_price
             sp.stock_quantity = stock_quantity
+            if weight is not None: sp.weight = weight
+            if length is not None: sp.length = length
+            if width is not None: sp.width = width
+            if height is not None: sp.height = height
             updated += 1
         else:
             sp = SupplierProduct(
@@ -279,6 +310,10 @@ async def import_supplier_catalog(
                 sku=sku,
                 unit_price=unit_price,
                 stock_quantity=stock_quantity,
+                weight=weight,
+                length=length,
+                width=width,
+                height=height,
             )
             db.add(sp)
             by_sku[sku] = sp
@@ -468,6 +503,10 @@ async def _supplier_product_out(sp: SupplierProduct, db: AsyncSession) -> Suppli
         stock_quantity=sp.stock_quantity,
         pending_quantity=int(pending_result.scalar()),
         sold_quantity=int(sold_result.scalar()),
+        weight=sp.weight,
+        length=sp.length,
+        width=sp.width,
+        height=sp.height,
         created_at=sp.created_at,
         updated_at=sp.updated_at,
     )

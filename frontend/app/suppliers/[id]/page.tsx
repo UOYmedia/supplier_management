@@ -4,9 +4,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { suppliersApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Download, Pencil, Plus, Trash2, Upload, X, Pencil as PencilIcon } from "lucide-react";
+import { ArrowLeft, Download, Pencil, Plus, Trash2, Truck, Upload, X, Pencil as PencilIcon } from "lucide-react";
 import Link from "next/link";
 import { SupplierModal } from "../supplier-modal";
+import { OrderStatusBadge } from "../../orders/order-status-badge";
 
 export default function SupplierDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -168,26 +169,58 @@ export default function SupplierDetailPage() {
       )}
 
       {tab === "orders" && (
-        <div className="card table-wrapper">
-          <table>
-            <thead><tr><th>Order ID</th><th>Product</th><th>SKU</th><th>Qty</th><th>Price</th><th>Cost</th><th>Status</th><th>Tracking</th></tr></thead>
-            <tbody>
-              {orders.length === 0 ? (
-                <tr><td colSpan={8} className="text-center py-6 text-gray-400">No orders.</td></tr>
-              ) : orders.map((o: any) => (
-                <tr key={o.id}>
-                  <td><Link href={`/orders/${o.order_id}`} className="text-blue-600 hover:underline">#{o.order_id}</Link></td>
-                  <td>{o.product_name}</td>
-                  <td className="font-mono text-xs">{o.sku || "—"}</td>
-                  <td>{o.quantity}</td>
-                  <td>${o.price.toFixed(2)}</td>
-                  <td>${o.base_cost.toFixed(2)}</td>
-                  <td><FulfillBadge status={o.fulfill_status} /></td>
-                  <td className="text-xs text-gray-500">{o.tracking_number || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div>
+          {orders.length === 0 ? (
+            <div className="card p-6 text-center text-gray-400">No orders.</div>
+          ) : groupOrders(orders).map((group: any) => {
+            const unshipped = group.items.filter((i: any) => i.fulfill_status === "unfulfilled" || i.fulfill_status === "pending");
+            const subtotal = group.items.reduce((s: number, i: any) => s + i.base_cost * i.quantity, 0);
+            return (
+              <div key={group.order_id} className="card mb-4">
+                <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Link href={`/orders/${group.order_id}`} className="text-blue-600 hover:underline font-semibold text-sm">
+                        Order #{group.order_id}
+                      </Link>
+                      {group.external_order_id && <span className="font-mono text-xs text-gray-400">{group.external_order_id}</span>}
+                      {group.marketplace && <span className="text-xs text-gray-400 capitalize">{group.marketplace}</span>}
+                      {group.order_status && <OrderStatusBadge status={group.order_status} />}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      {group.items.length} item(s) · {group.buyer_name || "—"} · {group.ordered_at ? new Date(group.ordered_at).toLocaleDateString() : "—"} · supplier subtotal ${subtotal.toFixed(2)}
+                    </div>
+                  </div>
+                  {unshipped.length > 0 && (
+                    <Link
+                      href={`/orders/${group.order_id}?buy_label_supplier=${sid}`}
+                      className="btn-secondary text-xs py-1 whitespace-nowrap"
+                    >
+                      <Truck className="w-3 h-3" /> Buy Label ({unshipped.length})
+                    </Link>
+                  )}
+                </div>
+                <div className="table-wrapper">
+                  <table>
+                    <thead><tr><th>Product</th><th>SKU</th><th>Qty</th><th>Price</th><th>Cost</th><th>Status</th><th>Tracking</th></tr></thead>
+                    <tbody>
+                      {group.items.map((o: any) => (
+                        <tr key={o.id}>
+                          <td>{o.product_name}</td>
+                          <td className="font-mono text-xs">{o.sku || "—"}</td>
+                          <td>{o.quantity}</td>
+                          <td>${o.price.toFixed(2)}</td>
+                          <td>${o.base_cost.toFixed(2)}</td>
+                          <td><FulfillBadge status={o.fulfill_status} /></td>
+                          <td className="text-xs text-gray-500">{o.tracking_number || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -237,6 +270,31 @@ export default function SupplierDetailPage() {
       )}
     </div>
   );
+}
+
+function groupOrders(items: any[]) {
+  const map = new Map<number, any>();
+  for (const li of items) {
+    let g = map.get(li.order_id);
+    if (!g) {
+      g = {
+        order_id: li.order_id,
+        external_order_id: li.external_order_id,
+        marketplace: li.marketplace,
+        ordered_at: li.ordered_at,
+        buyer_name: li.buyer_name,
+        order_status: li.order_status,
+        items: [],
+      };
+      map.set(li.order_id, g);
+    }
+    g.items.push(li);
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    const da = a.ordered_at ? Date.parse(a.ordered_at) : 0;
+    const db = b.ordered_at ? Date.parse(b.ordered_at) : 0;
+    return db - da;
+  });
 }
 
 function CatalogRow({ item, onEdit, onDelete }: { item: any; onEdit: () => void; onDelete: () => void }) {

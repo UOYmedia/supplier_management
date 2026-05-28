@@ -1,8 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, suppliersApi, easypostApi, amazonShippingApi } from "@/lib/api";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
 import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag, ExternalLink, Download } from "lucide-react";
 import Link from "next/link";
@@ -14,8 +14,10 @@ export default function OrderDetailPage() {
   const { id } = useParams<{ id: string }>();
   const oid = parseInt(id);
   const qc = useQueryClient();
+  const searchParams = useSearchParams();
   const [showLabel, setShowLabel] = useState<{ supplierId: number; lineItemIds: number[] } | null>(null);
   const [assigningItem, setAssigningItem] = useState<number | null>(null);
+  const [autoOpenedForSupplier, setAutoOpenedForSupplier] = useState<number | null>(null);
 
   const { data: order } = useQuery({ queryKey: ["order", oid], queryFn: () => ordersApi.get(oid) });
   const { data: labels = [] } = useQuery({ queryKey: ["labels", oid], queryFn: () => ordersApi.listLabels(oid) });
@@ -36,6 +38,24 @@ export default function OrderDetailPage() {
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
+
+  // Auto-open Buy Label modal when navigated from supplier orders tab
+  useEffect(() => {
+    if (!order || autoOpenedForSupplier !== null) return;
+    const raw = searchParams.get("buy_label_supplier");
+    if (!raw) return;
+    const sid = parseInt(raw);
+    if (Number.isNaN(sid)) return;
+    const items = order.line_items.filter(
+      (li: any) =>
+        li.supplier_id === sid &&
+        (li.fulfill_status === "unfulfilled" || li.fulfill_status === "pending")
+    );
+    if (items.length > 0) {
+      setShowLabel({ supplierId: sid, lineItemIds: items.map((li: any) => li.id) });
+      setAutoOpenedForSupplier(sid);
+    }
+  }, [order, searchParams, autoOpenedForSupplier]);
 
   if (!order) return <div className="p-6 text-gray-400">Loading…</div>;
 

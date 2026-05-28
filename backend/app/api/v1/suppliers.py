@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
@@ -12,7 +13,10 @@ from app.schemas.supplier import (
 from app.schemas.supplier_product import (
     SupplierProductCreate, SupplierProductUpdate, SupplierProductOut
 )
+import csv
+import io
 import uuid
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
@@ -155,6 +159,123 @@ async def create_supplier_product(
         raise HTTPException(400, f"SKU '{body.sku}' already exists for this supplier")
     await db.refresh(sp)
     return await _supplier_product_out(sp, db)
+
+
+CATALOG_CSV_COLUMNS = ["name", "sku", "unit_price", "stock_quantity"]
+
+
+@router.get("/{supplier_id}/products/export.csv")
+async def export_supplier_catalog(supplier_id: int, db: AsyncSession = Depends(get_db)):
+    supplier = await _get_or_404(supplier_id, db)
+    result = await db.execute(
+        select(SupplierProduct).where(SupplierProduct.supplier_id == supplier_id)
+    )
+    products = result.scalars().all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(CATALOG_CSV_COLUMNS)
+    for sp in products:
+        writer.writerow([sp.name, sp.sku, f"{sp.unit_price:.2f}", sp.stock_quantity])
+
+    safe_name = "".join(c if c.isalnum() else "_" for c in supplier.name)[:40] or "supplier"
+    filename = f"{safe_name}_catalog_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{supplier_id}/products/template.csv")
+async def supplier_catalog_template(supplier_id: int, db: AsyncSession = Depends(get_db)):
+    await _get_or_404(supplier_id, db)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(CATALOG_CSV_COLUMNS)
+    writer.writerow(["Example Product", "SKU-001", "9.99", "100"])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="catalog_template.csv"'},
+    )
+
+
+@router.post("/{supplier_id}/products/import/csv", status_code=201)
+async def import_supplier_catalog(
+    supplier_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_or_404(supplier_id, db)
+
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "CSV must be UTF-8 encoded")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(400, "CSV is empty")
+
+    fieldnames = {(f or "").strip().lower() for f in reader.fieldnames}
+    missing = {"name", "sku"} - fieldnames
+    if missing:
+        raise HTTPException(400, f"CSV missing required columns: {sorted(missing)}")
+
+    existing_q = await db.execute(
+        select(SupplierProduct).where(SupplierProduct.supplier_id == supplier_id)
+    )
+    by_sku: dict[str, SupplierProduct] = {sp.sku: sp for sp in existing_q.scalars().all()}
+
+    created = updated = 0
+    errors: list[str] = []
+    seen_skus: set[str] = set()
+
+    for idx, row in enumerate(reader, start=2):  # row 1 is header
+        norm = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+        sku = norm.get("sku", "")
+        name = norm.get("name", "")
+        if not sku or not name:
+            errors.append(f"Row {idx}: missing name or sku")
+            continue
+        if sku in seen_skus:
+            errors.append(f"Row {idx}: duplicate SKU '{sku}' in file")
+            continue
+        seen_skus.add(sku)
+
+        try:
+            unit_price = Decimal(norm["unit_price"]) if norm.get("unit_price") else Decimal("0")
+        except (InvalidOperation, KeyError):
+            errors.append(f"Row {idx} (SKU {sku}): invalid unit_price")
+            continue
+        try:
+            stock_quantity = int(norm["stock_quantity"]) if norm.get("stock_quantity") else 0
+        except (ValueError, KeyError):
+            errors.append(f"Row {idx} (SKU {sku}): invalid stock_quantity")
+            continue
+
+        sp = by_sku.get(sku)
+        if sp:
+            sp.name = name
+            sp.unit_price = unit_price
+            sp.stock_quantity = stock_quantity
+            updated += 1
+        else:
+            sp = SupplierProduct(
+                supplier_id=supplier_id,
+                name=name,
+                sku=sku,
+                unit_price=unit_price,
+                stock_quantity=stock_quantity,
+            )
+            db.add(sp)
+            by_sku[sku] = sp
+            created += 1
+
+    await db.commit()
+    return {"created": created, "updated": updated, "errors": errors}
 
 
 @router.get("/{supplier_id}/products/{sp_id}", response_model=SupplierProductOut)

@@ -1,5 +1,16 @@
 import axios from "axios";
 
+function downloadBlob(data: Blob, filename: string) {
+  const url = URL.createObjectURL(data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const api = axios.create({
   baseURL: "/api/v1",
   headers: { "Content-Type": "application/json" },
@@ -69,6 +80,23 @@ export const suppliersApi = {
   updateProduct: (id: number, spId: number, data: object) =>
     api.patch(`/suppliers/${id}/products/${spId}`, data).then((r) => r.data),
   deleteProduct: (id: number, spId: number) => api.delete(`/suppliers/${id}/products/${spId}`),
+  exportCatalog: (id: number, filename: string) =>
+    api
+      .get(`/suppliers/${id}/products/export.csv`, { responseType: "blob" })
+      .then((r) => downloadBlob(r.data, filename)),
+  downloadCatalogTemplate: (id: number) =>
+    api
+      .get(`/suppliers/${id}/products/template.csv`, { responseType: "blob" })
+      .then((r) => downloadBlob(r.data, "catalog_template.csv")),
+  importCatalog: (id: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return api
+      .post(`/suppliers/${id}/products/import/csv`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
+  },
   orders: (id: number, params?: object) => api.get(`/suppliers/${id}/orders`, { params }).then((r) => r.data),
   invoices: (id: number) => api.get(`/suppliers/${id}/invoices`).then((r) => r.data),
   createInvoice: (id: number, data: object) => api.post(`/suppliers/${id}/invoices`, data).then((r) => r.data),

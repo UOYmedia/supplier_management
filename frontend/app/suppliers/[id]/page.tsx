@@ -1,10 +1,10 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { suppliersApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Pencil, Plus, Trash2, X, Pencil as PencilIcon } from "lucide-react";
+import { ArrowLeft, Download, Pencil, Plus, Trash2, Upload, X, Pencil as PencilIcon } from "lucide-react";
 import Link from "next/link";
 import { SupplierModal } from "../supplier-modal";
 
@@ -16,6 +16,7 @@ export default function SupplierDetailPage() {
   const [showEdit, setShowEdit] = useState(false);
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const { data: supplier } = useQuery({ queryKey: ["supplier", sid], queryFn: () => suppliersApi.get(sid) });
   const { data: catalog = [] } = useQuery({ queryKey: ["supplier-catalog", sid], queryFn: () => suppliersApi.listProducts(sid) });
@@ -26,6 +27,30 @@ export default function SupplierDetailPage() {
     mutationFn: (spId: number) => suppliersApi.deleteProduct(sid, spId),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["supplier-catalog", sid] }); toast.success("Deleted"); },
     onError: () => toast.error("Cannot delete — product is used by components"),
+  });
+
+  const importMut = useMutation({
+    mutationFn: (file: File) => suppliersApi.importCatalog(sid, file),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: ["supplier-catalog", sid] });
+      const msg = `Imported: ${data.created} created, ${data.updated} updated`;
+      if (data.errors?.length) {
+        toast.error(`${msg}. ${data.errors.length} row(s) skipped — see console.`);
+        console.warn("Catalog import errors:", data.errors);
+      } else {
+        toast.success(msg);
+      }
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Import failed"),
+  });
+
+  const exportMut = useMutation({
+    mutationFn: () => {
+      const safe = (supplier?.name || "supplier").replace(/[^a-z0-9]+/gi, "_").slice(0, 40);
+      const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      return suppliersApi.exportCatalog(sid, `${safe}_catalog_${date}.csv`);
+    },
+    onError: () => toast.error("Export failed"),
   });
 
   const markPaidMut = useMutation({
@@ -62,10 +87,43 @@ export default function SupplierDetailPage() {
 
       {tab === "catalog" && (
         <div>
-          <div className="flex justify-end mb-3">
-            <button className="btn-primary" onClick={() => setShowAddProduct(true)}>
-              <Plus className="w-4 h-4" /> Add Product
+          <div className="flex justify-between items-center mb-3">
+            <button
+              className="text-xs text-blue-600 hover:underline"
+              onClick={() => suppliersApi.downloadCatalogTemplate(sid)}
+            >
+              Download CSV template
             </button>
+            <div className="flex gap-2">
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) importMut.mutate(file);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                className="btn-secondary"
+                onClick={() => fileRef.current?.click()}
+                disabled={importMut.isPending}
+              >
+                <Upload className="w-4 h-4" /> {importMut.isPending ? "Importing…" : "Import CSV"}
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => exportMut.mutate()}
+                disabled={exportMut.isPending || catalog.length === 0}
+              >
+                <Download className="w-4 h-4" /> Export CSV
+              </button>
+              <button className="btn-primary" onClick={() => setShowAddProduct(true)}>
+                <Plus className="w-4 h-4" /> Add Product
+              </button>
+            </div>
           </div>
           <div className="card table-wrapper">
             <table>

@@ -387,13 +387,23 @@ function AddSupplierModal({ productId, suppliers, onClose }: { productId: number
 
   const chooseSp = (sp: any) => {
     setSelectedSpId(sp.id);
+    const u = Math.max(1, parseInt(units) || 1);
     setForm((p) => ({
       ...p,
       supplier_sku: sp.sku,
-      cost: String(sp.unit_price),
+      cost: (parseFloat(sp.unit_price) * u).toFixed(2),
       stock: String(sp.stock_quantity),
     }));
     setSpQuery("");
+  };
+
+  const onUnitsChange = (e: any) => {
+    const v = e.target.value;
+    setUnits(v);
+    if (selectedSp) {
+      const u = Math.max(1, parseInt(v) || 1);
+      setForm((p) => ({ ...p, cost: (parseFloat(selectedSp.unit_price) * u).toFixed(2) }));
+    }
   };
 
   const clearSp = () => {
@@ -502,10 +512,10 @@ function AddSupplierModal({ productId, suppliers, onClose }: { productId: number
                 type="number"
                 min="1"
                 value={units}
-                onChange={(e) => setUnits(e.target.value)}
+                onChange={onUnitsChange}
               />
               <p className="text-xs text-gray-400 mt-1">
-                Set &gt; 1 for sets/combos. Each order of 1 shop unit will deduct {units || 1} × order qty from this supplier's stock.
+                Set &gt; 1 for sets/combos. Cost auto-updates to ${parseFloat(selectedSp.unit_price).toFixed(2)} × {units || 1} = <strong>${(parseFloat(selectedSp.unit_price) * (parseInt(units) || 1)).toFixed(2)}</strong>. Each order of 1 shop unit deducts {units || 1} × order qty from supplier stock.
               </p>
             </div>
           )}

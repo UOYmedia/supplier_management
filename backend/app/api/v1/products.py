@@ -61,7 +61,16 @@ async def create_product(body: ProductCreate, db: AsyncSession = Depends(get_db)
     await db.flush()
 
     for s in body.suppliers:
-        db.add(ProductSupplier(product_id=product.id, **s.model_dump()))
+        s_data = s.model_dump()
+        sp_id = s_data.pop("supplier_product_id", None)
+        units = s_data.pop("units", 1)
+        db.add(ProductSupplier(product_id=product.id, **s_data))
+        if sp_id is not None:
+            db.add(ProductComponent(
+                product_id=product.id,
+                supplier_product_id=sp_id,
+                quantity=units,
+            ))
 
     await db.commit()
     await db.refresh(product)
@@ -108,8 +117,40 @@ async def list_product_suppliers(product_id: int, db: AsyncSession = Depends(get
 @router.post("/{product_id}/suppliers", response_model=ProductSupplierOut, status_code=201)
 async def add_product_supplier(product_id: int, body: ProductSupplierCreate, db: AsyncSession = Depends(get_db)):
     await _get_or_404(product_id, db)
-    ps = ProductSupplier(product_id=product_id, **body.model_dump())
+    data = body.model_dump()
+    supplier_product_id = data.pop("supplier_product_id", None)
+    units = data.pop("units", 1)
+
+    if supplier_product_id is not None:
+        sp = await db.get(SupplierProduct, supplier_product_id)
+        if not sp or sp.supplier_id != body.supplier_id:
+            raise HTTPException(400, "Supplier product does not belong to this supplier")
+        if units < 1:
+            raise HTTPException(400, "Units must be at least 1")
+
+    ps = ProductSupplier(product_id=product_id, **data)
     db.add(ps)
+    await db.flush()
+
+    # Also create/update the ProductComponent link so that incoming orders
+    # auto-expand into supplier fulfillment items with quantity = units × order_qty.
+    if supplier_product_id is not None:
+        existing = await db.execute(
+            select(ProductComponent).where(
+                ProductComponent.product_id == product_id,
+                ProductComponent.supplier_product_id == supplier_product_id,
+            )
+        )
+        comp = existing.scalar_one_or_none()
+        if comp:
+            comp.quantity = units
+        else:
+            db.add(ProductComponent(
+                product_id=product_id,
+                supplier_product_id=supplier_product_id,
+                quantity=units,
+            ))
+
     await db.commit()
     await db.refresh(ps)
     sup = await db.get(Supplier, ps.supplier_id)

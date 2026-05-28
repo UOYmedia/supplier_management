@@ -16,6 +16,7 @@ class SupplierBase(BaseModel):
     zipcode: str | None = None
     notes: str | None = None
     is_active: bool = True
+    can_buy_labels: bool = False
 
 
 class SupplierCreate(SupplierBase):
@@ -35,6 +36,7 @@ class SupplierUpdate(BaseModel):
     zipcode: str | None = None
     notes: str | None = None
     is_active: bool | None = None
+    can_buy_labels: bool | None = None
     username: str | None = None
     password: str | None = None
 

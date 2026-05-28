@@ -69,6 +69,8 @@ async def _run_migrations():
         "ALTER TABLE shipping_labels ALTER COLUMN label_url TYPE TEXT",
         # Allow marketplace listings without a linked shop product (for sync + mapping flow)
         "ALTER TABLE marketplace_listings ALTER COLUMN product_id DROP NOT NULL",
+        # Supplier-level toggle: allow self-service EasyPost label purchase from the portal
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS can_buy_labels BOOLEAN NOT NULL DEFAULT FALSE",
     ]
     try:
         async with engine.begin() as conn:

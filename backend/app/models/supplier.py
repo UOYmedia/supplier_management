@@ -28,6 +28,7 @@ class Supplier(Base):
     zipcode: Mapped[str | None] = mapped_column(String(20))
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(default=True)
+    can_buy_labels: Mapped[bool] = mapped_column(default=False)
     username: Mapped[str | None] = mapped_column(String(100), unique=True, index=True)
     hashed_password: Mapped[str | None] = mapped_column(String(255))
     shopify_location_id: Mapped[str | None] = mapped_column(String(100), index=True)

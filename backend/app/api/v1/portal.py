@@ -2,17 +2,26 @@
 Supplier Portal API — authenticated with supplier JWT.
 Token payload: {"sub": str(supplier_id), "role": "supplier"}
 """
+from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Header
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timezone
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import verify_password, create_access_token, decode_token
 from app.models.supplier import Supplier, Invoice
 from app.models.product import Product, ProductSupplier
 from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus
 from app.api.v1.orders import _recalculate_order_status
+from app.api.v1.easypost import ParcelIn, RateOut, RatesResponse
+from app.integrations.easypost.client import (
+    EasyPostClient, EasyPostError,
+    supplier_to_ep_address, shipping_addr_to_ep, filter_usps_rates,
+)
+from app.schemas.order import ShippingLabelOut
 
 router = APIRouter(prefix="/portal", tags=["supplier-portal"])
 
@@ -33,7 +42,13 @@ async def supplier_login(
     if not verify_password(password, supplier.hashed_password):
         raise HTTPException(401, "Invalid credentials")
     token = create_access_token(supplier.id, extra={"role": "supplier"})
-    return {"access_token": token, "token_type": "bearer", "supplier_id": supplier.id, "name": supplier.name}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "supplier_id": supplier.id,
+        "name": supplier.name,
+        "can_buy_labels": supplier.can_buy_labels,
+    }
 
 
 async def get_current_supplier(
@@ -53,6 +68,16 @@ async def get_current_supplier(
     if not supplier:
         raise HTTPException(404, "Supplier not found")
     return supplier
+
+
+@router.get("/me")
+async def portal_me(supplier: Supplier = Depends(get_current_supplier)):
+    return {
+        "id": supplier.id,
+        "name": supplier.name,
+        "email": supplier.email,
+        "can_buy_labels": supplier.can_buy_labels,
+    }
 
 
 # --- Products ---
@@ -146,6 +171,154 @@ async def mark_shipped(
 
     await db.commit()
     return {"status": "shipped", "tracking_number": item.tracking_number}
+
+
+# --- EasyPost label purchase (supplier self-service) ---
+
+class PortalRatesRequest(BaseModel):
+    order_id: int
+    parcel: ParcelIn
+
+
+class PortalBuyRequest(BaseModel):
+    order_id: int
+    shipment_id: str
+    rate_id: str
+
+
+def _require_can_buy_labels(supplier: Supplier) -> None:
+    if not supplier.can_buy_labels:
+        raise HTTPException(
+            403,
+            "Label purchase is not enabled for your account. Please contact the platform admin.",
+        )
+
+
+async def _supplier_line_items_for_order(
+    db: AsyncSession, order_id: int, supplier_id: int
+) -> list[OrderLineItem]:
+    res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.order_id == order_id,
+            OrderLineItem.supplier_id == supplier_id,
+            OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+        )
+    )
+    return list(res.scalars().all())
+
+
+@router.post("/orders/easypost/rates", response_model=RatesResponse)
+async def portal_easypost_rates(
+    body: PortalRatesRequest,
+    supplier: Supplier = Depends(get_current_supplier),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_can_buy_labels(supplier)
+    if not settings.EASYPOST_API_KEY:
+        raise HTTPException(503, "EasyPost API key not configured")
+
+    order = await db.get(Order, body.order_id)
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    items = await _supplier_line_items_for_order(db, body.order_id, supplier.id)
+    if not items:
+        raise HTTPException(404, "No unshipped items in this order belong to you")
+    if not order.shipping_address:
+        raise HTTPException(400, "Order has no shipping address")
+    if not supplier.street1:
+        raise HTTPException(400, "Your supplier address is incomplete — ask the admin to update it")
+
+    ep = EasyPostClient(settings.EASYPOST_API_KEY)
+    try:
+        shipment = await ep.create_shipment(
+            supplier_to_ep_address(supplier),
+            shipping_addr_to_ep(order.shipping_address),
+            {
+                "weight": body.parcel.weight,
+                "length": body.parcel.length,
+                "width": body.parcel.width,
+                "height": body.parcel.height,
+            },
+        )
+    except EasyPostError as e:
+        raise HTTPException(e.status, str(e))
+
+    all_rates = shipment.get("rates", [])
+    usps = filter_usps_rates(all_rates) or all_rates
+    rates_out = sorted(
+        [
+            RateOut(
+                id=r["id"],
+                carrier=r.get("carrier", ""),
+                service=r.get("service", ""),
+                rate=r.get("rate", "0"),
+                currency=r.get("currency", "USD"),
+                delivery_days=r.get("delivery_days"),
+                delivery_date=r.get("delivery_date"),
+                est_delivery_days=r.get("est_delivery_days"),
+            )
+            for r in usps
+        ],
+        key=lambda r: float(r.rate),
+    )
+    return RatesResponse(shipment_id=shipment["id"], rates=rates_out)
+
+
+@router.post("/orders/easypost/buy", response_model=ShippingLabelOut, status_code=201)
+async def portal_easypost_buy(
+    body: PortalBuyRequest,
+    supplier: Supplier = Depends(get_current_supplier),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_can_buy_labels(supplier)
+    if not settings.EASYPOST_API_KEY:
+        raise HTTPException(503, "EasyPost API key not configured")
+
+    order = await db.get(Order, body.order_id)
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    items = await _supplier_line_items_for_order(db, body.order_id, supplier.id)
+    if not items:
+        raise HTTPException(404, "No unshipped items in this order belong to you")
+
+    ep = EasyPostClient(settings.EASYPOST_API_KEY)
+    try:
+        bought = await ep.buy_shipment(body.shipment_id, body.rate_id)
+    except EasyPostError as e:
+        raise HTTPException(e.status, str(e))
+
+    tracking = bought.get("tracking_code") or bought.get("selected_rate", {}).get("tracking_code")
+    label_url = (
+        bought.get("postage_label", {}).get("label_url")
+        or bought.get("postage_label", {}).get("label_pdf_url")
+    )
+    cost_str = bought.get("selected_rate", {}).get("rate", "0")
+
+    label = ShippingLabel(
+        supplier_id=supplier.id,
+        carrier="USPS",
+        service=bought.get("selected_rate", {}).get("service", ""),
+        tracking_number=tracking,
+        label_url=label_url,
+        cost=Decimal(str(cost_str)),
+        from_address=bought.get("from_address"),
+        to_address=bought.get("to_address"),
+    )
+    db.add(label)
+    await db.flush()
+
+    for li in items:
+        li.label_id = label.id
+        li.tracking_number = tracking
+        if li.fulfill_status == FulfillStatus.unfulfilled:
+            li.fulfill_status = FulfillStatus.pending
+
+    await _recalculate_order_status(order, db)
+    await db.commit()
+    await db.refresh(label)
+    return label
 
 
 # --- Invoices ---

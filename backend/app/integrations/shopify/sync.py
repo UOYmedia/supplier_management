@@ -89,7 +89,6 @@ class ShopifySync(MarketplaceSyncer):
                             sku=sku,
                             description=sp.get("body_html", "") or "",
                             weight=weight,
-                            marketplace="shopify",
                         )
                         db.add(product)
                         await db.flush()

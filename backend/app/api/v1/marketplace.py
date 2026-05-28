@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.database import get_db
-from app.models.marketplace import MarketplaceConnection, MarketplaceListing, MarketplaceType, ConnectionStatus
+from app.models.marketplace import MarketplaceConnection, MarketplaceListing, MarketplaceType, ConnectionStatus, ListingStatus
 from app.models.product import Product
 from app.schemas.marketplace import (
     ConnectionCreate, ConnectionUpdate, ConnectionOut,
@@ -253,13 +253,18 @@ async def _do_sync_orders(conn_id: int, created_after: str | None = None):
         conn = await db.get(MarketplaceConnection, conn_id)
         if not conn:
             return
-        syncer = _get_syncer(conn)
-        if conn.marketplace == MarketplaceType.amazon:
-            from app.integrations.amazon.sync import AmazonSync
-            await syncer.sync_orders(db, created_after=created_after)
-        else:
-            await syncer.sync_orders(db)
-        conn.last_synced_at = datetime.now(timezone.utc)
+        try:
+            syncer = _get_syncer(conn)
+            if conn.marketplace == MarketplaceType.amazon:
+                await syncer.sync_orders(db, created_after=created_after)
+            else:
+                await syncer.sync_orders(db)
+            conn.last_synced_at = datetime.now(timezone.utc)
+            conn.error_message = None
+        except Exception as e:
+            conn.status = ConnectionStatus.error
+            conn.error_message = str(e)[:500]
+            print(f"ERROR sync_orders conn={conn_id}: {e}", flush=True)
         await db.commit()
 
 
@@ -269,10 +274,16 @@ async def _do_sync_listings(conn_id: int):
         conn = await db.get(MarketplaceConnection, conn_id)
         if not conn:
             return
-        from app.integrations.amazon.sync import AmazonSync
-        syncer = AmazonSync(conn)
-        await syncer.sync_listings(db)
-        conn.last_synced_at = datetime.now(timezone.utc)
+        try:
+            from app.integrations.amazon.sync import AmazonSync
+            syncer = AmazonSync(conn)
+            await syncer.sync_listings(db)
+            conn.last_synced_at = datetime.now(timezone.utc)
+            conn.error_message = None
+        except Exception as e:
+            conn.status = ConnectionStatus.error
+            conn.error_message = str(e)[:500]
+            print(f"ERROR sync_listings conn={conn_id}: {e}", flush=True)
         await db.commit()
 
 
@@ -282,9 +293,15 @@ async def _do_sync_products(conn_id: int):
         conn = await db.get(MarketplaceConnection, conn_id)
         if not conn:
             return
-        syncer = _get_syncer(conn)
-        await syncer.sync_products(db)
-        conn.last_synced_at = datetime.now(timezone.utc)
+        try:
+            syncer = _get_syncer(conn)
+            await syncer.sync_products(db)
+            conn.last_synced_at = datetime.now(timezone.utc)
+            conn.error_message = None
+        except Exception as e:
+            conn.status = ConnectionStatus.error
+            conn.error_message = str(e)[:500]
+            print(f"ERROR sync_products conn={conn_id}: {e}", flush=True)
         await db.commit()
 
 

@@ -1,5 +1,5 @@
 from app.integrations.base import MarketplaceSyncer
-from app.integrations.shopify.client import ShopifyClient
+from app.integrations.shopify.client import ShopifyClient, extract_next_page_info
 from app.models.marketplace import MarketplaceConnection, MarketplaceListing, ListingStatus
 from app.models.product import Product
 from app.models.order import Order, OrderLineItem
@@ -47,7 +47,11 @@ class ShopifySync(MarketplaceSyncer):
         return str(shopify_product.get("id", ""))
 
     async def sync_products(self, db: AsyncSession) -> int:
-        """Fetch all Shopify products and upsert into local DB as Products + MarketplaceListings."""
+        """Fetch all Shopify products and upsert into local DB as Products + MarketplaceListings.
+
+        Uses Shopify's cursor pagination via the Link response header. When
+        page_info is supplied, no other filter params may be sent — only limit.
+        """
         count = 0
         page_info = None
 
@@ -56,10 +60,10 @@ class ShopifySync(MarketplaceSyncer):
             if page_info:
                 params["page_info"] = page_info
 
-            data = await self.client.get("/products.json", params=params)
-            print(f"Shopify sync_products: got {len(data.get('products', []))} products", flush=True)
-
+            data, headers = await self.client.get_with_headers("/products.json", params=params)
             products = data.get("products", [])
+            print(f"Shopify sync_products: page got {len(products)} products (total so far: {count})", flush=True)
+
             if not products:
                 break
 
@@ -121,12 +125,14 @@ class ShopifySync(MarketplaceSyncer):
 
                     count += 1
 
-            # Shopify cursor-based pagination
-            # (basic: if fewer than limit returned, we're done)
-            if len(products) < 250:
+            # Persist this page before moving to the next so we don't lose
+            # progress on transient errors mid-import.
+            await db.commit()
+
+            page_info = extract_next_page_info(headers.get("Link") or headers.get("link"))
+            if not page_info:
                 break
 
-        await db.commit()
         return count
 
     async def sync_locations(self, db: AsyncSession) -> dict:

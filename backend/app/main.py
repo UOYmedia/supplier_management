@@ -24,18 +24,27 @@ async def lifespan(app: FastAPI):
 
 
 async def _seed_admin():
-    """Create default admin user if no users exist."""
+    """Create or reset admin user. If ADMIN_PASSWORD env var is set, always update the password."""
+    import os
     from sqlalchemy import select
     from app.core.database import AsyncSessionLocal
     from app.core.security import hash_password
     from app.models.user import User, UserRole
     try:
+        override_password = os.environ.get("ADMIN_PASSWORD", "").strip()
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(User).where(User.username == "admin"))
-            if not result.scalar_one_or_none():
-                db.add(User(username="admin", hashed_password=hash_password("admin"), role=UserRole.admin))
+            user = result.scalar_one_or_none()
+            if user:
+                if override_password:
+                    user.hashed_password = hash_password(override_password)
+                    await db.commit()
+                    print("Admin password updated from ADMIN_PASSWORD env var.", flush=True)
+            else:
+                password = override_password or "admin"
+                db.add(User(username="admin", hashed_password=hash_password(password), role=UserRole.admin))
                 await db.commit()
-                print("Default admin user created (admin/admin).", flush=True)
+                print(f"Default admin user created (admin/{password}).", flush=True)
     except Exception as e:
         print(f"WARNING: seed admin failed: {e}", flush=True)
 

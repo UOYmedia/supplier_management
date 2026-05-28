@@ -12,31 +12,35 @@ async function proxy(req: NextRequest, { params }: { params: { path: string[] } 
   const search = req.nextUrl.search;
   const targetUrl = `${BACKEND}/api/v1/${path}${search}`;
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  // Forward Authorization header (needed for admin + supplier auth)
+  const fwdHeaders: Record<string, string> = {};
   const auth = req.headers.get("authorization");
-  if (auth) headers["Authorization"] = auth;
+  if (auth) fwdHeaders["Authorization"] = auth;
 
-  let body: string | undefined;
+  let body: BodyInit | undefined;
   if (req.method !== "GET" && req.method !== "HEAD") {
     const ct = req.headers.get("content-type") || "";
     if (ct.includes("multipart/form-data")) {
-      const formData = await req.formData();
-      const fwdHeaders: Record<string, string> = {};
-      if (auth) fwdHeaders["Authorization"] = auth;
-      const resp = await fetch(targetUrl, { method: req.method, headers: fwdHeaders, body: formData });
-      const data = await resp.json().catch(() => null);
-      return NextResponse.json(data, { status: resp.status });
+      body = await req.formData();
+    } else {
+      fwdHeaders["Content-Type"] = ct || "application/json";
+      body = await req.text();
     }
-    body = await req.text();
   }
 
-  const resp = await fetch(targetUrl, { method: req.method, headers, body });
-  const data = await resp.json().catch(() => null);
-  return NextResponse.json(data, { status: resp.status });
+  const resp = await fetch(targetUrl, { method: req.method, headers: fwdHeaders, body });
+
+  const contentType = resp.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const data = await resp.json().catch(() => null);
+    return NextResponse.json(data, { status: resp.status });
+  }
+
+  // Pass binary/non-JSON responses through as-is (e.g. PDF label downloads)
+  const buf = await resp.arrayBuffer();
+  return new NextResponse(buf, {
+    status: resp.status,
+    headers: { "Content-Type": contentType },
+  });
 }
 
 export const GET = proxy;

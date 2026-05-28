@@ -29,6 +29,18 @@ class ConnectionOut(BaseModel):
     last_synced_at: datetime | None
     error_message: str | None
     created_at: datetime
+    # Return non-secret credential fields only (client_id, sandbox) so the UI
+    # can pre-fill them. Secrets (access_token, client_secret, refresh_token) are stripped.
+    client_id: str | None = None
+    sandbox: bool = False
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        instance = super().model_validate(obj, **kwargs)
+        creds = getattr(obj, "credentials", None) or {}
+        instance.client_id = creds.get("client_id")
+        instance.sandbox = bool(creds.get("sandbox", False))
+        return instance
 
 
 class ListingCreate(BaseModel):

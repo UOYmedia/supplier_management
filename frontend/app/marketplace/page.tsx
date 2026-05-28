@@ -168,64 +168,85 @@ function ConnectionCard({ conn, onTest, onEdit, onSyncOrders, onSyncProducts, on
   );
 }
 
-// Extract the bare .myshopify.com domain from whatever the user typed
 function toShopDomain(raw: string): string {
   return raw.replace(/^https?:\/\//, "").replace(/\/$/, "").toLowerCase();
 }
 
 function ConnectionModal({ onClose, conn }: { onClose: () => void; conn?: any }) {
   const qc = useQueryClient();
-  const isShopify = conn ? conn.marketplace === "shopify" : true; // new connections default to shopify
-  const creds = conn?.credentials ?? {};
 
   const [marketplace, setMarketplace] = useState<string>(conn?.marketplace ?? "shopify");
   const [name, setName] = useState(conn?.name ?? "");
   const [shopUrl, setShopUrl] = useState(conn?.shop_url ?? "");
-  const [clientId, setClientId] = useState(creds.client_id ?? "");
-  const [clientSecret, setClientSecret] = useState(creds.client_secret ?? "");
-  const [refreshToken, setRefreshToken] = useState(creds.refresh_token ?? "");
+  // Shopify: client_id returned from API (non-secret); client_secret must be re-entered
+  const [shopClientId, setShopClientId] = useState(conn?.client_id ?? "");
+  const [shopClientSecret, setShopClientSecret] = useState("");
+  // Amazon
+  const [amzClientId, setAmzClientId] = useState(conn?.client_id ?? "");
+  const [amzClientSecret, setAmzClientSecret] = useState("");
+  const [refreshToken, setRefreshToken] = useState("");
   const [marketplaceId, setMarketplaceId] = useState(conn?.marketplace_id ?? "ATVPDKIKX0DER");
-  const [sandbox, setSandbox] = useState(creds.sandbox ?? false);
+  const [sandbox, setSandbox] = useState(conn?.sandbox ?? false);
+  const [connecting, setConnecting] = useState(false);
 
-  // Amazon-only: save via API
-  const mut = useMutation({
-    mutationFn: (data: object) =>
-      conn ? marketplaceApi.updateConnection(conn.id, data) : marketplaceApi.createConnection(data),
+  const shopDomain = toShopDomain(shopUrl);
+  const shopifyReady = shopDomain.endsWith(".myshopify.com") && !!shopClientId;
+
+  // Shopify: save credentials then navigate to OAuth
+  const handleShopifyConnect = async () => {
+    if (!shopifyReady) return;
+    setConnecting(true);
+    try {
+      const credentials: Record<string, unknown> = { client_id: shopClientId };
+      if (shopClientSecret) credentials.client_secret = shopClientSecret;
+
+      let connId: number;
+      if (conn) {
+        const updated = await marketplaceApi.updateConnection(conn.id, { name: name || undefined, credentials });
+        connId = updated.id;
+      } else {
+        const autoName = shopDomain.replace(".myshopify.com", "").replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+        const created = await marketplaceApi.createConnection({
+          name: name || autoName,
+          marketplace: "shopify",
+          shop_url: `https://${shopDomain}`,
+          credentials,
+        });
+        connId = created.id;
+      }
+      // Get the Shopify OAuth consent URL from the backend and navigate there
+      const { oauth_url } = await import("@/lib/api").then(({ api }) =>
+        api.get(`/shopify/auth?connection_id=${connId}`).then((r) => r.data)
+      );
+      window.location.href = oauth_url;
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || e.response?.data?.detail || "Failed to start OAuth");
+      setConnecting(false);
+    }
+  };
+
+  // Amazon: save via API
+  const amazonMut = useMutation({
+    mutationFn: () => {
+      const credentials: Record<string, unknown> = { client_id: amzClientId, sandbox };
+      if (amzClientSecret) credentials.client_secret = amzClientSecret;
+      if (refreshToken) credentials.refresh_token = refreshToken;
+      const payload = { name, marketplace: "amazon" as const, credentials, marketplace_id: marketplaceId || undefined };
+      return conn ? marketplaceApi.updateConnection(conn.id, payload) : marketplaceApi.createConnection(payload);
+    },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["connections"] }); toast.success(conn ? "Updated" : "Created"); onClose(); },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
 
-  // Rename existing Shopify connection
-  const renameMut = useMutation({
-    mutationFn: () => marketplaceApi.updateConnection(conn.id, { name }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["connections"] }); toast.success("Name updated"); onClose(); },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
-  });
-
-  const handleAmazonSubmit = () => {
-    mut.mutate({
-      name,
-      marketplace: "amazon",
-      credentials: { client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, sandbox },
-      marketplace_id: marketplaceId || undefined,
-    });
-  };
-
-  // Shopify OAuth redirect
-  const shopDomain = toShopDomain(shopUrl);
-  const oauthHref = `/api/v1/shopify/auth?shop=${encodeURIComponent(shopDomain)}`;
-  const shopifyReady = shopDomain.endsWith(".myshopify.com");
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="card w-full max-w-md p-6">
+      <div className="card w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold">{conn ? "Edit Connection" : "New Connection"}</h2>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
 
         <div className="space-y-3">
-          {/* Marketplace selector — only for new connections */}
           {!conn && (
             <div>
               <label className="label">Marketplace</label>
@@ -239,53 +260,50 @@ function ConnectionModal({ onClose, conn }: { onClose: () => void; conn?: any })
           {/* ── SHOPIFY ─────────────────────────────── */}
           {marketplace === "shopify" && (
             <>
-              {conn && (
-                /* Edit mode: allow renaming */
-                <div>
-                  <label className="label">Name</label>
-                  <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
-                </div>
-              )}
-
               <div>
-                <label className="label">Shop URL</label>
-                <input
-                  className="input"
-                  value={shopUrl}
-                  onChange={(e) => setShopUrl(e.target.value)}
-                  placeholder="yourstore.myshopify.com"
-                  readOnly={!!conn}
-                />
-                {shopUrl && !shopifyReady && (
+                <label className="label">Display Name</label>
+                <input className="input" value={name} onChange={(e) => setName(e.target.value)}
+                  placeholder={conn ? conn.name : "auto from shop URL"} />
+              </div>
+              <div>
+                <label className="label">Shop URL *</label>
+                <input className="input" value={shopUrl} onChange={(e) => setShopUrl(e.target.value)}
+                  placeholder="yourstore.myshopify.com" readOnly={!!conn} />
+                {shopUrl && !shopDomain.endsWith(".myshopify.com") && (
                   <p className="text-xs text-red-500 mt-1">Must end with .myshopify.com</p>
                 )}
               </div>
-
-              <div className="rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm text-blue-800 space-y-2">
-                <p className="font-medium flex items-center gap-1"><Link2 className="w-4 h-4" /> Shopify Partner App (OAuth)</p>
-                <p className="text-xs text-blue-600">
-                  Clicking the button below will open Shopify's authorization page. After you approve,
-                  you'll be redirected back here automatically.
-                </p>
+              <div>
+                <label className="label">Client ID (Partner App) *</label>
+                <input className="input" value={shopClientId} onChange={(e) => setShopClientId(e.target.value)}
+                  placeholder="From Shopify Partner Dashboard → API credentials" />
+              </div>
+              <div>
+                <label className="label">Client Secret {conn && <span className="text-gray-400 font-normal">(leave blank to keep current)</span>}</label>
+                <input className="input" type="password" value={shopClientSecret}
+                  onChange={(e) => setShopClientSecret(e.target.value)}
+                  placeholder={conn ? "••••••••" : "From Shopify Partner Dashboard → API credentials"} />
               </div>
 
-              <a
-                href={shopifyReady ? oauthHref : undefined}
-                onClick={!shopifyReady ? (e) => e.preventDefault() : undefined}
-                className={`btn-primary w-full flex items-center justify-center gap-2 ${!shopifyReady ? "opacity-50 cursor-not-allowed" : ""}`}
+              <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs text-blue-700 space-y-1">
+                <p className="font-medium">Shopify Partner App (OAuth 2.0)</p>
+                <p>Set redirect URL in Partner Dashboard → App setup → <b>Allowed redirect URLs</b>:</p>
+                <code className="block bg-blue-100 rounded px-2 py-1 break-all">
+                  {typeof window !== "undefined" ? window.location.origin.replace(/:\d+$/, "") + "/api/v1/shopify/callback" : "https://your-backend/api/v1/shopify/callback"}
+                </code>
+              </div>
+
+              <button
+                className={`btn-primary w-full flex items-center justify-center gap-2 ${(!shopifyReady || connecting) ? "opacity-50 cursor-not-allowed" : ""}`}
+                disabled={!shopifyReady || connecting}
+                onClick={handleShopifyConnect}
               >
                 <Link2 className="w-4 h-4" />
-                {conn ? "Reconnect with Shopify" : "Connect with Shopify"}
-              </a>
-
-              {conn && (
-                <div className="flex justify-end gap-2 pt-1">
-                  <button className="btn-secondary" onClick={onClose}>Cancel</button>
-                  <button className="btn-primary" disabled={!name} onClick={() => renameMut.mutate()}>
-                    Save Name
-                  </button>
-                </div>
-              )}
+                {connecting ? "Redirecting…" : conn ? "Reconnect with Shopify" : "Connect with Shopify"}
+              </button>
+              <div className="flex justify-end">
+                <button className="btn-secondary text-sm" onClick={onClose}>Cancel</button>
+              </div>
             </>
           )}
 
@@ -296,18 +314,29 @@ function ConnectionModal({ onClose, conn }: { onClose: () => void; conn?: any })
                 <label className="label">Name *</label>
                 <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="My Amazon Store" />
               </div>
-              <div><label className="label">Client ID (LWA)</label><input className="input" value={clientId} onChange={(e) => setClientId(e.target.value)} /></div>
-              <div><label className="label">Client Secret</label><input className="input" type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} /></div>
-              <div><label className="label">Refresh Token</label><input className="input" type="password" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} /></div>
-              <div><label className="label">Marketplace ID</label><input className="input" value={marketplaceId} onChange={(e) => setMarketplaceId(e.target.value)} /></div>
+              <div>
+                <label className="label">Client ID (LWA) {conn && <span className="text-gray-400 font-normal">(current: {conn.client_id || "—"})</span>}</label>
+                <input className="input" value={amzClientId} onChange={(e) => setAmzClientId(e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Client Secret {conn && <span className="text-gray-400 font-normal">(leave blank to keep)</span>}</label>
+                <input className="input" type="password" value={amzClientSecret} onChange={(e) => setAmzClientSecret(e.target.value)} placeholder={conn ? "••••••••" : ""} />
+              </div>
+              <div>
+                <label className="label">Refresh Token {conn && <span className="text-gray-400 font-normal">(leave blank to keep)</span>}</label>
+                <input className="input" type="password" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} placeholder={conn ? "••••••••" : ""} />
+              </div>
+              <div>
+                <label className="label">Marketplace ID</label>
+                <input className="input" value={marketplaceId} onChange={(e) => setMarketplaceId(e.target.value)} />
+              </div>
               <div className="flex items-center gap-2 pt-1">
                 <input type="checkbox" id="sandbox" checked={sandbox} onChange={(e) => setSandbox(e.target.checked)} className="w-4 h-4" />
                 <label htmlFor="sandbox" className="text-sm text-gray-600">Sandbox mode</label>
               </div>
-
               <div className="flex justify-end gap-2 pt-1">
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
-                <button className="btn-primary" disabled={!name} onClick={handleAmazonSubmit}>
+                <button className="btn-primary" disabled={!name} onClick={() => amazonMut.mutate()}>
                   {conn ? "Save" : "Connect"}
                 </button>
               </div>

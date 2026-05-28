@@ -39,7 +39,11 @@ async def get_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
 @router.patch("/connections/{conn_id}", response_model=ConnectionOut)
 async def update_connection(conn_id: int, body: ConnectionUpdate, db: AsyncSession = Depends(get_db)):
     conn = await _get_conn_or_404(conn_id, db)
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    if "credentials" in data:
+        # Merge so that updating client_id doesn't wipe the stored access_token
+        conn.credentials = {**(conn.credentials or {}), **data.pop("credentials")}
+    for k, v in data.items():
         setattr(conn, k, v)
     await db.commit()
     await db.refresh(conn)

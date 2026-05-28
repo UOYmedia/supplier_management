@@ -1,5 +1,22 @@
 import httpx
+import re
 from urllib.parse import urljoin
+
+
+def extract_next_page_info(link_header: str | None) -> str | None:
+    """Parse Shopify cursor from a Link response header.
+
+    Header format:
+        Link: <https://.../products.json?page_info=XYZ&limit=250>; rel="next"
+    """
+    if not link_header:
+        return None
+    for part in link_header.split(","):
+        if 'rel="next"' in part:
+            m = re.search(r"page_info=([^&>]+)", part)
+            if m:
+                return m.group(1)
+    return None
 
 
 class ShopifyClient:
@@ -19,6 +36,12 @@ class ShopifyClient:
             resp = await client.get(f"{self._base}{path}", headers=self._headers(), params=params)
             resp.raise_for_status()
             return resp.json()
+
+    async def get_with_headers(self, path: str, params: dict | None = None) -> tuple[dict, httpx.Headers]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{self._base}{path}", headers=self._headers(), params=params)
+            resp.raise_for_status()
+            return resp.json(), resp.headers
 
     async def post(self, path: str, body: dict) -> dict:
         async with httpx.AsyncClient() as client:

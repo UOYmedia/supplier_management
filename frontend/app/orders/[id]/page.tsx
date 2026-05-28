@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, suppliersApi, easypostApi, amazonShippingApi } from "@/lib/api";
 import { useParams, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag, ExternalLink, Download } from "lucide-react";
+import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag, ExternalLink, Download, Printer } from "lucide-react";
 import Link from "next/link";
 import { OrderStatusBadge } from "../order-status-badge";
 
@@ -49,6 +49,7 @@ export default function OrderDetailPage() {
     const items = order.line_items.filter(
       (li: any) =>
         li.supplier_id === sid &&
+        !li.tracking_number &&
         (li.fulfill_status === "unfulfilled" || li.fulfill_status === "pending")
     );
     if (items.length > 0) {
@@ -75,6 +76,37 @@ export default function OrderDetailPage() {
     const sid = supplierId ?? -1;
     const ids = items.map((li: any) => li.id);
     setShowLabel({ supplierId: sid, lineItemIds: ids });
+  };
+
+  const printLabel = (url: string) => {
+    if (!url) return;
+    const win = window.open(url, "_blank");
+    if (!win) {
+      toast.error("Popup blocked — allow popups to print labels");
+      return;
+    }
+    try {
+      win.focus();
+      setTimeout(() => {
+        try { win.print(); } catch {}
+      }, 800);
+    } catch {}
+  };
+
+  const printLabelsForGroup = (items: any[]) => {
+    const labelIds = Array.from(new Set(items.map((li) => li.label_id).filter(Boolean)));
+    if (labelIds.length === 0) {
+      toast.error("No label found for this group");
+      return;
+    }
+    for (const labelId of labelIds) {
+      const lbl = labels.find((l: any) => l.id === labelId);
+      if (!lbl) continue;
+      const url = lbl.has_label_data
+        ? ordersApi.labelDownloadUrl(oid, lbl.id)
+        : lbl.label_url;
+      if (url) printLabel(url);
+    }
   };
 
   return (
@@ -165,6 +197,8 @@ export default function OrderDetailPage() {
         const unshipped = (items as any[]).filter((li: any) =>
           li.fulfill_status === "unfulfilled" || li.fulfill_status === "pending"
         );
+        const needsLabel = unshipped.filter((li: any) => !li.tracking_number);
+        const itemsWithLabel = (items as any[]).filter((li: any) => li.label_id);
 
         return (
           <div key={supplierId} className="card mb-4">
@@ -176,14 +210,24 @@ export default function OrderDetailPage() {
                   <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Needs supplier</span>
                 )}
               </div>
-              {sid !== null && unshipped.length > 0 && (
-                <button
-                  className="btn-secondary text-xs py-1"
-                  onClick={() => openBuyLabel(sid, items as any[])}
-                >
-                  <Truck className="w-3 h-3" /> Buy Label
-                </button>
-              )}
+              <div className="flex gap-2">
+                {itemsWithLabel.length > 0 && (
+                  <button
+                    className="btn-primary text-xs py-1"
+                    onClick={() => printLabelsForGroup(itemsWithLabel)}
+                  >
+                    <Printer className="w-3 h-3" /> Print Label
+                  </button>
+                )}
+                {sid !== null && needsLabel.length > 0 && (
+                  <button
+                    className="btn-secondary text-xs py-1"
+                    onClick={() => openBuyLabel(sid, needsLabel)}
+                  >
+                    <Truck className="w-3 h-3" /> Buy Label ({needsLabel.length})
+                  </button>
+                )}
+              </div>
             </div>
             <div className="table-wrapper">
               <table>

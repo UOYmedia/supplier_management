@@ -76,8 +76,24 @@ export default function PortalOrdersPage() {
 
   const printLabel = (url: string) => {
     if (!url) { toast.error("No label available"); return; }
-    window.open(url, "_blank");
+    const win = window.open(url, "_blank");
+    if (!win) {
+      toast.error("Popup blocked — allow popups to print labels");
+      return;
+    }
+    // Best-effort auto-trigger print after the label loads. Cross-origin PDFs
+    // (e.g. EasyPost-hosted) will throw on .print(); the user can still print
+    // from the opened tab's PDF viewer.
+    try {
+      win.focus();
+      setTimeout(() => {
+        try { win.print(); } catch {}
+      }, 800);
+    } catch {}
   };
+
+  const labelUrlForOrder = (orderItems: LineItem[]) =>
+    orderItems.find((i) => i.label_url)?.label_url || null;
 
   const addrText = (a: any) =>
     a ? [a.name, a.line1, a.line2, a.city, a.state, a.zip, a.country].filter(Boolean).join(", ") : "—";
@@ -142,14 +158,30 @@ export default function PortalOrdersPage() {
                       {orderItems.length} item(s) · {first.buyer_name || "—"} · {new Date(first.ordered_at).toLocaleDateString()}
                     </div>
                   </div>
-                  {canBuyLabels && !allShipped && !orderItems.some((i) => i.label_url) && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setBuyingFor(orderId); }}
-                      className="btn-secondary text-xs py-1.5 shrink-0"
-                    >
-                      <Truck className="w-3 h-3" /> Buy Label
-                    </button>
-                  )}
+                  {(() => {
+                    const labelUrl = labelUrlForOrder(orderItems);
+                    if (labelUrl && !allShipped) {
+                      return (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); printLabel(labelUrl); }}
+                          className="btn-primary text-xs py-1.5 shrink-0"
+                        >
+                          <Printer className="w-3 h-3" /> Print Label
+                        </button>
+                      );
+                    }
+                    if (canBuyLabels && !allShipped && !labelUrl) {
+                      return (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setBuyingFor(orderId); }}
+                          className="btn-secondary text-xs py-1.5 shrink-0"
+                        >
+                          <Truck className="w-3 h-3" /> Buy Label
+                        </button>
+                      );
+                    }
+                    return null;
+                  })()}
                   <button className="p-1.5 hover:bg-gray-100 rounded text-gray-400 shrink-0">
                     {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                   </button>

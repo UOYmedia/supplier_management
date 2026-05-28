@@ -387,6 +387,7 @@ async def _push_tracking_to_marketplace(fi: OrderFulfillmentItem, order: Order, 
                 client_secret=creds.get("client_secret", ""),
                 refresh_token=creds.get("refresh_token", ""),
                 marketplace_id=conn.marketplace_id or "ATVPDKIKX0DER",
+                sandbox=creds.get("sandbox", False),
             )
             await AmazonFulfillment(client).confirm_shipment(
                 amazon_order_id=order.external_order_id,

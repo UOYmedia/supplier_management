@@ -165,6 +165,7 @@ function ConnectionModal({ onClose, conn }: { onClose: () => void; conn?: any })
   const [clientSecret, setClientSecret] = useState("");
   const [refreshToken, setRefreshToken] = useState("");
   const [marketplaceId, setMarketplaceId] = useState("ATVPDKIKX0DER");
+  const [sandbox, setSandbox] = useState(false);
 
   const mut = useMutation({
     mutationFn: (data: object) => conn ? marketplaceApi.updateConnection(conn.id, data) : marketplaceApi.createConnection(data),
@@ -175,7 +176,7 @@ function ConnectionModal({ onClose, conn }: { onClose: () => void; conn?: any })
   const handleSubmit = () => {
     const credentials = marketplace === "shopify"
       ? { access_token: accessToken }
-      : { client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken };
+      : { client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, sandbox };
     mut.mutate({ name, marketplace, credentials, shop_url: shopUrl || undefined, marketplace_id: marketplaceId || undefined });
   };
 
@@ -209,6 +210,10 @@ function ConnectionModal({ onClose, conn }: { onClose: () => void; conn?: any })
               <div><label className="label">Client Secret</label><input className="input" type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} /></div>
               <div><label className="label">Refresh Token</label><input className="input" type="password" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} /></div>
               <div><label className="label">Marketplace ID</label><input className="input" value={marketplaceId} onChange={(e) => setMarketplaceId(e.target.value)} /></div>
+              <div className="flex items-center gap-2 pt-1">
+                <input type="checkbox" id="sandbox" checked={sandbox} onChange={(e) => setSandbox(e.target.checked)} className="w-4 h-4" />
+                <label htmlFor="sandbox" className="text-sm text-gray-600">Sandbox mode <span className="text-xs text-gray-400">(dùng khi chưa có Production app)</span></label>
+              </div>
             </>
           )}
         </div>

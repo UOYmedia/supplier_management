@@ -13,13 +13,16 @@ class AmazonSPClient:
     """Amazon Selling Partner API client (LWA + SP-API)."""
 
     LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
-    SP_API_BASE = "https://sellingpartnerapi-na.amazon.com"
+    SP_API_BASE_PRODUCTION = "https://sellingpartnerapi-na.amazon.com"
+    SP_API_BASE_SANDBOX = "https://sandbox.sellingpartnerapi-na.amazon.com"
 
-    def __init__(self, client_id: str, client_secret: str, refresh_token: str, marketplace_id: str):
+    def __init__(self, client_id: str, client_secret: str, refresh_token: str, marketplace_id: str, sandbox: bool = False):
         self.client_id = client_id
         self.client_secret = client_secret
         self.refresh_token = refresh_token
         self.marketplace_id = marketplace_id
+        self.sandbox = sandbox
+        self.SP_API_BASE = self.SP_API_BASE_SANDBOX if sandbox else self.SP_API_BASE_PRODUCTION
         self._access_token: str | None = None
         self._token_expires: datetime | None = None
         self._seller_id: str | None = None

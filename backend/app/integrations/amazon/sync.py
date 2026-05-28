@@ -17,6 +17,7 @@ class AmazonSync(MarketplaceSyncer):
             client_secret=creds.get("client_secret", ""),
             refresh_token=creds.get("refresh_token", ""),
             marketplace_id=connection.marketplace_id or "ATVPDKIKX0DER",
+            sandbox=creds.get("sandbox", False),
         )
 
     async def test_connection(self) -> bool:

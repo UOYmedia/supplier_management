@@ -43,6 +43,14 @@ export default function OrderDetailPage() {
   const supplierGroups = groupBySupplier(order.line_items);
   const isAmazonOrder = order.marketplace === "amazon" && !!order.external_order_id;
 
+  const unmappedCount = order.line_items.filter((li: any) => !li.supplier_id).length;
+  const supplierIds = order.line_items
+    .map((li: any) => li.supplier_id)
+    .filter((s: any) => s != null);
+  const uniqueSupplierCount = new Set(supplierIds).size;
+  const allMapped = unmappedCount === 0 && order.line_items.length > 0;
+  const isShipped = ["fulfilled", "partially_fulfilled"].includes(order.status);
+
   const openBuyLabel = (supplierId: number | null, items: any[]) => {
     const sid = supplierId ?? -1;
     const ids = items.map((li: any) => li.id);
@@ -94,6 +102,40 @@ export default function OrderDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Dispatch readiness */}
+      {!isShipped && (
+        <div className={`card p-3 mb-4 text-sm flex items-center gap-2 ${
+          allMapped
+            ? uniqueSupplierCount === 1 ? "bg-green-50 border-green-200" : "bg-blue-50 border-blue-200"
+            : "bg-amber-50 border-amber-200"
+        }`}>
+          {allMapped ? (
+            uniqueSupplierCount === 1 ? (
+              <>
+                <CheckCircle2 className="w-4 h-4 text-green-700" />
+                <span className="text-green-800">
+                  Ready to dispatch — all {order.line_items.length} item(s) mapped to a single supplier. Buy one label to ship the whole order with one tracking number.
+                </span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-4 h-4 text-blue-700" />
+                <span className="text-blue-800">
+                  Ready to dispatch — items split across <strong>{uniqueSupplierCount}</strong> suppliers. Buy one label per supplier; each group gets its own tracking number.
+                </span>
+              </>
+            )
+          ) : (
+            <>
+              <UserPlus className="w-4 h-4 text-amber-700" />
+              <span className="text-amber-800">
+                {unmappedCount} of {order.line_items.length} item(s) still need a supplier mapping. The order will wait until every line item is assigned.
+              </span>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Line items grouped by supplier */}
       {Object.entries(supplierGroups).map(([supplierId, items]) => {
@@ -273,23 +315,67 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   loading: boolean;
 }) {
   const [supplierId, setSupplierId] = useState("");
+  const [selectedSpId, setSelectedSpId] = useState<number | null>(null);
+  const [units, setUnits] = useState("1");
   const [baseCost, setBaseCost] = useState(lineItem ? String(lineItem.base_cost) : "0");
   const [createPs, setCreatePs] = useState(true);
   const [isPreferred, setIsPreferred] = useState(false);
+  const [spQuery, setSpQuery] = useState("");
+
+  const { data: catalog = [] } = useQuery({
+    queryKey: ["supplier-catalog", supplierId],
+    queryFn: () => suppliersApi.listProducts(parseInt(supplierId)),
+    enabled: !!supplierId,
+  });
+
+  const selectedSp = catalog.find((c: any) => c.id === selectedSpId);
+  const filtered = spQuery
+    ? catalog.filter((sp: any) =>
+        sp.name.toLowerCase().includes(spQuery.toLowerCase()) ||
+        sp.sku.toLowerCase().includes(spQuery.toLowerCase())
+      )
+    : catalog;
+
+  const chooseSp = (sp: any) => {
+    setSelectedSpId(sp.id);
+    const u = Math.max(1, parseInt(units) || 1);
+    setBaseCost((parseFloat(sp.unit_price) * u).toFixed(2));
+    setSpQuery("");
+  };
+
+  const onUnitsChange = (e: any) => {
+    const v = e.target.value;
+    setUnits(v);
+    if (selectedSp) {
+      const u = Math.max(1, parseInt(v) || 1);
+      setBaseCost((parseFloat(selectedSp.unit_price) * u).toFixed(2));
+    }
+  };
+
+  const onSupplierChange = (e: any) => {
+    setSupplierId(e.target.value);
+    setSelectedSpId(null);
+    setSpQuery("");
+  };
 
   const handleSubmit = () => {
-    if (!supplierId) { return; }
-    onAssign({
+    if (!supplierId) return;
+    const payload: any = {
       supplier_id: parseInt(supplierId),
       base_cost: parseFloat(baseCost),
       create_product_supplier: createPs,
       is_preferred: isPreferred,
-    });
+    };
+    if (selectedSpId) {
+      payload.supplier_product_id = selectedSpId;
+      payload.units = Math.max(1, parseInt(units) || 1);
+    }
+    onAssign(payload);
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="card w-full max-w-md p-6">
+      <div className="card w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold">Assign Supplier</h2>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
@@ -299,33 +385,94 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
           <div className="mb-4 p-3 bg-gray-50 rounded-lg text-sm">
             <div className="font-medium">{lineItem.product_name}</div>
             {lineItem.sku && <div className="text-gray-500 font-mono text-xs">{lineItem.sku}</div>}
+            <div className="text-xs text-gray-500 mt-1">Qty {lineItem.quantity} · ${parseFloat(lineItem.price).toFixed(2)} each</div>
           </div>
         )}
 
         <div className="space-y-3">
           <div>
             <label className="label">Supplier *</label>
-            <select className="input" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+            <select className="input" value={supplierId} onChange={onSupplierChange}>
               <option value="">Select supplier…</option>
               {suppliers.map((s: any) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
           </div>
+
+          {supplierId && (
+            <div>
+              <label className="label">Catalog Item {catalog.length > 0 && <span className="text-gray-400 font-normal">({catalog.length} available)</span>}</label>
+              {selectedSp ? (
+                <div className="flex items-center justify-between gap-2 p-2 rounded-lg border border-blue-200 bg-blue-50">
+                  <div className="min-w-0">
+                    <div className="font-medium text-sm truncate">{selectedSp.name}</div>
+                    <div className="text-xs text-gray-500 font-mono">{selectedSp.sku} · ${parseFloat(selectedSp.unit_price).toFixed(2)} · stock {selectedSp.stock_quantity}</div>
+                  </div>
+                  <button className="text-xs text-gray-500 hover:text-red-500" onClick={() => setSelectedSpId(null)}>Change</button>
+                </div>
+              ) : catalog.length === 0 ? (
+                <p className="text-xs text-gray-400">Supplier has no catalog items. Enter base cost manually below.</p>
+              ) : (
+                <>
+                  <input
+                    className="input"
+                    placeholder="Search by name or SKU…"
+                    value={spQuery}
+                    onChange={(e) => setSpQuery(e.target.value)}
+                  />
+                  <div className="mt-1 border border-gray-200 rounded-lg max-h-40 overflow-y-auto bg-white">
+                    {filtered.length === 0 ? (
+                      <div className="p-2 text-xs text-gray-400">No matches</div>
+                    ) : filtered.slice(0, 50).map((sp: any) => (
+                      <button
+                        key={sp.id}
+                        type="button"
+                        className="w-full text-left px-2 py-1.5 text-sm hover:bg-blue-50 border-b border-gray-100 last:border-0"
+                        onClick={() => chooseSp(sp)}
+                      >
+                        <div className="font-medium truncate">{sp.name}</div>
+                        <div className="text-xs text-gray-500 font-mono">{sp.sku} · ${parseFloat(sp.unit_price).toFixed(2)} · stock {sp.stock_quantity}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">Picking a catalog item maps this variant for future orders and creates fulfillment items.</p>
+                </>
+              )}
+            </div>
+          )}
+
+          {selectedSp && (
+            <div>
+              <label className="label">Units per shop unit *</label>
+              <input
+                className="input"
+                type="number"
+                min="1"
+                value={units}
+                onChange={onUnitsChange}
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                Cost auto-updates to ${parseFloat(selectedSp.unit_price).toFixed(2)} × {units || 1} = <strong>${(parseFloat(selectedSp.unit_price) * (parseInt(units) || 1)).toFixed(2)}</strong> per shop unit. Order line qty {lineItem?.quantity || 1} → supplier ships {(parseInt(units) || 1) * (lineItem?.quantity || 1)} unit(s).
+              </p>
+            </div>
+          )}
+
           <div>
-            <label className="label">Base Cost (supplier price)</label>
+            <label className="label">Base Cost (per shop unit)</label>
             <input className="input" type="number" step="0.01" value={baseCost} onChange={(e) => setBaseCost(e.target.value)} />
           </div>
+
           {lineItem?.product_id && (
             <div className="space-y-2 border-t border-gray-100 pt-3">
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" checked={createPs} onChange={(e) => setCreatePs(e.target.checked)} className="rounded" />
-                <span>Remember this supplier for future orders</span>
+                <span>Remember this supplier for future orders of this variant</span>
               </label>
               {createPs && (
                 <label className="flex items-center gap-2 text-sm cursor-pointer ml-5">
                   <input type="checkbox" checked={isPreferred} onChange={(e) => setIsPreferred(e.target.checked)} className="rounded" />
-                  <span>Set as preferred supplier (auto-assign)</span>
+                  <span>Set as preferred supplier (auto-assign next time)</span>
                 </label>
               )}
             </div>

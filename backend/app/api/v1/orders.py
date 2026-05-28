@@ -168,7 +168,16 @@ async def assign_supplier_to_line_item(
     body: AssignSupplierBody,
     db: AsyncSession = Depends(get_db),
 ):
-    """Assign a supplier to a line item. Optionally creates ProductSupplier for future auto-assignment."""
+    """Assign a supplier (and optionally a specific catalog item) to a line item.
+
+    When supplier_product_id is supplied, the variant is mapped through to the
+    SupplierProduct via ProductComponent. This:
+      * remembers the mapping for future orders of the same variant
+      * recreates OrderFulfillmentItems on THIS line item so supplier stock /
+        invoicing is computed against the correct catalog row, with
+        quantity = units × line_item.quantity
+      * derives base_cost as unit_price × units when not explicitly provided
+    """
     result = await db.execute(
         select(OrderLineItem).where(OrderLineItem.id == li_id, OrderLineItem.order_id == order_id)
     )
@@ -180,11 +189,21 @@ async def assign_supplier_to_line_item(
     if not supplier:
         raise HTTPException(404, "Supplier not found")
 
+    sp = None
+    if body.supplier_product_id is not None:
+        sp = await db.get(SupplierProduct, body.supplier_product_id)
+        if not sp or sp.supplier_id != body.supplier_id:
+            raise HTTPException(400, "Supplier product does not belong to this supplier")
+        if body.units < 1:
+            raise HTTPException(400, "Units must be at least 1")
+
     li.supplier_id = body.supplier_id
     if body.base_cost is not None:
         li.base_cost = body.base_cost
+    elif sp is not None:
+        li.base_cost = sp.unit_price * body.units
 
-    # Create ProductSupplier relationship for future auto-assignment
+    # Persist the variant ↔ supplier mapping at the product level
     if li.product_id and body.create_product_supplier:
         ps_result = await db.execute(
             select(ProductSupplier).where(
@@ -193,23 +212,73 @@ async def assign_supplier_to_line_item(
             )
         )
         ps = ps_result.scalar_one_or_none()
+        cost_for_ps = body.base_cost if body.base_cost is not None else li.base_cost
         if not ps:
             ps = ProductSupplier(
                 product_id=li.product_id,
                 supplier_id=body.supplier_id,
-                cost=body.base_cost if body.base_cost is not None else li.base_cost,
+                supplier_sku=sp.sku if sp else None,
+                cost=cost_for_ps,
                 is_preferred=body.is_preferred,
             )
             db.add(ps)
-        elif body.is_preferred:
-            # If setting this as preferred, clear others
-            all_ps = await db.execute(
-                select(ProductSupplier).where(ProductSupplier.product_id == li.product_id)
-            )
-            for other in all_ps.scalars().all():
-                other.is_preferred = False
-            ps.is_preferred = True
+        else:
+            if sp and not ps.supplier_sku:
+                ps.supplier_sku = sp.sku
+            ps.cost = cost_for_ps
+            if body.is_preferred:
+                all_ps = await db.execute(
+                    select(ProductSupplier).where(ProductSupplier.product_id == li.product_id)
+                )
+                for other in all_ps.scalars().all():
+                    other.is_preferred = False
+                ps.is_preferred = True
 
+    # Persist the variant ↔ catalog mapping and refresh this LI's fulfillment items
+    if sp is not None and li.product_id:
+        comp_q = await db.execute(
+            select(ProductComponent).where(
+                ProductComponent.product_id == li.product_id,
+                ProductComponent.supplier_product_id == sp.id,
+            )
+        )
+        comp = comp_q.scalar_one_or_none()
+        if comp:
+            comp.quantity = body.units
+        else:
+            db.add(ProductComponent(
+                product_id=li.product_id,
+                supplier_product_id=sp.id,
+                quantity=body.units,
+            ))
+
+        # Replace any existing fulfillment items that no longer reflect the
+        # mapping. Only safe to do when no fulfillment has progressed yet.
+        existing_fi_q = await db.execute(
+            select(OrderFulfillmentItem).where(
+                OrderFulfillmentItem.order_line_item_id == li.id,
+            )
+        )
+        existing_fis = existing_fi_q.scalars().all()
+        all_safe = all(
+            fi.fulfill_status in (FulfillStatus.unfulfilled,) and not fi.tracking_number
+            for fi in existing_fis
+        )
+        if all_safe:
+            for fi in existing_fis:
+                await db.delete(fi)
+            comps_q = await db.execute(
+                select(ProductComponent).where(ProductComponent.product_id == li.product_id)
+            )
+            for c in comps_q.scalars().all():
+                db.add(OrderFulfillmentItem(
+                    order_line_item_id=li.id,
+                    supplier_product_id=c.supplier_product_id,
+                    quantity=c.quantity * li.quantity,
+                ))
+
+    order = await _get_or_404(order_id, db)
+    await _recalculate_order_status(order, db)
     await db.commit()
     await db.refresh(li)
     return await _line_item_out(li, db)

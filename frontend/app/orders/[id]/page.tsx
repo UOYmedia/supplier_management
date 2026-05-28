@@ -93,6 +93,15 @@ export default function OrderDetailPage() {
     } catch {}
   };
 
+  const markPrintedMut = useMutation({
+    mutationFn: (labelId: number) =>
+      ordersApi.markLabelPrinted(oid, labelId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["order", oid] });
+      qc.invalidateQueries({ queryKey: ["labels", oid] });
+    },
+  });
+
   const printLabelsForGroup = (items: any[]) => {
     const labelIds = Array.from(new Set(items.map((li) => li.label_id).filter(Boolean)));
     if (labelIds.length === 0) {
@@ -106,6 +115,8 @@ export default function OrderDetailPage() {
         ? ordersApi.labelDownloadUrl(oid, lbl.id)
         : lbl.label_url;
       if (url) printLabel(url);
+      // Auto-mark items as shipped now that the supplier is printing
+      markPrintedMut.mutate(labelId);
     }
   };
 

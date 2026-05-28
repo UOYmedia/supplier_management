@@ -2,6 +2,7 @@
 Async EasyPost REST client (httpx).
 Docs: https://www.easypost.com/docs/api
 """
+import base64
 import httpx
 from typing import Any
 
@@ -25,6 +26,46 @@ class EasyPostClient:
             detail = r.json().get("error", {}).get("message", r.text)
             raise EasyPostError(r.status_code, detail)
         return r.json()
+
+    async def _get(self, path: str, params: dict | None = None) -> dict:
+        async with httpx.AsyncClient(timeout=30) as http:
+            r = await http.get(f"{EASYPOST_BASE}{path}", params=params, auth=self._auth)
+        if not r.is_success:
+            detail = r.json().get("error", {}).get("message", r.text)
+            raise EasyPostError(r.status_code, detail)
+        return r.json()
+
+    async def fetch_label_pdf_b64(self, shipment: dict) -> str | None:
+        """Convert a bought shipment's label to PDF and download bytes as base64.
+
+        EasyPost labels default to PNG. We re-request format=PDF, then download
+        the PDF bytes from the resulting URL so we can archive it and serve
+        same-origin (which is what lets the browser auto-trigger print).
+        """
+        shipment_id = shipment.get("id")
+        if not shipment_id:
+            return None
+        pdf_url = None
+        try:
+            converted = await self._get(
+                f"/shipments/{shipment_id}/label",
+                params={"file_format": "pdf"},
+            )
+            pl = converted.get("postage_label") or {}
+            pdf_url = pl.get("label_pdf_url") or pl.get("label_url")
+        except Exception:
+            pl = shipment.get("postage_label") or {}
+            pdf_url = pl.get("label_pdf_url") or pl.get("label_url")
+        if not pdf_url:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                r = await http.get(pdf_url)
+                if not r.is_success:
+                    return None
+                return base64.b64encode(r.content).decode()
+        except Exception:
+            return None
 
     async def create_shipment(
         self,

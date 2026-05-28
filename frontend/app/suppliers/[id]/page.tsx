@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { suppliersApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Download, Pencil, Plus, Trash2, Truck, Upload, X, Pencil as PencilIcon } from "lucide-react";
+import { ArrowLeft, Download, Pencil, Plus, Printer, Trash2, Truck, Upload, X, Pencil as PencilIcon } from "lucide-react";
 import Link from "next/link";
 import { SupplierModal } from "../supplier-modal";
 import { OrderStatusBadge } from "../../orders/order-status-badge";
@@ -174,6 +174,8 @@ export default function SupplierDetailPage() {
             <div className="card p-6 text-center text-gray-400">No orders.</div>
           ) : groupOrders(orders).map((group: any) => {
             const unshipped = group.items.filter((i: any) => i.fulfill_status === "unfulfilled" || i.fulfill_status === "pending");
+            const needsLabel = unshipped.filter((i: any) => !i.tracking_number);
+            const labeled = group.items.filter((i: any) => i.label_id);
             const subtotal = group.items.reduce((s: number, i: any) => s + i.base_cost * i.quantity, 0);
             return (
               <div key={group.order_id} className="card mb-4">
@@ -191,14 +193,25 @@ export default function SupplierDetailPage() {
                       {group.items.length} item(s) · {group.buyer_name || "—"} · {group.ordered_at ? new Date(group.ordered_at).toLocaleDateString() : "—"} · supplier subtotal ${subtotal.toFixed(2)}
                     </div>
                   </div>
-                  {unshipped.length > 0 && (
-                    <Link
-                      href={`/orders/${group.order_id}?buy_label_supplier=${sid}`}
-                      className="btn-secondary text-xs py-1 whitespace-nowrap"
-                    >
-                      <Truck className="w-3 h-3" /> Buy Label ({unshipped.length})
-                    </Link>
-                  )}
+                  <div className="flex gap-2">
+                    {labeled.length > 0 && (
+                      <button
+                        type="button"
+                        className="btn-primary text-xs py-1 whitespace-nowrap"
+                        onClick={() => printAndMarkShipped(group.order_id, labeled, qc, sid)}
+                      >
+                        <Printer className="w-3 h-3" /> Print Label
+                      </button>
+                    )}
+                    {needsLabel.length > 0 && (
+                      <Link
+                        href={`/orders/${group.order_id}?buy_label_supplier=${sid}`}
+                        className="btn-secondary text-xs py-1 whitespace-nowrap"
+                      >
+                        <Truck className="w-3 h-3" /> Buy Label ({needsLabel.length})
+                      </Link>
+                    )}
+                  </div>
                 </div>
                 <div className="table-wrapper">
                   <table>
@@ -270,6 +283,48 @@ export default function SupplierDetailPage() {
       )}
     </div>
   );
+}
+
+function printAndMarkShipped(orderId: number, labeledItems: any[], qc: any, supplierId: number) {
+  // Group items by label_id so we hit each label once
+  const byLabel = new Map<number, any[]>();
+  for (const li of labeledItems) {
+    if (!li.label_id) continue;
+    const arr = byLabel.get(li.label_id) || [];
+    arr.push(li);
+    byLabel.set(li.label_id, arr);
+  }
+  for (const [labelId, items] of byLabel) {
+    const sample = items[0];
+    const url = sample.label_has_pdf
+      ? `/api/v1/orders/${orderId}/labels/${labelId}/download`
+      : sample.label_url;
+    if (url) {
+      const win = window.open(url, "_blank");
+      if (win) {
+        try {
+          win.focus();
+          setTimeout(() => { try { win.print(); } catch {} }, 800);
+        } catch {}
+      }
+    }
+    // Flip items to shipped server-side
+    fetch(`/api/v1/orders/${orderId}/labels/${labelId}/mark-printed`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+        "Content-Type": "application/json",
+      },
+    })
+      .then((r) => {
+        if (r.ok) {
+          toast.success("Marked as shipped");
+          qc.invalidateQueries({ queryKey: ["supplier-orders", supplierId] });
+          qc.invalidateQueries({ queryKey: ["order", orderId] });
+        }
+      })
+      .catch(() => {});
+  }
 }
 
 function groupOrders(items: any[]) {

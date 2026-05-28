@@ -139,7 +139,9 @@ async def portal_orders(
             "quantity": item.quantity,
             "fulfill_status": item.fulfill_status,
             "tracking_number": item.tracking_number,
+            "label_id": item.label_id,
             "label_url": label.label_url if label else None,
+            "label_has_pdf": bool(label and label.label_data) if label else False,
             "fulfilled_at": item.fulfilled_at.isoformat() if item.fulfilled_at else None,
         })
     return out
@@ -205,6 +207,20 @@ async def _supplier_line_items_for_order(
         )
     )
     return list(res.scalars().all())
+
+
+@router.post("/orders/{order_id}/labels/{label_id}/mark-printed")
+async def portal_mark_label_printed(
+    order_id: int,
+    label_id: int,
+    supplier: Supplier = Depends(get_current_supplier),
+    db: AsyncSession = Depends(get_db),
+):
+    label = await db.get(ShippingLabel, label_id)
+    if not label or label.supplier_id != supplier.id:
+        raise HTTPException(404, "Label not found")
+    from app.api.v1.orders import mark_label_printed
+    return await mark_label_printed(order_id=order_id, label_id=label_id, db=db)
 
 
 @router.get("/orders/{order_id}/parcel-estimate")
@@ -311,6 +327,7 @@ async def portal_easypost_buy(
         or bought.get("postage_label", {}).get("label_pdf_url")
     )
     cost_str = bought.get("selected_rate", {}).get("rate", "0")
+    label_data = await ep.fetch_label_pdf_b64(bought)
 
     label = ShippingLabel(
         supplier_id=supplier.id,
@@ -318,6 +335,7 @@ async def portal_easypost_buy(
         service=bought.get("selected_rate", {}).get("service", ""),
         tracking_number=tracking,
         label_url=label_url,
+        label_data=label_data,
         cost=Decimal(str(cost_str)),
         from_address=bought.get("from_address"),
         to_address=bought.get("to_address"),

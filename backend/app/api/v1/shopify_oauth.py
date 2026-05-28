@@ -13,6 +13,7 @@ Shopify OAuth 2.0 — supports both flows:
 import hashlib
 import hmac as hmac_lib
 import secrets
+from urllib.parse import quote as _urlencode
 import httpx
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -138,7 +139,10 @@ async def shopify_callback(
                 access_token = resp.json().get("access_token")
 
     if not access_token:
-        return JSONResponse({"error": "Could not obtain access token from Shopify"}, status_code=502)
+        frontend = settings.FRONTEND_URL.rstrip("/")
+        return RedirectResponse(
+            f"{frontend}/marketplace?error={_urlencode('Could not obtain access token from Shopify')}"
+        )
 
     # --- Upsert MarketplaceConnection ---
     shop_url = f"https://{shop}"

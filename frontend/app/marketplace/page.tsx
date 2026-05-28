@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { marketplaceApi } from "@/lib/api";
 import toast from "react-hot-toast";
@@ -13,6 +13,19 @@ export default function MarketplacePage() {
 
   const { data: connections = [], isLoading } = useQuery({ queryKey: ["connections"], queryFn: marketplaceApi.listConnections });
 
+  // Handle return from Shopify OAuth
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("connected") === "shopify") {
+      toast.success("Shopify connected successfully!");
+      qc.invalidateQueries({ queryKey: ["connections"] });
+      window.history.replaceState({}, "", "/marketplace");
+    } else if (params.get("error")) {
+      toast.error(decodeURIComponent(params.get("error") || "Shopify connection failed"));
+      window.history.replaceState({}, "", "/marketplace");
+    }
+  }, []);
+
   const deleteMut = useMutation({
     mutationFn: (id: number) => marketplaceApi.deleteConnection(id),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["connections"] }); toast.success("Deleted"); },
@@ -20,7 +33,7 @@ export default function MarketplacePage() {
 
   const testMut = useMutation({
     mutationFn: (id: number) => marketplaceApi.testConnection(id),
-    onSuccess: (data, id) => {
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["connections"] });
       toast[data.success ? "success" : "error"](data.success ? "Connection OK" : "Connection failed");
     },
@@ -59,12 +72,6 @@ export default function MarketplacePage() {
           <NextLink href="/marketplace/listings" className="btn-secondary flex items-center gap-1 text-sm">
             <List className="w-4 h-4" /> Listings Mapping
           </NextLink>
-          <a
-            href="/api/v1/shopify/auth?shop=gingerglow.myshopify.com"
-            className="btn-secondary flex items-center gap-1 text-sm"
-          >
-            <Link2 className="w-4 h-4" /> Connect Shopify
-          </a>
           <button className="btn-primary" onClick={() => setShowCreate(true)}>
             <Plus className="w-4 h-4" /> Add Connection
           </button>
@@ -161,31 +168,53 @@ function ConnectionCard({ conn, onTest, onEdit, onSyncOrders, onSyncProducts, on
   );
 }
 
+// Extract the bare .myshopify.com domain from whatever the user typed
+function toShopDomain(raw: string): string {
+  return raw.replace(/^https?:\/\//, "").replace(/\/$/, "").toLowerCase();
+}
+
 function ConnectionModal({ onClose, conn }: { onClose: () => void; conn?: any }) {
   const qc = useQueryClient();
+  const isShopify = conn ? conn.marketplace === "shopify" : true; // new connections default to shopify
   const creds = conn?.credentials ?? {};
-  const [marketplace, setMarketplace] = useState(conn?.marketplace ?? "shopify");
+
+  const [marketplace, setMarketplace] = useState<string>(conn?.marketplace ?? "shopify");
   const [name, setName] = useState(conn?.name ?? "");
   const [shopUrl, setShopUrl] = useState(conn?.shop_url ?? "");
-  const [accessToken, setAccessToken] = useState(creds.access_token ?? "");
   const [clientId, setClientId] = useState(creds.client_id ?? "");
   const [clientSecret, setClientSecret] = useState(creds.client_secret ?? "");
   const [refreshToken, setRefreshToken] = useState(creds.refresh_token ?? "");
   const [marketplaceId, setMarketplaceId] = useState(conn?.marketplace_id ?? "ATVPDKIKX0DER");
   const [sandbox, setSandbox] = useState(creds.sandbox ?? false);
 
+  // Amazon-only: save via API
   const mut = useMutation({
-    mutationFn: (data: object) => conn ? marketplaceApi.updateConnection(conn.id, data) : marketplaceApi.createConnection(data),
+    mutationFn: (data: object) =>
+      conn ? marketplaceApi.updateConnection(conn.id, data) : marketplaceApi.createConnection(data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["connections"] }); toast.success(conn ? "Updated" : "Created"); onClose(); },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
 
-  const handleSubmit = () => {
-    const credentials = marketplace === "shopify"
-      ? { access_token: accessToken }
-      : { client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, sandbox };
-    mut.mutate({ name, marketplace, credentials, shop_url: shopUrl || undefined, marketplace_id: marketplaceId || undefined });
+  // Rename existing Shopify connection
+  const renameMut = useMutation({
+    mutationFn: () => marketplaceApi.updateConnection(conn.id, { name }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["connections"] }); toast.success("Name updated"); onClose(); },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
+  });
+
+  const handleAmazonSubmit = () => {
+    mut.mutate({
+      name,
+      marketplace: "amazon",
+      credentials: { client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, sandbox },
+      marketplace_id: marketplaceId || undefined,
+    });
   };
+
+  // Shopify OAuth redirect
+  const shopDomain = toShopDomain(shopUrl);
+  const oauthHref = `/api/v1/shopify/auth?shop=${encodeURIComponent(shopDomain)}`;
+  const shopifyReady = shopDomain.endsWith(".myshopify.com");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
@@ -194,41 +223,96 @@ function ConnectionModal({ onClose, conn }: { onClose: () => void; conn?: any })
           <h2 className="font-semibold">{conn ? "Edit Connection" : "New Connection"}</h2>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
+
         <div className="space-y-3">
-          <div>
-            <label className="label">Name *</label>
-            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="My Shopify Store" />
-          </div>
-          <div>
-            <label className="label">Marketplace</label>
-            <select className="input" value={marketplace} onChange={(e) => setMarketplace(e.target.value)}>
-              <option value="shopify">Shopify</option>
-              <option value="amazon">Amazon</option>
-            </select>
-          </div>
-          {marketplace === "shopify" ? (
+          {/* Marketplace selector — only for new connections */}
+          {!conn && (
+            <div>
+              <label className="label">Marketplace</label>
+              <select className="input" value={marketplace} onChange={(e) => setMarketplace(e.target.value)}>
+                <option value="shopify">Shopify</option>
+                <option value="amazon">Amazon</option>
+              </select>
+            </div>
+          )}
+
+          {/* ── SHOPIFY ─────────────────────────────── */}
+          {marketplace === "shopify" && (
             <>
-              <div><label className="label">Shop URL</label><input className="input" value={shopUrl} onChange={(e) => setShopUrl(e.target.value)} placeholder="https://mystore.myshopify.com" /></div>
-              <div><label className="label">Access Token</label><input className="input" type="password" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} /></div>
+              {conn && (
+                /* Edit mode: allow renaming */
+                <div>
+                  <label className="label">Name</label>
+                  <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+                </div>
+              )}
+
+              <div>
+                <label className="label">Shop URL</label>
+                <input
+                  className="input"
+                  value={shopUrl}
+                  onChange={(e) => setShopUrl(e.target.value)}
+                  placeholder="yourstore.myshopify.com"
+                  readOnly={!!conn}
+                />
+                {shopUrl && !shopifyReady && (
+                  <p className="text-xs text-red-500 mt-1">Must end with .myshopify.com</p>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm text-blue-800 space-y-2">
+                <p className="font-medium flex items-center gap-1"><Link2 className="w-4 h-4" /> Shopify Partner App (OAuth)</p>
+                <p className="text-xs text-blue-600">
+                  Clicking the button below will open Shopify's authorization page. After you approve,
+                  you'll be redirected back here automatically.
+                </p>
+              </div>
+
+              <a
+                href={shopifyReady ? oauthHref : undefined}
+                onClick={!shopifyReady ? (e) => e.preventDefault() : undefined}
+                className={`btn-primary w-full flex items-center justify-center gap-2 ${!shopifyReady ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                <Link2 className="w-4 h-4" />
+                {conn ? "Reconnect with Shopify" : "Connect with Shopify"}
+              </a>
+
+              {conn && (
+                <div className="flex justify-end gap-2 pt-1">
+                  <button className="btn-secondary" onClick={onClose}>Cancel</button>
+                  <button className="btn-primary" disabled={!name} onClick={() => renameMut.mutate()}>
+                    Save Name
+                  </button>
+                </div>
+              )}
             </>
-          ) : (
+          )}
+
+          {/* ── AMAZON ─────────────────────────────── */}
+          {marketplace === "amazon" && (
             <>
-              <div><label className="label">Client ID</label><input className="input" value={clientId} onChange={(e) => setClientId(e.target.value)} /></div>
+              <div>
+                <label className="label">Name *</label>
+                <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="My Amazon Store" />
+              </div>
+              <div><label className="label">Client ID (LWA)</label><input className="input" value={clientId} onChange={(e) => setClientId(e.target.value)} /></div>
               <div><label className="label">Client Secret</label><input className="input" type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} /></div>
               <div><label className="label">Refresh Token</label><input className="input" type="password" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} /></div>
               <div><label className="label">Marketplace ID</label><input className="input" value={marketplaceId} onChange={(e) => setMarketplaceId(e.target.value)} /></div>
               <div className="flex items-center gap-2 pt-1">
                 <input type="checkbox" id="sandbox" checked={sandbox} onChange={(e) => setSandbox(e.target.checked)} className="w-4 h-4" />
-                <label htmlFor="sandbox" className="text-sm text-gray-600">Sandbox mode <span className="text-xs text-gray-400">(dùng khi chưa có Production app)</span></label>
+                <label htmlFor="sandbox" className="text-sm text-gray-600">Sandbox mode</label>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button className="btn-secondary" onClick={onClose}>Cancel</button>
+                <button className="btn-primary" disabled={!name} onClick={handleAmazonSubmit}>
+                  {conn ? "Save" : "Connect"}
+                </button>
               </div>
             </>
           )}
-        </div>
-        <div className="flex justify-end gap-2 mt-4">
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" disabled={!name} onClick={handleSubmit}>
-            {conn ? "Save" : "Connect"}
-          </button>
         </div>
       </div>
     </div>

@@ -48,9 +48,19 @@ class RateOut(BaseModel):
     est_delivery_days: int | None
 
 
+class DebugInfo(BaseModel):
+    from_address: dict
+    to_address: dict
+    parcel: dict
+    total_rates: int
+    usps_rates: int
+    line_item_ids: list[int]
+
+
 class RatesResponse(BaseModel):
     shipment_id: str
     rates: list[RateOut]
+    debug: DebugInfo | None = None
 
 
 class BuyRequest(BaseModel):
@@ -118,7 +128,15 @@ async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depend
     # Sort cheapest first
     rates_out.sort(key=lambda r: float(r.rate))
 
-    return RatesResponse(shipment_id=shipment["id"], rates=rates_out)
+    debug = DebugInfo(
+        from_address=from_addr,
+        to_address=to_addr,
+        parcel=parcel,
+        total_rates=len(all_rates),
+        usps_rates=len(filter_usps_rates(all_rates)),
+        line_item_ids=body.line_item_ids,
+    )
+    return RatesResponse(shipment_id=shipment["id"], rates=rates_out, debug=debug)
 
 
 @router.post("/{order_id}/easypost/buy", response_model=ShippingLabelOut, status_code=201)

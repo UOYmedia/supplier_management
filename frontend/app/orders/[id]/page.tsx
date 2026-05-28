@@ -830,6 +830,11 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
   const [selectedRate, setSelectedRate] = useState<string | null>(null);
   const [step, setStep] = useState<"parcel" | "rates">("parcel");
   const [estimateInfo, setEstimateInfo] = useState<{ complete: boolean; missing: any[] } | null>(null);
+  const [debug, setDebug] = useState<any | null>(null);
+  const [showRawDebug, setShowRawDebug] = useState(false);
+
+  const { data: orderForPreview } = useQuery({ queryKey: ["order", orderId], queryFn: () => ordersApi.get(orderId) });
+  const { data: supplierForPreview } = useQuery({ queryKey: ["supplier", supplierId], queryFn: () => suppliersApi.get(supplierId) });
 
   useEffect(() => {
     ordersApi
@@ -861,6 +866,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
     onSuccess: (data) => {
       setShipmentId(data.shipment_id);
       setRates(data.rates);
+      setDebug(data.debug);
       if (data.rates.length > 0) setSelectedRate(data.rates[0].id);
       setStep("rates");
     },
@@ -905,6 +911,15 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
             <div className="mb-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
               Covers <strong>{lineItemIds.length}</strong> item(s). Enter parcel dimensions for live carrier rates.
             </div>
+
+            {/* Debug preview — ship from / ship to */}
+            <AddressPreview
+              from={supplierForPreview}
+              to={orderForPreview?.shipping_address}
+              missingFromAddr={supplierForPreview && !supplierForPreview.street1}
+              missingToAddr={!orderForPreview?.shipping_address?.line1}
+            />
+
             {estimateInfo && (
               <div className={`mb-3 p-2 rounded-lg text-xs ${
                 estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
@@ -955,6 +970,12 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
 
         {step === "rates" && (
           <>
+            <EasyPostDebugPanel
+              debug={debug}
+              showRaw={showRawDebug}
+              onToggleRaw={() => setShowRawDebug((v) => !v)}
+            />
+
             {rates.length === 0 ? (
               <div className="text-center text-gray-400 py-8">No rates available for this shipment.</div>
             ) : (
@@ -1008,6 +1029,114 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function AddressPreview({
+  from,
+  to,
+  missingFromAddr,
+  missingToAddr,
+}: {
+  from?: any;
+  to?: any;
+  missingFromAddr?: boolean;
+  missingToAddr?: boolean;
+}) {
+  if (!from && !to) return null;
+  const fromLines = from
+    ? [
+        from.name,
+        [from.street1, from.street2].filter(Boolean).join(", "),
+        [from.city, from.state, from.zipcode].filter(Boolean).join(", "),
+        from.country,
+        from.phone,
+      ].filter(Boolean)
+    : [];
+  const toLines = to
+    ? [
+        to.name,
+        [to.line1, to.line2].filter(Boolean).join(", "),
+        [to.city, to.state, to.zip].filter(Boolean).join(", "),
+        to.country,
+        to.phone,
+      ].filter(Boolean)
+    : [];
+  return (
+    <div className="grid grid-cols-2 gap-2 mb-3">
+      <div className={`p-2 rounded-lg text-xs border ${missingFromAddr ? "border-red-200 bg-red-50" : "border-gray-200 bg-gray-50"}`}>
+        <div className="font-semibold text-gray-500 uppercase tracking-wide mb-1">Ship from (supplier)</div>
+        {missingFromAddr ? (
+          <div className="text-red-700">Supplier address incomplete — update the supplier profile before requesting rates.</div>
+        ) : fromLines.length === 0 ? (
+          <div className="text-gray-400">No supplier loaded</div>
+        ) : fromLines.map((l, i) => <div key={i} className="text-gray-700">{l}</div>)}
+      </div>
+      <div className={`p-2 rounded-lg text-xs border ${missingToAddr ? "border-red-200 bg-red-50" : "border-gray-200 bg-gray-50"}`}>
+        <div className="font-semibold text-gray-500 uppercase tracking-wide mb-1">Ship to (buyer)</div>
+        {missingToAddr ? (
+          <div className="text-red-700">Order has no shipping address.</div>
+        ) : toLines.length === 0 ? (
+          <div className="text-gray-400">No address</div>
+        ) : toLines.map((l, i) => <div key={i} className="text-gray-700">{l}</div>)}
+      </div>
+    </div>
+  );
+}
+
+function EasyPostDebugPanel({
+  debug,
+  showRaw,
+  onToggleRaw,
+}: {
+  debug: any | null;
+  showRaw: boolean;
+  onToggleRaw: () => void;
+}) {
+  if (!debug) return null;
+  const renderAddr = (a: any) => [
+    a.name,
+    [a.street1, a.street2].filter(Boolean).join(", "),
+    [a.city, a.state, a.zip].filter(Boolean).join(", "),
+    a.country,
+    a.phone,
+  ].filter(Boolean);
+  return (
+    <div className="mb-4 border border-gray-200 rounded-lg">
+      <div className="p-3 border-b border-gray-100 bg-gray-50 rounded-t-lg">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">EasyPost Request — Verify before paying</span>
+          <button className="text-xs text-blue-600 hover:underline" onClick={onToggleRaw}>
+            {showRaw ? "Hide raw JSON" : "Show raw JSON"}
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="bg-white p-2 rounded border border-gray-200">
+            <div className="text-gray-500 mb-0.5">Ship from (supplier)</div>
+            {renderAddr(debug.from_address).map((l, i) => <div key={i} className="text-gray-700">{l}</div>)}
+          </div>
+          <div className="bg-white p-2 rounded border border-gray-200">
+            <div className="text-gray-500 mb-0.5">Ship to (buyer)</div>
+            {renderAddr(debug.to_address).map((l, i) => <div key={i} className="text-gray-700">{l}</div>)}
+          </div>
+        </div>
+        <div className="mt-2 bg-white p-2 rounded border border-gray-200 text-xs">
+          <span className="text-gray-500">Parcel:</span>{" "}
+          <span className="font-medium">{debug.parcel.weight} oz</span>{" · "}
+          <span className="font-medium">{debug.parcel.length}×{debug.parcel.width}×{debug.parcel.height} in</span>
+          <span className="ml-3 text-gray-500">Rates returned:</span>{" "}
+          <span className="font-medium">{debug.usps_rates} USPS</span>
+          <span className="text-gray-500"> / {debug.total_rates} total</span>
+          <span className="ml-3 text-gray-500">Line items:</span>{" "}
+          <span className="font-mono">{(debug.line_item_ids || []).join(", ")}</span>
+        </div>
+      </div>
+      {showRaw && (
+        <pre className="text-[10px] leading-tight p-2 max-h-40 overflow-auto bg-gray-900 text-gray-100 rounded-b-lg font-mono">
+{JSON.stringify(debug, null, 2)}
+        </pre>
+      )}
     </div>
   );
 }

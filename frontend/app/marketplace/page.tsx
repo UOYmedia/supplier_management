@@ -3,12 +3,13 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { marketplaceApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, RefreshCw, Zap, Trash2, CheckCircle, XCircle, X, Package, Link2, MapPin, List } from "lucide-react";
+import { Plus, RefreshCw, Zap, Trash2, CheckCircle, XCircle, X, Package, Link2, MapPin, List, Pencil } from "lucide-react";
 import NextLink from "next/link";
 
 export default function MarketplacePage() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
+  const [editConn, setEditConn] = useState<any>(null);
 
   const { data: connections = [], isLoading } = useQuery({ queryKey: ["connections"], queryFn: marketplaceApi.listConnections });
 
@@ -82,6 +83,7 @@ export default function MarketplacePage() {
           {connections.map((c: any) => (
             <ConnectionCard key={c.id} conn={c}
               onTest={() => testMut.mutate(c.id)}
+              onEdit={() => setEditConn(c)}
               onSyncOrders={() => syncOrdersMut.mutate(c.id)}
               onSyncProducts={() => syncProductsMut.mutate(c.id)}
               onSyncLocations={() => syncLocationsMut.mutate(c.id)}
@@ -93,11 +95,12 @@ export default function MarketplacePage() {
       )}
 
       {showCreate && <ConnectionModal onClose={() => setShowCreate(false)} />}
+      {editConn && <ConnectionModal conn={editConn} onClose={() => setEditConn(null)} />}
     </div>
   );
 }
 
-function ConnectionCard({ conn, onTest, onSyncOrders, onSyncProducts, onSyncLocations, onSyncListings, onDelete }: any) {
+function ConnectionCard({ conn, onTest, onEdit, onSyncOrders, onSyncProducts, onSyncLocations, onSyncListings, onDelete }: any) {
   const statusIcon = conn.status === "active" ? (
     <CheckCircle className="w-4 h-4 text-green-500" />
   ) : conn.status === "error" ? (
@@ -147,7 +150,10 @@ function ConnectionCard({ conn, onTest, onSyncOrders, onSyncProducts, onSyncLoca
             <List className="w-3 h-3" /> Sync Listings
           </button>
         )}
-        <button className="p-1.5 hover:text-red-500 text-gray-400" onClick={onDelete}>
+        <button className="p-1.5 hover:text-blue-500 text-gray-400" onClick={onEdit} title="Edit">
+          <Pencil className="w-4 h-4" />
+        </button>
+        <button className="p-1.5 hover:text-red-500 text-gray-400" onClick={onDelete} title="Delete">
           <Trash2 className="w-4 h-4" />
         </button>
       </div>
@@ -157,15 +163,16 @@ function ConnectionCard({ conn, onTest, onSyncOrders, onSyncProducts, onSyncLoca
 
 function ConnectionModal({ onClose, conn }: { onClose: () => void; conn?: any }) {
   const qc = useQueryClient();
+  const creds = conn?.credentials ?? {};
   const [marketplace, setMarketplace] = useState(conn?.marketplace ?? "shopify");
   const [name, setName] = useState(conn?.name ?? "");
   const [shopUrl, setShopUrl] = useState(conn?.shop_url ?? "");
-  const [accessToken, setAccessToken] = useState("");
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const [refreshToken, setRefreshToken] = useState("");
-  const [marketplaceId, setMarketplaceId] = useState("ATVPDKIKX0DER");
-  const [sandbox, setSandbox] = useState(false);
+  const [accessToken, setAccessToken] = useState(creds.access_token ?? "");
+  const [clientId, setClientId] = useState(creds.client_id ?? "");
+  const [clientSecret, setClientSecret] = useState(creds.client_secret ?? "");
+  const [refreshToken, setRefreshToken] = useState(creds.refresh_token ?? "");
+  const [marketplaceId, setMarketplaceId] = useState(conn?.marketplace_id ?? "ATVPDKIKX0DER");
+  const [sandbox, setSandbox] = useState(creds.sandbox ?? false);
 
   const mut = useMutation({
     mutationFn: (data: object) => conn ? marketplaceApi.updateConnection(conn.id, data) : marketplaceApi.createConnection(data),

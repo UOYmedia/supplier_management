@@ -13,7 +13,8 @@ class ProductSupplierBase(BaseModel):
 
 
 class ProductSupplierCreate(ProductSupplierBase):
-    pass
+    supplier_product_id: int | None = None
+    units: int = 1
 
 
 class ProductSupplierUpdate(BaseModel):

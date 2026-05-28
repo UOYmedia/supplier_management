@@ -367,16 +367,78 @@ function EditComponentModal({ productId, component, onClose }: { productId: numb
 function AddSupplierModal({ productId, suppliers, onClose }: { productId: number; suppliers: any[]; onClose: () => void }) {
   const qc = useQueryClient();
   const [form, setForm] = useState({ supplier_id: "", supplier_sku: "", cost: "0", stock: "0", lead_time_days: "0", is_preferred: false });
+  const [selectedSpId, setSelectedSpId] = useState<number | null>(null);
+  const [units, setUnits] = useState("1");
+  const [spQuery, setSpQuery] = useState("");
+
+  const { data: catalog = [] } = useQuery({
+    queryKey: ["supplier-catalog", form.supplier_id],
+    queryFn: () => suppliersApi.listProducts(parseInt(form.supplier_id)),
+    enabled: !!form.supplier_id,
+  });
+
+  const selectedSp = catalog.find((c: any) => c.id === selectedSpId);
+  const filtered = spQuery
+    ? catalog.filter((sp: any) =>
+        sp.name.toLowerCase().includes(spQuery.toLowerCase()) ||
+        sp.sku.toLowerCase().includes(spQuery.toLowerCase())
+      )
+    : catalog;
+
+  const chooseSp = (sp: any) => {
+    setSelectedSpId(sp.id);
+    setForm((p) => ({
+      ...p,
+      supplier_sku: sp.sku,
+      cost: String(sp.unit_price),
+      stock: String(sp.stock_quantity),
+    }));
+    setSpQuery("");
+  };
+
+  const clearSp = () => {
+    setSelectedSpId(null);
+    setUnits("1");
+  };
+
+  const onSupplierChange = (e: any) => {
+    setForm((p) => ({ ...p, supplier_id: e.target.value }));
+    setSelectedSpId(null);
+    setSpQuery("");
+  };
+
   const mut = useMutation({
     mutationFn: (data: object) => productsApi.addSupplier(productId, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["product-suppliers", productId] }); toast.success("Supplier added"); onClose(); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["product-suppliers", productId] });
+      qc.invalidateQueries({ queryKey: ["product-components", productId] });
+      toast.success(selectedSpId ? "Supplier + component linked" : "Supplier added");
+      onClose();
+    },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
+
   const f = (k: string) => (e: any) => setForm((p) => ({ ...p, [k]: e.target.value }));
+
+  const submit = () => {
+    const payload: any = {
+      supplier_id: parseInt(form.supplier_id),
+      supplier_sku: form.supplier_sku,
+      cost: parseFloat(form.cost) || 0,
+      stock: parseInt(form.stock) || 0,
+      lead_time_days: parseInt(form.lead_time_days) || 0,
+      is_preferred: form.is_preferred,
+    };
+    if (selectedSpId) {
+      payload.supplier_product_id = selectedSpId;
+      payload.units = Math.max(1, parseInt(units) || 1);
+    }
+    mut.mutate(payload);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="card w-full max-w-md p-6">
+      <div className="card w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold">Add Supplier</h2>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
@@ -384,11 +446,70 @@ function AddSupplierModal({ productId, suppliers, onClose }: { productId: number
         <div className="space-y-3">
           <div>
             <label className="label">Supplier *</label>
-            <select className="input" value={form.supplier_id} onChange={f("supplier_id")}>
+            <select className="input" value={form.supplier_id} onChange={onSupplierChange}>
               <option value="">Select…</option>
               {suppliers.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </div>
+
+          {form.supplier_id && (
+            <div>
+              <label className="label">Catalog Item {catalog.length > 0 && <span className="text-gray-400 font-normal">({catalog.length} available)</span>}</label>
+              {selectedSp ? (
+                <div className="flex items-center justify-between gap-2 p-2 rounded-lg border border-blue-200 bg-blue-50">
+                  <div className="min-w-0">
+                    <div className="font-medium text-sm truncate">{selectedSp.name}</div>
+                    <div className="text-xs text-gray-500 font-mono">{selectedSp.sku} · ${parseFloat(selectedSp.unit_price).toFixed(2)} · stock {selectedSp.stock_quantity}</div>
+                  </div>
+                  <button className="text-xs text-gray-500 hover:text-red-500" onClick={clearSp}>Change</button>
+                </div>
+              ) : catalog.length === 0 ? (
+                <p className="text-xs text-gray-400">Supplier has no catalog items. Fields below are entered manually.</p>
+              ) : (
+                <>
+                  <input
+                    className="input"
+                    placeholder="Search by name or SKU…"
+                    value={spQuery}
+                    onChange={(e) => setSpQuery(e.target.value)}
+                  />
+                  <div className="mt-1 border border-gray-200 rounded-lg max-h-40 overflow-y-auto bg-white">
+                    {filtered.length === 0 ? (
+                      <div className="p-2 text-xs text-gray-400">No matches</div>
+                    ) : filtered.slice(0, 50).map((sp: any) => (
+                      <button
+                        key={sp.id}
+                        type="button"
+                        className="w-full text-left px-2 py-1.5 text-sm hover:bg-blue-50 border-b border-gray-100 last:border-0"
+                        onClick={() => chooseSp(sp)}
+                      >
+                        <div className="font-medium truncate">{sp.name}</div>
+                        <div className="text-xs text-gray-500 font-mono">{sp.sku} · ${parseFloat(sp.unit_price).toFixed(2)} · stock {sp.stock_quantity}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">Pick to auto-fill SKU/cost/stock and enable supplier-side auto-fulfillment.</p>
+                </>
+              )}
+            </div>
+          )}
+
+          {selectedSp && (
+            <div>
+              <label className="label">Units per shop unit *</label>
+              <input
+                className="input"
+                type="number"
+                min="1"
+                value={units}
+                onChange={(e) => setUnits(e.target.value)}
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                Set &gt; 1 for sets/combos. Each order of 1 shop unit will deduct {units || 1} × order qty from this supplier's stock.
+              </p>
+            </div>
+          )}
+
           <div><label className="label">Supplier SKU</label><input className="input" value={form.supplier_sku} onChange={f("supplier_sku")} /></div>
           <div><label className="label">Cost ($)</label><input className="input" type="number" step="0.01" value={form.cost} onChange={f("cost")} /></div>
           <div><label className="label">Initial Stock</label><input className="input" type="number" value={form.stock} onChange={f("stock")} /></div>
@@ -400,7 +521,7 @@ function AddSupplierModal({ productId, suppliers, onClose }: { productId: number
         </div>
         <div className="flex justify-end gap-2 mt-4">
           <button className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" disabled={!form.supplier_id} onClick={() => mut.mutate({ ...form, supplier_id: parseInt(form.supplier_id) })}>Add</button>
+          <button className="btn-primary" disabled={!form.supplier_id || mut.isPending} onClick={submit}>Add</button>
         </div>
       </div>
     </div>

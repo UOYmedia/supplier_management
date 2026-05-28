@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { Printer, CheckCircle, ChevronDown, ChevronUp, Package } from "lucide-react";
+import { Printer, CheckCircle, ChevronDown, ChevronUp, Package, Truck, X, Tag, Loader2 } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   unfulfilled: "badge-yellow",
@@ -34,6 +34,8 @@ export default function PortalOrdersPage() {
   const [filter, setFilter] = useState("unfulfilled");
   const [expandedOrder, setExpandedOrder] = useState<number | null>(null);
   const [shipping, setShipping] = useState<Record<number, string>>({});
+  const [canBuyLabels, setCanBuyLabels] = useState(false);
+  const [buyingFor, setBuyingFor] = useState<number | null>(null);
 
   const load = () => {
     const token = localStorage.getItem("supplier_token");
@@ -46,6 +48,15 @@ export default function PortalOrdersPage() {
   };
 
   useEffect(() => { setLoading(true); load(); }, [filter]);
+
+  useEffect(() => {
+    const token = localStorage.getItem("supplier_token");
+    if (!token) return;
+    fetch("/api/v1/portal/me", { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setCanBuyLabels(!!d.can_buy_labels))
+      .catch(() => {});
+  }, []);
 
   const markShipped = async (itemId: number) => {
     const token = localStorage.getItem("supplier_token");
@@ -131,6 +142,14 @@ export default function PortalOrdersPage() {
                       {orderItems.length} item(s) · {first.buyer_name || "—"} · {new Date(first.ordered_at).toLocaleDateString()}
                     </div>
                   </div>
+                  {canBuyLabels && !allShipped && !orderItems.some((i) => i.label_url) && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setBuyingFor(orderId); }}
+                      className="btn-secondary text-xs py-1.5 shrink-0"
+                    >
+                      <Truck className="w-3 h-3" /> Buy Label
+                    </button>
+                  )}
                   <button className="p-1.5 hover:bg-gray-100 rounded text-gray-400 shrink-0">
                     {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                   </button>
@@ -213,6 +232,201 @@ export default function PortalOrdersPage() {
           })}
         </div>
       )}
+
+      {buyingFor !== null && (
+        <BuyLabelModal
+          orderId={buyingFor}
+          onClose={() => setBuyingFor(null)}
+          onBought={() => { setBuyingFor(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BuyLabelModal({ orderId, onClose, onBought }: {
+  orderId: number;
+  onClose: () => void;
+  onBought: () => void;
+}) {
+  const [parcel, setParcel] = useState({ weight: "", length: "", width: "", height: "" });
+  const [step, setStep] = useState<"parcel" | "rates">("parcel");
+  const [shipmentId, setShipmentId] = useState<string | null>(null);
+  const [rates, setRates] = useState<any[]>([]);
+  const [selectedRate, setSelectedRate] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const pf = (k: string) => (e: any) => setParcel((p) => ({ ...p, [k]: e.target.value }));
+  const parcelValid = parcel.weight && parcel.length && parcel.width && parcel.height;
+
+  const authFetch = (url: string, init: RequestInit = {}) => {
+    const token = localStorage.getItem("supplier_token");
+    return fetch(url, {
+      ...init,
+      headers: {
+        ...(init.headers || {}),
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    });
+  };
+
+  const getRates = async () => {
+    setBusy(true);
+    try {
+      const resp = await authFetch("/api/v1/portal/orders/easypost/rates", {
+        method: "POST",
+        body: JSON.stringify({
+          order_id: orderId,
+          parcel: {
+            weight: parseFloat(parcel.weight),
+            length: parseFloat(parcel.length),
+            width: parseFloat(parcel.width),
+            height: parseFloat(parcel.height),
+          },
+        }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => null);
+        throw new Error(err?.detail || "Failed to get rates");
+      }
+      const data = await resp.json();
+      setShipmentId(data.shipment_id);
+      setRates(data.rates);
+      if (data.rates.length > 0) setSelectedRate(data.rates[0].id);
+      setStep("rates");
+    } catch (e: any) {
+      toast.error(e.message || "Failed to get rates");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const buy = async () => {
+    if (!shipmentId || !selectedRate) return;
+    setBusy(true);
+    try {
+      const resp = await authFetch("/api/v1/portal/orders/easypost/buy", {
+        method: "POST",
+        body: JSON.stringify({ order_id: orderId, shipment_id: shipmentId, rate_id: selectedRate }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => null);
+        throw new Error(err?.detail || "Purchase failed");
+      }
+      toast.success("Label purchased — items moved to Pending");
+      onBought();
+    } catch (e: any) {
+      toast.error(e.message || "Purchase failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-lg p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="font-semibold">Buy Label via EasyPost</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Order #{orderId} · {step === "parcel" ? "Step 1 of 2 — Parcel dimensions" : "Step 2 of 2 — Select rate"}
+            </p>
+          </div>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        {step === "parcel" && (
+          <>
+            <div className="mb-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
+              Enter parcel dimensions to get live USPS rates. Label cost will be recorded against the company.
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">Weight (oz) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 16" value={parcel.weight} onChange={pf("weight")} />
+              </div>
+              <div>
+                <label className="label">Length (in) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 12" value={parcel.length} onChange={pf("length")} />
+              </div>
+              <div>
+                <label className="label">Width (in) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 9" value={parcel.width} onChange={pf("width")} />
+              </div>
+              <div>
+                <label className="label">Height (in) *</label>
+                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 4" value={parcel.height} onChange={pf("height")} />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button className="btn-secondary" onClick={onClose}>Cancel</button>
+              <button
+                className="btn-primary flex items-center gap-1.5"
+                disabled={!parcelValid || busy}
+                onClick={getRates}
+              >
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Tag className="w-4 h-4" />}
+                {busy ? "Getting rates…" : "Get Rates"}
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === "rates" && (
+          <>
+            {rates.length === 0 ? (
+              <div className="text-center text-gray-400 py-8">No rates available.</div>
+            ) : (
+              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {rates.map((r) => (
+                  <label
+                    key={r.id}
+                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                      selectedRate === r.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="rate"
+                      checked={selectedRate === r.id}
+                      onChange={() => setSelectedRate(r.id)}
+                      className="accent-blue-600"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-sm">{r.carrier}</span>
+                        <span className="text-xs text-gray-500">{r.service}</span>
+                      </div>
+                      {(r.delivery_days || r.est_delivery_days) && (
+                        <div className="text-xs text-gray-400">
+                          {r.delivery_days ?? r.est_delivery_days} business day(s)
+                          {r.delivery_date && ` · by ${new Date(r.delivery_date).toLocaleDateString()}`}
+                        </div>
+                      )}
+                    </div>
+                    <span className="font-semibold text-sm">${parseFloat(r.rate).toFixed(2)} {r.currency}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-between gap-2 mt-5">
+              <button className="btn-secondary" onClick={() => setStep("parcel")}>← Back</button>
+              <div className="flex gap-2">
+                <button className="btn-secondary" onClick={onClose}>Cancel</button>
+                <button
+                  className="btn-primary flex items-center gap-1.5"
+                  disabled={!selectedRate || busy}
+                  onClick={buy}
+                >
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />}
+                  {busy ? "Purchasing…" : "Buy Label"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

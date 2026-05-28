@@ -137,6 +137,23 @@ async def update_line_item(order_id: int, li_id: int, body: OrderLineItemUpdate,
     if body.fulfill_status and body.fulfill_status == "shipped" and not li.fulfilled_at:
         li.fulfilled_at = datetime.now(timezone.utc)
 
+    # Propagate explicit terminal status to child fulfillment items so the two
+    # sides stay in sync. Skip for intermediate states (unfulfilled/pending)
+    # which would otherwise undo legitimate per-item progress.
+    if body.fulfill_status in (
+        FulfillStatus.shipped, FulfillStatus.delivered,
+        FulfillStatus.cancelled, FulfillStatus.returned,
+    ):
+        fi_result = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        for fi in fi_result.scalars().all():
+            fi.fulfill_status = body.fulfill_status
+            if body.fulfill_status == FulfillStatus.shipped and not fi.fulfilled_at:
+                fi.fulfilled_at = datetime.now(timezone.utc)
+            if body.tracking_number and not fi.tracking_number:
+                fi.tracking_number = body.tracking_number
+
     order = await _get_or_404(order_id, db)
     await _recalculate_order_status(order, db)
     await db.commit()
@@ -230,6 +247,10 @@ async def update_fulfillment_item(
     if body.fulfill_status == FulfillStatus.shipped and not fi.fulfilled_at:
         fi.fulfilled_at = datetime.now(timezone.utc)
 
+    # Roll up: FI → LI → Order
+    li = await db.get(OrderLineItem, li_id)
+    if li:
+        await _recalculate_line_item_status(li, db)
     order = await _get_or_404(order_id, db)
     await _recalculate_order_status(order, db)
     await db.commit()
@@ -304,6 +325,39 @@ async def list_labels(order_id: int, db: AsyncSession = Depends(get_db)):
 
 
 # --- Helpers ---
+
+async def _recalculate_line_item_status(li: OrderLineItem, db: AsyncSession):
+    """Roll up the line item's fulfill_status from its fulfillment items.
+
+    Only applies to line items that actually have fulfillment items (i.e. the
+    product had ProductComponents). Line items without fulfillment items keep
+    their manually-set status.
+    """
+    fi_result = await db.execute(
+        select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+    )
+    fis = fi_result.scalars().all()
+    if not fis:
+        return
+
+    statuses = [fi.fulfill_status for fi in fis]
+    active = [s for s in statuses if s != FulfillStatus.cancelled]
+
+    if not active:
+        new_status = FulfillStatus.cancelled
+    elif all(s == FulfillStatus.delivered for s in active):
+        new_status = FulfillStatus.delivered
+    elif all(s in (FulfillStatus.shipped, FulfillStatus.delivered) for s in active):
+        new_status = FulfillStatus.shipped
+    elif any(s in (FulfillStatus.pending, FulfillStatus.shipped, FulfillStatus.delivered) for s in active):
+        new_status = FulfillStatus.pending
+    else:
+        new_status = FulfillStatus.unfulfilled
+
+    li.fulfill_status = new_status
+    if new_status == FulfillStatus.shipped and not li.fulfilled_at:
+        li.fulfilled_at = datetime.now(timezone.utc)
+
 
 async def _recalculate_order_status(order: Order, db: AsyncSession):
     """Update order.status based on aggregate of line item fulfill_status values."""

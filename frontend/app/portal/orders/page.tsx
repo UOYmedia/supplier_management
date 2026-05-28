@@ -24,7 +24,9 @@ interface LineItem {
   quantity: number;
   fulfill_status: string;
   tracking_number: string | null;
+  label_id: number | null;
   label_url: string | null;
+  label_has_pdf: boolean;
   fulfilled_at: string | null;
 }
 
@@ -74,26 +76,39 @@ export default function PortalOrdersPage() {
     }
   };
 
-  const printLabel = (url: string) => {
+  const printLabel = (url: string, orderId?: number, labelId?: number) => {
     if (!url) { toast.error("No label available"); return; }
     const win = window.open(url, "_blank");
     if (!win) {
       toast.error("Popup blocked — allow popups to print labels");
       return;
     }
-    // Best-effort auto-trigger print after the label loads. Cross-origin PDFs
-    // (e.g. EasyPost-hosted) will throw on .print(); the user can still print
-    // from the opened tab's PDF viewer.
     try {
       win.focus();
       setTimeout(() => {
         try { win.print(); } catch {}
       }, 800);
     } catch {}
+    // Mark items shipped after print
+    if (orderId && labelId) {
+      const token = localStorage.getItem("supplier_token");
+      fetch(`/api/v1/portal/orders/${orderId}/labels/${labelId}/mark-printed`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((r) => { if (r.ok) { toast.success("Marked as shipped"); load(); } })
+        .catch(() => {});
+    }
   };
 
-  const labelUrlForOrder = (orderItems: LineItem[]) =>
-    orderItems.find((i) => i.label_url)?.label_url || null;
+  const labelInfoForOrder = (orderItems: LineItem[]) => {
+    const withLabel = orderItems.find((i) => i.label_id);
+    if (!withLabel) return null;
+    const url = withLabel.label_has_pdf
+      ? `/api/v1/orders/${withLabel.order_id}/labels/${withLabel.label_id}/download`
+      : withLabel.label_url;
+    return url ? { url, labelId: withLabel.label_id!, orderId: withLabel.order_id } : null;
+  };
 
   const addrText = (a: any) =>
     a ? [a.name, a.line1, a.line2, a.city, a.state, a.zip, a.country].filter(Boolean).join(", ") : "—";
@@ -159,18 +174,18 @@ export default function PortalOrdersPage() {
                     </div>
                   </div>
                   {(() => {
-                    const labelUrl = labelUrlForOrder(orderItems);
-                    if (labelUrl && !allShipped) {
+                    const info = labelInfoForOrder(orderItems);
+                    if (info && !allShipped) {
                       return (
                         <button
-                          onClick={(e) => { e.stopPropagation(); printLabel(labelUrl); }}
+                          onClick={(e) => { e.stopPropagation(); printLabel(info.url, info.orderId, info.labelId); }}
                           className="btn-primary text-xs py-1.5 shrink-0"
                         >
                           <Printer className="w-3 h-3" /> Print Label
                         </button>
                       );
                     }
-                    if (canBuyLabels && !allShipped && !labelUrl) {
+                    if (canBuyLabels && !allShipped && !info) {
                       return (
                         <button
                           onClick={(e) => { e.stopPropagation(); setBuyingFor(orderId); }}
@@ -220,9 +235,14 @@ export default function PortalOrdersPage() {
                             </div>
 
                             <div className="flex items-center gap-2 shrink-0">
-                              {item.label_url && (
+                              {item.label_id && (
                                 <button
-                                  onClick={() => printLabel(item.label_url!)}
+                                  onClick={() => {
+                                    const url = item.label_has_pdf
+                                      ? `/api/v1/orders/${item.order_id}/labels/${item.label_id}/download`
+                                      : item.label_url;
+                                    if (url) printLabel(url, item.order_id, item.label_id!);
+                                  }}
                                   className="btn-secondary text-xs py-1.5"
                                 >
                                   <Printer className="w-3 h-3" /> Print Label

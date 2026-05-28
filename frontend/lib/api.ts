@@ -138,6 +138,8 @@ export const ordersApi = {
   createLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/labels`, data).then((r) => r.data),
   listLabels: (orderId: number) => api.get(`/orders/${orderId}/labels`).then((r) => r.data),
   labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,
+  markLabelPrinted: (orderId: number, labelId: number) =>
+    api.post(`/orders/${orderId}/labels/${labelId}/mark-printed`).then((r) => r.data),
   parcelEstimate: (orderId: number, params: { supplier_id?: number; line_item_ids?: number[] }) => {
     const q: any = {};
     if (params.supplier_id != null) q.supplier_id = params.supplier_id;

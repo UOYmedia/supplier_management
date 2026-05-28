@@ -5,7 +5,7 @@ from sqlalchemy import select, func
 from app.core.database import get_db
 from app.models.supplier import Supplier, Invoice, InvoiceLineItem, SupplierProduct
 from app.models.product import ProductSupplier
-from app.models.order import Order, OrderLineItem, OrderFulfillmentItem, FulfillStatus
+from app.models.order import Order, OrderLineItem, OrderFulfillmentItem, FulfillStatus, ShippingLabel
 from app.schemas.supplier import (
     SupplierCreate, SupplierUpdate, SupplierOut, SupplierListOut,
     InvoiceCreate, InvoiceUpdate, InvoiceOut
@@ -372,9 +372,16 @@ async def supplier_orders(
         order_q = await db.execute(select(Order).where(Order.id.in_(order_ids)))
         orders_map = {o.id: o for o in order_q.scalars().all()}
 
+    label_ids = list({li.label_id for li in items if li.label_id is not None})
+    labels_map: dict[int, ShippingLabel] = {}
+    if label_ids:
+        label_q = await db.execute(select(ShippingLabel).where(ShippingLabel.id.in_(label_ids)))
+        labels_map = {l.id: l for l in label_q.scalars().all()}
+
     out = []
     for li in items:
         order = orders_map.get(li.order_id)
+        label = labels_map.get(li.label_id) if li.label_id else None
         out.append({
             "id": li.id,
             "order_id": li.order_id,
@@ -392,6 +399,8 @@ async def supplier_orders(
             "fulfill_status": li.fulfill_status,
             "tracking_number": li.tracking_number,
             "label_id": li.label_id,
+            "label_url": label.label_url if label else None,
+            "label_has_pdf": bool(label and label.label_data) if label else False,
         })
     return out
 

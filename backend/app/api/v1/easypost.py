@@ -145,6 +145,9 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         or bought.get("postage_label", {}).get("label_pdf_url")
     )
     cost_str = bought.get("selected_rate", {}).get("rate", "0")
+    # Archive the PDF so we can serve same-origin (enables auto-print) and
+    # survive EasyPost URL expiry.
+    label_data = await ep.fetch_label_pdf_b64(bought)
 
     label = ShippingLabel(
         supplier_id=body.supplier_id,
@@ -152,6 +155,7 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         service=bought.get("selected_rate", {}).get("service", ""),
         tracking_number=tracking,
         label_url=label_url,
+        label_data=label_data,
         cost=Decimal(str(cost_str)),
         from_address=bought.get("from_address"),
         to_address=bought.get("to_address"),

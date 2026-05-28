@@ -485,6 +485,45 @@ async def estimate_parcel(
     }
 
 
+@router.post("/{order_id}/labels/{label_id}/mark-printed")
+async def mark_label_printed(order_id: int, label_id: int, db: AsyncSession = Depends(get_db)):
+    """Flip every line item (and its fulfillment items) attached to this label
+    to shipped. Called by the UI right after Print Label so the order status
+    follows the physical workflow without a separate manual step."""
+    label = await db.get(ShippingLabel, label_id)
+    if not label:
+        raise HTTPException(404, "Label not found")
+
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.order_id == order_id,
+            OrderLineItem.label_id == label_id,
+        )
+    )
+    lis = list(li_res.scalars().all())
+    flipped = 0
+    now = datetime.now(timezone.utc)
+    for li in lis:
+        if li.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+            li.fulfill_status = FulfillStatus.shipped
+            if not li.fulfilled_at:
+                li.fulfilled_at = now
+            flipped += 1
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        for fi in fi_res.scalars().all():
+            if fi.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+                fi.fulfill_status = FulfillStatus.shipped
+                if not fi.fulfilled_at:
+                    fi.fulfilled_at = now
+
+    order = await _get_or_404(order_id, db)
+    await _recalculate_order_status(order, db)
+    await db.commit()
+    return {"marked_shipped": flipped}
+
+
 @router.get("/{order_id}/labels", response_model=list[ShippingLabelOut])
 async def list_labels(order_id: int, db: AsyncSession = Depends(get_db)):
     await _get_or_404(order_id, db)

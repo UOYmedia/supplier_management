@@ -138,6 +138,12 @@ export const ordersApi = {
   createLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/labels`, data).then((r) => r.data),
   listLabels: (orderId: number) => api.get(`/orders/${orderId}/labels`).then((r) => r.data),
   labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,
+  parcelEstimate: (orderId: number, params: { supplier_id?: number; line_item_ids?: number[] }) => {
+    const q: any = {};
+    if (params.supplier_id != null) q.supplier_id = params.supplier_id;
+    if (params.line_item_ids?.length) q.line_item_ids = params.line_item_ids.join(",");
+    return api.get(`/orders/${orderId}/parcel-estimate`, { params: q }).then((r) => r.data);
+  },
 };
 
 // Marketplace

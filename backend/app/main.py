@@ -71,6 +71,11 @@ async def _run_migrations():
         "ALTER TABLE marketplace_listings ALTER COLUMN product_id DROP NOT NULL",
         # Supplier-level toggle: allow self-service EasyPost label purchase from the portal
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS can_buy_labels BOOLEAN NOT NULL DEFAULT FALSE",
+        # Per-unit shipping dimensions on supplier catalog items (for parcel auto-estimate)
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS weight NUMERIC(10, 3)",
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS length NUMERIC(10, 2)",
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS width NUMERIC(10, 2)",
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS height NUMERIC(10, 2)",
     ]
     try:
         async with engine.begin() as conn:

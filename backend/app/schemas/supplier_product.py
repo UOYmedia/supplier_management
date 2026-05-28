@@ -8,6 +8,10 @@ class SupplierProductCreate(BaseModel):
     sku: str
     unit_price: Decimal = Decimal("0")
     stock_quantity: int = 0
+    weight: Decimal | None = None
+    length: Decimal | None = None
+    width: Decimal | None = None
+    height: Decimal | None = None
 
 
 class SupplierProductUpdate(BaseModel):
@@ -15,6 +19,10 @@ class SupplierProductUpdate(BaseModel):
     sku: str | None = None
     unit_price: Decimal | None = None
     stock_quantity: int | None = None
+    weight: Decimal | None = None
+    length: Decimal | None = None
+    width: Decimal | None = None
+    height: Decimal | None = None
 
 
 class SupplierProductOut(BaseModel):
@@ -27,6 +35,10 @@ class SupplierProductOut(BaseModel):
     stock_quantity: int
     sold_quantity: int = 0
     pending_quantity: int = 0
+    weight: Decimal | None = None
+    length: Decimal | None = None
+    width: Decimal | None = None
+    height: Decimal | None = None
     created_at: datetime
     updated_at: datetime
 

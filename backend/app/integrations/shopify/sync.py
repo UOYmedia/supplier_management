@@ -53,87 +53,114 @@ class ShopifySync(MarketplaceSyncer):
         page_info is supplied, no other filter params may be sent — only limit.
         """
         count = 0
+        variant_count = 0
         page_info = None
+        page_num = 0
 
         while True:
+            page_num += 1
             params: dict = {"limit": 250}
             if page_info:
+                # When using cursor pagination, only `limit` may be sent alongside page_info.
                 params["page_info"] = page_info
+            else:
+                # First request: include archived / draft too so we sync the full catalog.
+                params["status"] = "any"
 
             data, headers = await self.client.get_with_headers("/products.json", params=params)
             products = data.get("products", [])
-            print(f"Shopify sync_products: page got {len(products)} products (total so far: {count})", flush=True)
+            link_header = headers.get("Link") or headers.get("link")
+            print(
+                f"Shopify sync_products page {page_num}: {len(products)} products "
+                f"(variants synced so far: {variant_count}, link present: {bool(link_header)})",
+                flush=True,
+            )
 
             if not products:
                 break
 
             for sp in products:
-                # Each Shopify product may have multiple variants — treat each as a SKU
+                count += 1
+                # Each Shopify product may have multiple variants — treat each as a SKU.
+                # Wrap each variant in a savepoint so a single bad row doesn't poison
+                # the whole page (or hide everything that follows it).
                 for variant in sp.get("variants", []):
-                    sku = variant.get("sku") or f"SHOPIFY-{sp['id']}-{variant['id']}"
-                    external_id = str(sp["id"])
+                    try:
+                        async with db.begin_nested():
+                            sku = variant.get("sku") or f"SHOPIFY-{sp['id']}-{variant['id']}"
+                            external_id = str(sp["id"])
 
-                    # Upsert Product
-                    result = await db.execute(
-                        select(Product).where(Product.sku == sku)
-                    )
-                    product = result.scalar_one_or_none()
+                            # Upsert Product
+                            result = await db.execute(
+                                select(Product).where(Product.sku == sku)
+                            )
+                            product = result.scalar_one_or_none()
 
-                    price = float(variant.get("price") or 0)
-                    weight = float(variant.get("weight") or 0)
-                    title = sp.get("title", "")
-                    if len(sp.get("variants", [])) > 1:
-                        title = f"{title} - {variant.get('title', '')}"
+                            price = float(variant.get("price") or 0)
+                            weight = float(variant.get("weight") or 0)
+                            title = sp.get("title", "")
+                            if len(sp.get("variants", [])) > 1:
+                                title = f"{title} - {variant.get('title', '')}"
 
-                    if not product:
-                        product = Product(
-                            name=title,
-                            sku=sku,
-                            description=sp.get("body_html", "") or "",
-                            weight=weight,
+                            if not product:
+                                product = Product(
+                                    name=title,
+                                    sku=sku,
+                                    description=sp.get("body_html", "") or "",
+                                    weight=weight,
+                                )
+                                db.add(product)
+                                await db.flush()
+                            else:
+                                product.name = title
+                                product.weight = weight
+
+                            # Upsert MarketplaceListing
+                            listing_result = await db.execute(
+                                select(MarketplaceListing).where(
+                                    MarketplaceListing.external_id == external_id,
+                                    MarketplaceListing.connection_id == self.connection.id,
+                                    MarketplaceListing.marketplace_sku == sku,
+                                )
+                            )
+                            listing = listing_result.scalar_one_or_none()
+                            if not listing:
+                                db.add(MarketplaceListing(
+                                    product_id=product.id,
+                                    connection_id=self.connection.id,
+                                    external_id=external_id,
+                                    marketplace_sku=sku,
+                                    title=title,
+                                    price=price,
+                                    status=ListingStatus.active,
+                                    synced_at=datetime.now(timezone.utc),
+                                ))
+                            else:
+                                listing.title = title
+                                listing.price = price
+                                listing.synced_at = datetime.now(timezone.utc)
+
+                        variant_count += 1
+                    except Exception as ve:
+                        print(
+                            f"Shopify sync_products: skipped variant {variant.get('id')} "
+                            f"of product {sp.get('id')} — {ve}",
+                            flush=True,
                         )
-                        db.add(product)
-                        await db.flush()
-                    else:
-                        product.name = title
-                        product.weight = weight
-
-                    # Upsert MarketplaceListing
-                    listing_result = await db.execute(
-                        select(MarketplaceListing).where(
-                            MarketplaceListing.external_id == external_id,
-                            MarketplaceListing.connection_id == self.connection.id,
-                            MarketplaceListing.marketplace_sku == sku,
-                        )
-                    )
-                    listing = listing_result.scalar_one_or_none()
-                    if not listing:
-                        db.add(MarketplaceListing(
-                            product_id=product.id,
-                            connection_id=self.connection.id,
-                            external_id=external_id,
-                            marketplace_sku=sku,
-                            title=title,
-                            price=price,
-                            status=ListingStatus.active,
-                            synced_at=datetime.now(timezone.utc),
-                        ))
-                    else:
-                        listing.title = title
-                        listing.price = price
-                        listing.synced_at = datetime.now(timezone.utc)
-
-                    count += 1
 
             # Persist this page before moving to the next so we don't lose
             # progress on transient errors mid-import.
             await db.commit()
 
-            page_info = extract_next_page_info(headers.get("Link") or headers.get("link"))
+            page_info = extract_next_page_info(link_header)
             if not page_info:
                 break
 
-        return count
+        print(
+            f"Shopify sync_products: done — {count} products, {variant_count} variants imported",
+            flush=True,
+        )
+        return variant_count
 
     async def sync_locations(self, db: AsyncSession) -> dict:
         """

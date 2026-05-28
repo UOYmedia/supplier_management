@@ -52,6 +52,11 @@ class SupplierProduct(Base):
     sku: Mapped[str] = mapped_column(String(100), index=True)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
     stock_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    # Per-unit shipping dimensions — used by the parcel auto-estimator when buying a label
+    weight: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))  # oz
+    length: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))  # in
+    width: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))   # in
+    height: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))  # in
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

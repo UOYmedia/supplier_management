@@ -56,10 +56,8 @@ class ShopifySync(MarketplaceSyncer):
             if page_info:
                 params["page_info"] = page_info
 
-            try:
-                data = await self.client.get("/products.json", params=params)
-            except Exception:
-                break
+            data = await self.client.get("/products.json", params=params)
+            print(f"Shopify sync_products: got {len(data.get('products', []))} products", flush=True)
 
             products = data.get("products", [])
             if not products:

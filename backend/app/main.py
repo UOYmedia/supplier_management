@@ -63,8 +63,13 @@ async def _run_migrations():
     ]
     try:
         async with engine.begin() as conn:
+            # Abort any DDL that waits more than 3 s for a lock — prevents startup hangs
+            await conn.execute(text("SET lock_timeout = '3s'"))
             for sql in migrations:
-                await conn.execute(text(sql))
+                try:
+                    await conn.execute(text(sql))
+                except Exception as e:
+                    print(f"WARNING: migration skipped ({e})", flush=True)
         print("Migrations applied.", flush=True)
     except Exception as e:
         print(f"WARNING: migration error (non-fatal): {e}", flush=True)

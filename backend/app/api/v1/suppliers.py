@@ -1,15 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
-from app.models.supplier import Supplier, Invoice, InvoiceLineItem
+from app.models.supplier import Supplier, Invoice, InvoiceLineItem, SupplierProduct
 from app.models.product import ProductSupplier
-from app.models.order import OrderLineItem
+from app.models.order import Order, OrderLineItem, OrderFulfillmentItem, FulfillStatus, ShippingLabel
 from app.schemas.supplier import (
     SupplierCreate, SupplierUpdate, SupplierOut, SupplierListOut,
     InvoiceCreate, InvoiceUpdate, InvoiceOut
 )
+from app.schemas.supplier_product import (
+    SupplierProductCreate, SupplierProductUpdate, SupplierProductOut
+)
+import csv
+import io
 import uuid
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
@@ -84,7 +91,7 @@ async def delete_supplier(supplier_id: int, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
 
-# --- Supplier inventory ---
+# --- Supplier inventory (legacy ProductSupplier-based, kept for backward compat) ---
 
 @router.get("/{supplier_id}/inventory")
 async def supplier_inventory(supplier_id: int, db: AsyncSession = Depends(get_db)):
@@ -126,6 +133,255 @@ async def update_stock(
     return {"stock": stock}
 
 
+# --- Supplier product catalog ---
+
+@router.get("/{supplier_id}/products", response_model=list[SupplierProductOut])
+async def list_supplier_products(supplier_id: int, db: AsyncSession = Depends(get_db)):
+    await _get_or_404(supplier_id, db)
+    result = await db.execute(
+        select(SupplierProduct).where(SupplierProduct.supplier_id == supplier_id)
+    )
+    products = result.scalars().all()
+    return [await _supplier_product_out(sp, db) for sp in products]
+
+
+@router.post("/{supplier_id}/products", response_model=SupplierProductOut, status_code=201)
+async def create_supplier_product(
+    supplier_id: int, body: SupplierProductCreate, db: AsyncSession = Depends(get_db)
+):
+    await _get_or_404(supplier_id, db)
+    sp = SupplierProduct(supplier_id=supplier_id, **body.model_dump())
+    db.add(sp)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(400, f"SKU '{body.sku}' already exists for this supplier")
+    await db.refresh(sp)
+    return await _supplier_product_out(sp, db)
+
+
+CATALOG_CSV_COLUMNS = [
+    "name", "sku", "unit_price", "stock_quantity",
+    "weight", "length", "width", "height",
+]
+
+
+def _fmt_dim(v) -> str:
+    return "" if v is None else f"{v}"
+
+
+@router.get("/{supplier_id}/products/export.csv")
+async def export_supplier_catalog(supplier_id: int, db: AsyncSession = Depends(get_db)):
+    supplier = await _get_or_404(supplier_id, db)
+    result = await db.execute(
+        select(SupplierProduct).where(SupplierProduct.supplier_id == supplier_id)
+    )
+    products = result.scalars().all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(CATALOG_CSV_COLUMNS)
+    for sp in products:
+        writer.writerow([
+            sp.name, sp.sku, f"{sp.unit_price:.2f}", sp.stock_quantity,
+            _fmt_dim(sp.weight), _fmt_dim(sp.length), _fmt_dim(sp.width), _fmt_dim(sp.height),
+        ])
+
+    safe_name = "".join(c if c.isalnum() else "_" for c in supplier.name)[:40] or "supplier"
+    filename = f"{safe_name}_catalog_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{supplier_id}/products/template.csv")
+async def supplier_catalog_template(supplier_id: int, db: AsyncSession = Depends(get_db)):
+    await _get_or_404(supplier_id, db)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(CATALOG_CSV_COLUMNS)
+    writer.writerow(["Example Product", "SKU-001", "9.99", "100", "8.5", "12", "9", "4"])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="catalog_template.csv"'},
+    )
+
+
+@router.post("/{supplier_id}/products/import/csv", status_code=201)
+async def import_supplier_catalog(
+    supplier_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_or_404(supplier_id, db)
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Uploaded file is empty")
+
+    # Detect common non-CSV formats
+    if raw[:4] in (b"PK\x03\x04", b"PK\x05\x06") or raw[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        raise HTTPException(400, "Please upload a CSV file, not an Excel file (.xlsx / .xls). "
+                            "In Excel: File → Save As → CSV (Comma delimited).")
+
+    text = None
+    for enc in ("utf-8-sig", "utf-16", "cp1252", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        raise HTTPException(400, "Could not decode CSV — please save as UTF-8")
+
+    # Try to auto-detect delimiter; fall back to comma then semicolon
+    sample = text[:4096]
+    detected_dialect = None
+    try:
+        detected_dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except csv.Error:
+        pass
+
+    def _try_parse(dialect_or_delimiter):
+        if isinstance(dialect_or_delimiter, str):
+            r = csv.DictReader(io.StringIO(text), delimiter=dialect_or_delimiter)
+        else:
+            r = csv.DictReader(io.StringIO(text), dialect=dialect_or_delimiter)
+        fnames = r.fieldnames or []
+        norm = {(f or "").strip().lower() for f in fnames}
+        return r, norm, fnames
+
+    reader = None
+    fieldnames_raw = []
+    for candidate in ([detected_dialect] if detected_dialect else []) + [",", ";", "\t"]:
+        if candidate is None:
+            continue
+        r, norm_fnames, raw_fnames = _try_parse(candidate)
+        if {"name", "sku"} <= norm_fnames:
+            reader = r
+            fieldnames = norm_fnames
+            fieldnames_raw = raw_fnames
+            break
+
+    if reader is None:
+        # Still couldn't find required columns — try once more with comma to get field list for error
+        r, norm_fnames, raw_fnames = _try_parse(",")
+        found = sorted(raw_fnames) if raw_fnames else []
+        detail = "CSV missing required columns: 'name' and 'sku'."
+        if found:
+            detail += f" Columns found: {found}. Make sure your CSV header row has exactly 'name' and 'sku' columns."
+        else:
+            detail += " No columns detected — check that the file is a valid CSV."
+        raise HTTPException(400, detail)
+
+    existing_q = await db.execute(
+        select(SupplierProduct).where(SupplierProduct.supplier_id == supplier_id)
+    )
+    by_sku: dict[str, SupplierProduct] = {sp.sku: sp for sp in existing_q.scalars().all()}
+
+    created = updated = 0
+    errors: list[str] = []
+    seen_skus: set[str] = set()
+
+    for idx, row in enumerate(reader, start=2):  # row 1 is header
+        norm = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+        sku = norm.get("sku", "")
+        name = norm.get("name", "")
+        if not sku or not name:
+            errors.append(f"Row {idx}: missing name or sku")
+            continue
+        if sku in seen_skus:
+            errors.append(f"Row {idx}: duplicate SKU '{sku}' in file")
+            continue
+        seen_skus.add(sku)
+
+        try:
+            unit_price = Decimal(norm["unit_price"]) if norm.get("unit_price") else Decimal("0")
+        except (InvalidOperation, KeyError):
+            errors.append(f"Row {idx} (SKU {sku}): invalid unit_price")
+            continue
+        try:
+            stock_quantity = int(norm["stock_quantity"]) if norm.get("stock_quantity") else 0
+        except (ValueError, KeyError):
+            errors.append(f"Row {idx} (SKU {sku}): invalid stock_quantity")
+            continue
+
+        def _opt_dec(key: str):
+            raw = norm.get(key) or ""
+            if not raw:
+                return None
+            try:
+                return Decimal(raw)
+            except InvalidOperation:
+                errors.append(f"Row {idx} (SKU {sku}): invalid {key}")
+                return "__INVALID__"
+
+        weight = _opt_dec("weight")
+        length = _opt_dec("length")
+        width = _opt_dec("width")
+        height = _opt_dec("height")
+        if any(v == "__INVALID__" for v in (weight, length, width, height)):
+            continue
+
+        sp = by_sku.get(sku)
+        if sp:
+            sp.name = name
+            sp.unit_price = unit_price
+            sp.stock_quantity = stock_quantity
+            if weight is not None: sp.weight = weight
+            if length is not None: sp.length = length
+            if width is not None: sp.width = width
+            if height is not None: sp.height = height
+            updated += 1
+        else:
+            sp = SupplierProduct(
+                supplier_id=supplier_id,
+                name=name,
+                sku=sku,
+                unit_price=unit_price,
+                stock_quantity=stock_quantity,
+                weight=weight,
+                length=length,
+                width=width,
+                height=height,
+            )
+            db.add(sp)
+            by_sku[sku] = sp
+            created += 1
+
+    await db.commit()
+    return {"created": created, "updated": updated, "errors": errors}
+
+
+@router.get("/{supplier_id}/products/{sp_id}", response_model=SupplierProductOut)
+async def get_supplier_product(supplier_id: int, sp_id: int, db: AsyncSession = Depends(get_db)):
+    sp = await _get_sp_or_404(supplier_id, sp_id, db)
+    return await _supplier_product_out(sp, db)
+
+
+@router.patch("/{supplier_id}/products/{sp_id}", response_model=SupplierProductOut)
+async def update_supplier_product(
+    supplier_id: int, sp_id: int, body: SupplierProductUpdate, db: AsyncSession = Depends(get_db)
+):
+    sp = await _get_sp_or_404(supplier_id, sp_id, db)
+    for k, v in body.model_dump(exclude_none=True).items():
+        setattr(sp, k, v)
+    await db.commit()
+    await db.refresh(sp)
+    return await _supplier_product_out(sp, db)
+
+
+@router.delete("/{supplier_id}/products/{sp_id}", status_code=204)
+async def delete_supplier_product(supplier_id: int, sp_id: int, db: AsyncSession = Depends(get_db)):
+    sp = await _get_sp_or_404(supplier_id, sp_id, db)
+    await db.delete(sp)
+    await db.commit()
+
+
 # --- Supplier orders (only own line items) ---
 
 @router.get("/{supplier_id}/orders")
@@ -139,13 +395,35 @@ async def supplier_orders(
     result = await db.execute(
         select(OrderLineItem)
         .where(OrderLineItem.supplier_id == supplier_id)
+        .order_by(OrderLineItem.id.desc())
         .offset(skip).limit(limit)
     )
-    items = result.scalars().all()
-    return [
-        {
+    items = list(result.scalars().all())
+
+    order_ids = list({li.order_id for li in items})
+    orders_map: dict[int, Order] = {}
+    if order_ids:
+        order_q = await db.execute(select(Order).where(Order.id.in_(order_ids)))
+        orders_map = {o.id: o for o in order_q.scalars().all()}
+
+    label_ids = list({li.label_id for li in items if li.label_id is not None})
+    labels_map: dict[int, ShippingLabel] = {}
+    if label_ids:
+        label_q = await db.execute(select(ShippingLabel).where(ShippingLabel.id.in_(label_ids)))
+        labels_map = {l.id: l for l in label_q.scalars().all()}
+
+    out = []
+    for li in items:
+        order = orders_map.get(li.order_id)
+        label = labels_map.get(li.label_id) if li.label_id else None
+        out.append({
             "id": li.id,
             "order_id": li.order_id,
+            "external_order_id": order.external_order_id if order else None,
+            "marketplace": order.marketplace if order else None,
+            "ordered_at": order.ordered_at.isoformat() if order else None,
+            "buyer_name": order.buyer_name if order else None,
+            "order_status": order.status if order else None,
             "product_id": li.product_id,
             "product_name": li.product_name,
             "sku": li.sku,
@@ -154,9 +432,11 @@ async def supplier_orders(
             "base_cost": float(li.base_cost),
             "fulfill_status": li.fulfill_status,
             "tracking_number": li.tracking_number,
-        }
-        for li in items
-    ]
+            "label_id": li.label_id,
+            "label_url": label.label_url if label else None,
+            "label_has_pdf": bool(label and label.label_data) if label else False,
+        })
+    return out
 
 
 # --- Invoices ---
@@ -229,3 +509,47 @@ async def _get_or_404(supplier_id: int, db: AsyncSession) -> Supplier:
     if not s:
         raise HTTPException(404, "Supplier not found")
     return s
+
+
+async def _get_sp_or_404(supplier_id: int, sp_id: int, db: AsyncSession) -> SupplierProduct:
+    result = await db.execute(
+        select(SupplierProduct).where(
+            SupplierProduct.id == sp_id,
+            SupplierProduct.supplier_id == supplier_id,
+        )
+    )
+    sp = result.scalar_one_or_none()
+    if not sp:
+        raise HTTPException(404, "Supplier product not found")
+    return sp
+
+
+async def _supplier_product_out(sp: SupplierProduct, db: AsyncSession) -> SupplierProductOut:
+    pending_result = await db.execute(
+        select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
+            OrderFulfillmentItem.supplier_product_id == sp.id,
+            OrderFulfillmentItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+        )
+    )
+    sold_result = await db.execute(
+        select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
+            OrderFulfillmentItem.supplier_product_id == sp.id,
+            OrderFulfillmentItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
+        )
+    )
+    return SupplierProductOut(
+        id=sp.id,
+        supplier_id=sp.supplier_id,
+        name=sp.name,
+        sku=sp.sku,
+        unit_price=sp.unit_price,
+        stock_quantity=sp.stock_quantity,
+        pending_quantity=int(pending_result.scalar()),
+        sold_quantity=int(sold_result.scalar()),
+        weight=sp.weight,
+        length=sp.length,
+        width=sp.width,
+        height=sp.height,
+        created_at=sp.created_at,
+        updated_at=sp.updated_at,
+    )

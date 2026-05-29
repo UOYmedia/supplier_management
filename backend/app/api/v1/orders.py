@@ -493,6 +493,65 @@ async def mark_label_printed(order_id: int, label_id: int, db: AsyncSession = De
     return {"marked_shipped": flipped}
 
 
+_IN_TRANSIT_STATUSES = {"in_transit", "out_for_delivery", "available_for_pickup", "delivered"}
+
+
+@router.post("/sync-tracking")
+async def sync_tracking(db: AsyncSession = Depends(get_db)):
+    """Scan drop_off line items with tracking numbers; promote to shipped if EasyPost reports in-transit."""
+    from app.core.config import settings
+    from app.integrations.easypost.client import EasyPostClient, EasyPostError
+
+    if not settings.EASYPOST_API_KEY:
+        return {"checked": 0, "updated": 0, "skipped": 0, "note": "EasyPost not configured"}
+
+    ep = EasyPostClient(settings.EASYPOST_API_KEY)
+    q = select(OrderLineItem).where(
+        OrderLineItem.fulfill_status == FulfillStatus.drop_off,
+        OrderLineItem.tracking_number.isnot(None),
+    )
+    result = await db.execute(q)
+    lis = list(result.scalars().all())
+
+    updated = 0
+    skipped = 0
+    now = datetime.now(timezone.utc)
+
+    for li in lis:
+        try:
+            label = await db.get(ShippingLabel, li.label_id) if li.label_id else None
+            carrier = (label.carrier or "USPS") if label else "USPS"
+            tracker = await ep.create_tracker(li.tracking_number, carrier)
+            if tracker.get("status") in _IN_TRANSIT_STATUSES:
+                li.fulfill_status = FulfillStatus.shipped
+                if not li.fulfilled_at:
+                    li.fulfilled_at = now
+                fi_res = await db.execute(
+                    select(OrderFulfillmentItem).where(
+                        OrderFulfillmentItem.order_line_item_id == li.id,
+                        OrderFulfillmentItem.fulfill_status == FulfillStatus.drop_off,
+                    )
+                )
+                for fi in fi_res.scalars().all():
+                    fi.fulfill_status = FulfillStatus.shipped
+                    if not fi.fulfilled_at:
+                        fi.fulfilled_at = now
+                order = await db.get(Order, li.order_id)
+                if order:
+                    await _recalculate_order_status(order, db)
+                updated += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            print(f"WARNING: tracking sync {li.tracking_number}: {e}", flush=True)
+            skipped += 1
+
+    if updated > 0:
+        await db.commit()
+
+    return {"checked": len(lis), "updated": updated, "skipped": skipped}
+
+
 @router.get("/{order_id}/labels", response_model=list[ShippingLabelOut])
 async def list_labels(order_id: int, db: AsyncSession = Depends(get_db)):
     await _get_or_404(order_id, db)

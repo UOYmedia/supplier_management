@@ -113,14 +113,15 @@ async def portal_products(
 
 # --- Orders to fulfill ---
 
-def _supplier_status(item: OrderLineItem) -> str:
-    if item.fulfill_status in (FulfillStatus.shipped, FulfillStatus.delivered):
+def _supplier_status(fulfill_status: FulfillStatus, label_id: int | None) -> str:
+    """Map DB fulfill_status + label presence to supplier-facing status string."""
+    if fulfill_status in (FulfillStatus.shipped, FulfillStatus.delivered):
         return "shipped"
-    if item.fulfill_status == FulfillStatus.drop_off:
-        return "drop_off"
-    if item.fulfill_status == FulfillStatus.pending or item.label_id is not None:
-        return "new_order"
-    return "missing_label"
+    if fulfill_status == FulfillStatus.drop_off:
+        return "fulfilled"
+    if fulfill_status == FulfillStatus.pending or label_id is not None:
+        return "unfulfilled"
+    return "pending_label"
 
 
 @router.get("/orders")
@@ -131,12 +132,12 @@ async def portal_orders(
 ):
     from sqlalchemy import or_, and_
     q = select(OrderLineItem).where(OrderLineItem.supplier_id == supplier.id)
-    if supplier_status == "missing_label":
+    if supplier_status == "pending_label":
         q = q.where(
             OrderLineItem.fulfill_status == FulfillStatus.unfulfilled,
             OrderLineItem.label_id.is_(None),
         )
-    elif supplier_status == "new_order":
+    elif supplier_status == "unfulfilled":
         q = q.where(
             or_(
                 OrderLineItem.fulfill_status == FulfillStatus.pending,
@@ -146,52 +147,62 @@ async def portal_orders(
                 ),
             )
         )
-    elif supplier_status == "drop_off":
+    elif supplier_status == "fulfilled":
         q = q.where(OrderLineItem.fulfill_status == FulfillStatus.drop_off)
     elif supplier_status == "shipped":
         q = q.where(
             OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered])
         )
     result = await db.execute(q.order_by(OrderLineItem.id.desc()))
-    items = result.scalars().all()
+    lis = result.scalars().all()
     out = []
-    for item in items:
-        order = await db.get(Order, item.order_id)
-        label = await db.get(ShippingLabel, item.label_id) if item.label_id else None
-        supplier_sku = None
-        image_url = None
-        fi_res = await db.execute(
-            select(OrderFulfillmentItem)
-            .where(OrderFulfillmentItem.order_line_item_id == item.id)
-            .limit(1)
-        )
-        fi = fi_res.scalar_one_or_none()
-        if fi:
-            sp = await db.get(SupplierProduct, fi.supplier_product_id)
-            if sp:
-                supplier_sku = sp.sku
-                image_url = sp.image_url
-        out.append({
-            "line_item_id": item.id,
-            "order_id": item.order_id,
+    for li in lis:
+        order = await db.get(Order, li.order_id)
+        label = await db.get(ShippingLabel, li.label_id) if li.label_id else None
+        base = {
+            "order_id": li.order_id,
+            "order_line_item_id": li.id,
             "external_order_id": order.external_order_id if order else None,
             "marketplace": order.marketplace if order else None,
             "ordered_at": order.ordered_at.isoformat() if order else None,
             "buyer_name": order.buyer_name if order else None,
             "shipping_address": order.shipping_address if order else None,
-            "product_name": item.product_name,
-            "sku": item.sku,
-            "supplier_sku": supplier_sku,
-            "image_url": image_url,
-            "quantity": item.quantity,
-            "fulfill_status": item.fulfill_status,
-            "supplier_status": _supplier_status(item),
-            "tracking_number": item.tracking_number,
-            "label_id": item.label_id,
+            "label_id": li.label_id,
             "label_url": label.label_url if label else None,
             "label_has_pdf": bool(label and label.label_data) if label else False,
-            "fulfilled_at": item.fulfilled_at.isoformat() if item.fulfilled_at else None,
-        })
+        }
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        fis = fi_res.scalars().all()
+        if fis:
+            for fi in fis:
+                sp = await db.get(SupplierProduct, fi.supplier_product_id)
+                out.append({
+                    **base,
+                    "item_key": f"fi_{fi.id}",
+                    "product_name": sp.name if sp else li.product_name,
+                    "sku": sp.sku if sp else li.sku,
+                    "image_url": sp.image_url if sp else None,
+                    # fi.quantity already equals order_qty x component_qty
+                    "quantity": fi.quantity,
+                    "supplier_status": _supplier_status(fi.fulfill_status, li.label_id),
+                    "tracking_number": fi.tracking_number or li.tracking_number,
+                    "fulfilled_at": (fi.fulfilled_at.isoformat() if fi.fulfilled_at
+                                     else (li.fulfilled_at.isoformat() if li.fulfilled_at else None)),
+                })
+        else:
+            out.append({
+                **base,
+                "item_key": f"li_{li.id}",
+                "product_name": li.product_name,
+                "sku": li.sku,
+                "image_url": None,
+                "quantity": li.quantity,
+                "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
+                "tracking_number": li.tracking_number,
+                "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+            })
     return out
 
 

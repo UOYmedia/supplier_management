@@ -89,6 +89,13 @@ class EasyPostClient:
         """Purchase a rate. Returns the bought shipment with label URL + tracking."""
         return await self._post(f"/shipments/{shipment_id}/buy", {"rate": {"id": rate_id}})
 
+    async def create_tracker(self, tracking_code: str, carrier: str = "USPS") -> dict:
+        """Create (or look up existing) EasyPost tracker. Returns tracker with .status field.
+        Statuses: unknown, pre_transit, in_transit, out_for_delivery, delivered, etc."""
+        return await self._post("/trackers", {
+            "tracker": {"tracking_code": tracking_code, "carrier": carrier}
+        })
+
 
 def supplier_to_ep_address(supplier) -> dict:
     """Convert Supplier ORM object to EasyPost address dict."""

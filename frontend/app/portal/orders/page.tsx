@@ -4,30 +4,31 @@ import toast from "react-hot-toast";
 import { Printer, ChevronDown, ChevronUp, Package, Truck, X, Tag, Loader2, AlertTriangle } from "lucide-react";
 
 const SUPPLIER_STATUS_TABS = [
-  { value: "missing_label", label: "Missing Label" },
-  { value: "new_order", label: "New Orders" },
-  { value: "drop_off", label: "Drop Off" },
+  { value: "pending_label", label: "Pending Label" },
+  { value: "unfulfilled", label: "Unfulfilled" },
+  { value: "fulfilled", label: "Fulfilled" },
   { value: "shipped", label: "Shipped" },
   { value: "", label: "All" },
 ];
 
 const SUPPLIER_STATUS_COLORS: Record<string, string> = {
-  missing_label: "badge-red",
-  new_order: "badge-yellow",
-  drop_off: "badge-blue",
+  pending_label: "badge-red",
+  unfulfilled: "badge-yellow",
+  fulfilled: "badge-blue",
   shipped: "badge-green",
 };
 
 const SUPPLIER_STATUS_LABELS: Record<string, string> = {
-  missing_label: "Missing Label",
-  new_order: "New Order",
-  drop_off: "Drop Off",
+  pending_label: "Pending Label",
+  unfulfilled: "Unfulfilled",
+  fulfilled: "Fulfilled",
   shipped: "Shipped",
 };
 
-interface LineItem {
-  line_item_id: number;
+interface PortalItem {
+  item_key: string;
   order_id: number;
+  order_line_item_id: number;
   external_order_id: string | null;
   marketplace: string;
   ordered_at: string;
@@ -35,10 +36,8 @@ interface LineItem {
   shipping_address: any;
   product_name: string;
   sku: string | null;
-  supplier_sku: string | null;
   image_url: string | null;
   quantity: number;
-  fulfill_status: string;
   supplier_status: string;
   tracking_number: string | null;
   label_id: number | null;
@@ -48,9 +47,9 @@ interface LineItem {
 }
 
 export default function PortalOrdersPage() {
-  const [items, setItems] = useState<LineItem[]>([]);
+  const [items, setItems] = useState<PortalItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState("new_order");
+  const [filter, setFilter] = useState("unfulfilled");
   const [expandedOrder, setExpandedOrder] = useState<number | null>(null);
   const [canBuyLabels, setCanBuyLabels] = useState(false);
   const [buyingFor, setBuyingFor] = useState<number | null>(null);
@@ -77,7 +76,7 @@ export default function PortalOrdersPage() {
       .catch(() => {});
   }, []);
 
-  const labelInfoForOrder = (orderItems: LineItem[]) => {
+  const labelInfoForOrder = (orderItems: PortalItem[]) => {
     const withLabel = orderItems.find((i) => i.label_id);
     if (!withLabel) return null;
     const url = withLabel.label_has_pdf
@@ -96,15 +95,15 @@ export default function PortalOrdersPage() {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then((r) => { if (r.ok) { toast.success("Label printed — order marked as Drop Off"); load(); } })
+      .then((r) => { if (r.ok) { toast.success("Label printed — order marked as Fulfilled"); load(); } })
       .catch(() => {});
   };
 
-  const handlePrintClick = (orderId: number, orderItems: LineItem[]) => {
+  const handlePrintClick = (orderId: number, orderItems: PortalItem[]) => {
     const info = labelInfoForOrder(orderItems);
     if (!info) return;
     const alreadyPrinted = orderItems.every(
-      (i) => i.supplier_status === "drop_off" || i.supplier_status === "shipped"
+      (i) => i.supplier_status === "fulfilled" || i.supplier_status === "shipped"
     );
     if (alreadyPrinted) {
       setConfirmReprintOrder(orderId);
@@ -122,16 +121,16 @@ export default function PortalOrdersPage() {
     if (!acc[item.order_id]) acc[item.order_id] = [];
     acc[item.order_id].push(item);
     return acc;
-  }, {} as Record<number, LineItem[]>);
+  }, {} as Record<number, PortalItem[]>);
 
   const orderIds = Object.keys(orderGroups).map(Number);
 
-  const orderBadge = (orderItems: LineItem[]) => {
+  const orderBadge = (orderItems: PortalItem[]) => {
     const statuses = orderItems.map((i) => i.supplier_status);
     if (statuses.every((s) => s === "shipped")) return { label: "Shipped", cls: "badge-green" };
-    if (statuses.every((s) => s === "drop_off" || s === "shipped")) return { label: "Drop Off", cls: "badge-blue" };
-    if (statuses.some((s) => s === "missing_label")) return { label: "Missing Label", cls: "badge-red" };
-    return { label: "New Order", cls: "badge-yellow" };
+    if (statuses.every((s) => s === "fulfilled" || s === "shipped")) return { label: "Fulfilled", cls: "badge-blue" };
+    if (statuses.some((s) => s === "pending_label")) return { label: "Pending Label", cls: "badge-red" };
+    return { label: "Unfulfilled", cls: "badge-yellow" };
   };
 
   return (
@@ -157,7 +156,7 @@ export default function PortalOrdersPage() {
             const first = orderItems[0];
             const isExpanded = expandedOrder === orderId;
             const alreadyPrinted = orderItems.every(
-              (i) => i.supplier_status === "drop_off" || i.supplier_status === "shipped"
+              (i) => i.supplier_status === "fulfilled" || i.supplier_status === "shipped"
             );
             const labelInfo = labelInfoForOrder(orderItems);
             const badge = orderBadge(orderItems);
@@ -213,7 +212,7 @@ export default function PortalOrdersPage() {
                     </div>
                     <div className="divide-y divide-gray-100">
                       {orderItems.map((item) => (
-                        <div key={item.line_item_id} className="px-4 py-4 flex items-start gap-3">
+                        <div key={item.item_key} className="px-4 py-4 flex items-start gap-3">
                           {item.image_url ? (
                             <img
                               src={item.image_url}
@@ -232,12 +231,10 @@ export default function PortalOrdersPage() {
                                 {SUPPLIER_STATUS_LABELS[item.supplier_status] || item.supplier_status}
                               </span>
                             </div>
-                            {item.supplier_sku && (
-                              <div className="text-xs text-gray-500 font-mono mb-0.5">
-                                SKU: {item.supplier_sku}
-                              </div>
+                            {item.sku && (
+                              <div className="text-xs text-gray-500 font-mono mb-0.5">SKU: {item.sku}</div>
                             )}
-                            <div className="text-xs text-gray-500">Qty: {item.quantity}</div>
+                            <div className="text-xs text-gray-500 font-medium">Qty: {item.quantity}</div>
                             {item.tracking_number && (
                               <div className="text-xs text-gray-600 mt-0.5">
                                 Tracking: <span className="font-mono">{item.tracking_number}</span>
@@ -248,7 +245,7 @@ export default function PortalOrdersPage() {
                                 Shipped {new Date(item.fulfilled_at).toLocaleString()}
                               </div>
                             )}
-                            {item.supplier_status === "drop_off" && item.fulfilled_at && (
+                            {item.supplier_status === "fulfilled" && item.fulfilled_at && (
                               <div className="text-xs text-blue-600 mt-0.5">
                                 Label printed {new Date(item.fulfilled_at).toLocaleString()}
                               </div>
@@ -284,7 +281,7 @@ export default function PortalOrdersPage() {
                 <div>
                   <h2 className="font-semibold">Reprint label?</h2>
                   <p className="text-sm text-gray-500 mt-1">
-                    Order #{confirmReprintOrder} label has already been printed. Are you sure you want to print it again?
+                    Order #{confirmReprintOrder} label has already been printed. Print again?
                   </p>
                 </div>
               </div>
@@ -398,7 +395,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
         const err = await resp.json().catch(() => null);
         throw new Error(err?.detail || "Purchase failed");
       }
-      toast.success("Label purchased — items moved to New Order");
+      toast.success("Label purchased — order is now Unfulfilled (ready to print)");
       onBought();
     } catch (e: any) {
       toast.error(e.message || "Purchase failed");
@@ -433,7 +430,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
-              {([[["weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
+              {(["weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
                 <div key={k}>
                   <label className="label">{label} *</label>
                   <input className="input" type="number" step="0.1" min="0.1" value={(parcel as any)[k]} onChange={pf(k)} />

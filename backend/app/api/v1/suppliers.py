@@ -220,6 +220,14 @@ async def import_supplier_catalog(
     await _get_or_404(supplier_id, db)
 
     raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Uploaded file is empty")
+
+    # Detect common non-CSV formats
+    if raw[:4] in (b"PK\x03\x04", b"PK\x05\x06") or raw[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        raise HTTPException(400, "Please upload a CSV file, not an Excel file (.xlsx / .xls). "
+                            "In Excel: File → Save As → CSV (Comma delimited).")
+
     text = None
     for enc in ("utf-8-sig", "utf-16", "cp1252", "latin-1"):
         try:
@@ -230,19 +238,45 @@ async def import_supplier_catalog(
     if text is None:
         raise HTTPException(400, "Could not decode CSV — please save as UTF-8")
 
+    # Try to auto-detect delimiter; fall back to comma then semicolon
     sample = text[:4096]
+    detected_dialect = None
     try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        detected_dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
     except csv.Error:
-        dialect = csv.excel
-    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
-    if not reader.fieldnames:
-        raise HTTPException(400, "CSV is empty")
+        pass
 
-    fieldnames = {(f or "").strip().lower() for f in reader.fieldnames}
-    missing = {"name", "sku"} - fieldnames
-    if missing:
-        raise HTTPException(400, f"CSV missing required columns: {sorted(missing)}")
+    def _try_parse(dialect_or_delimiter):
+        if isinstance(dialect_or_delimiter, str):
+            r = csv.DictReader(io.StringIO(text), delimiter=dialect_or_delimiter)
+        else:
+            r = csv.DictReader(io.StringIO(text), dialect=dialect_or_delimiter)
+        fnames = r.fieldnames or []
+        norm = {(f or "").strip().lower() for f in fnames}
+        return r, norm, fnames
+
+    reader = None
+    fieldnames_raw = []
+    for candidate in ([detected_dialect] if detected_dialect else []) + [",", ";", "\t"]:
+        if candidate is None:
+            continue
+        r, norm_fnames, raw_fnames = _try_parse(candidate)
+        if {"name", "sku"} <= norm_fnames:
+            reader = r
+            fieldnames = norm_fnames
+            fieldnames_raw = raw_fnames
+            break
+
+    if reader is None:
+        # Still couldn't find required columns — try once more with comma to get field list for error
+        r, norm_fnames, raw_fnames = _try_parse(",")
+        found = sorted(raw_fnames) if raw_fnames else []
+        detail = "CSV missing required columns: 'name' and 'sku'."
+        if found:
+            detail += f" Columns found: {found}. Make sure your CSV header row has exactly 'name' and 'sku' columns."
+        else:
+            detail += " No columns detected — check that the file is a valid CSV."
+        raise HTTPException(400, detail)
 
     existing_q = await db.execute(
         select(SupplierProduct).where(SupplierProduct.supplier_id == supplier_id)

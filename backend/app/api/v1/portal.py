@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import verify_password, create_access_token, decode_token
-from app.models.supplier import Supplier, Invoice
+from app.models.supplier import Supplier, Invoice, SupplierProduct
 from app.models.product import Product, ProductSupplier
 from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus
 from app.api.v1.orders import _recalculate_order_status
@@ -80,7 +80,7 @@ async def portal_me(supplier: Supplier = Depends(get_current_supplier)):
     }
 
 
-# --- Products ---
+# --- Catalog (supplier's own products) ---
 
 @router.get("/products")
 async def portal_products(
@@ -88,25 +88,26 @@ async def portal_products(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(ProductSupplier).where(ProductSupplier.supplier_id == supplier.id)
+        select(SupplierProduct)
+        .where(SupplierProduct.supplier_id == supplier.id)
+        .order_by(SupplierProduct.name)
     )
-    ps_list = result.scalars().all()
-    out = []
-    for ps in ps_list:
-        product = await db.get(Product, ps.product_id)
-        if not product or not product.is_active:
-            continue
-        out.append({
-            "product_supplier_id": ps.id,
-            "product_id": product.id,
-            "name": product.name,
-            "sku": ps.supplier_sku or product.sku,
-            "cost": float(ps.cost),
-            "stock": ps.stock,
-            "mockup_url": product.image_url,
-            "lead_time_days": ps.lead_time_days,
-        })
-    return out
+    items = result.scalars().all()
+    return [
+        {
+            "id": sp.id,
+            "name": sp.name,
+            "sku": sp.sku,
+            "unit_price": float(sp.unit_price),
+            "stock_quantity": sp.stock_quantity,
+            "weight": float(sp.weight) if sp.weight is not None else None,
+            "length": float(sp.length) if sp.length is not None else None,
+            "width": float(sp.width) if sp.width is not None else None,
+            "height": float(sp.height) if sp.height is not None else None,
+            "updated_at": sp.updated_at.isoformat() if sp.updated_at else None,
+        }
+        for sp in items
+    ]
 
 
 # --- Orders to fulfill ---

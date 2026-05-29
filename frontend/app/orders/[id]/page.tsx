@@ -845,7 +845,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
           width: est.width > 0 ? String(est.width) : "",
           height: est.height > 0 ? String(est.height) : "",
         });
-        setEstimateInfo({ complete: !!est.complete, missing: est.complete, missing: est.missing || [] });
+        setEstimateInfo({ complete: !!est.complete, missing: est.missing || [] });
       })
       .catch(() => {});
   }, [orderId, supplierId]);

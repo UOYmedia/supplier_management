@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
 from app.models.supplier import Supplier, Invoice, InvoiceLineItem, SupplierProduct
-from app.models.product import ProductSupplier
+from app.models.product import ProductSupplier, ProductComponent
 from app.models.order import Order, OrderLineItem, OrderFulfillmentItem, FulfillStatus, ShippingLabel
 from app.schemas.supplier import (
     SupplierCreate, SupplierUpdate, SupplierOut, SupplierListOut,
@@ -229,14 +229,21 @@ async def import_supplier_catalog(
                             "In Excel: File → Save As → CSV (Comma delimited).")
 
     text = None
-    for enc in ("utf-8-sig", "utf-16", "cp1252", "latin-1"):
+    for enc in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1"):
         try:
-            text = raw.decode(enc)
+            candidate = raw.decode(enc)
+            # Reject if too many null bytes — UTF-16 decoded as a single-byte codec
+            if candidate.count('\x00') > len(candidate) * 0.2:
+                continue
+            text = candidate
             break
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError, LookupError):
             continue
     if text is None:
-        raise HTTPException(400, "Could not decode CSV — please save as UTF-8")
+        raise HTTPException(400, "Could not decode CSV — please save as UTF-8 or UTF-16")
+
+    # Strip BOM character that may remain after decoding
+    text = text.lstrip('﻿')
 
     # Try to auto-detect delimiter; fall back to comma then semicolon
     sample = text[:4096]
@@ -252,7 +259,8 @@ async def import_supplier_catalog(
         else:
             r = csv.DictReader(io.StringIO(text), dialect=dialect_or_delimiter)
         fnames = r.fieldnames or []
-        norm = {(f or "").strip().lower() for f in fnames}
+        # Strip BOM and whitespace from field names when normalizing
+        norm = {(f or "").strip().lstrip('﻿').lower() for f in fnames}
         return r, norm, fnames
 
     reader = None
@@ -416,26 +424,80 @@ async def supplier_orders(
     for li in items:
         order = orders_map.get(li.order_id)
         label = labels_map.get(li.label_id) if li.label_id else None
-        out.append({
-            "id": li.id,
+        base = {
+            "order_line_item_id": li.id,
             "order_id": li.order_id,
             "external_order_id": order.external_order_id if order else None,
             "marketplace": order.marketplace if order else None,
             "ordered_at": order.ordered_at.isoformat() if order else None,
             "buyer_name": order.buyer_name if order else None,
             "order_status": order.status if order else None,
-            "product_id": li.product_id,
-            "product_name": li.product_name,
-            "sku": li.sku,
-            "quantity": li.quantity,
+            "shipping_address": order.shipping_address if order else None,
             "price": float(li.price),
             "base_cost": float(li.base_cost),
-            "fulfill_status": li.fulfill_status,
-            "tracking_number": li.tracking_number,
+            "li_quantity": li.quantity,
             "label_id": li.label_id,
             "label_url": label.label_url if label else None,
             "label_has_pdf": bool(label and label.label_data) if label else False,
-        })
+        }
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        fis = list(fi_res.scalars().all())
+        if fis:
+            for fi in fis:
+                sp = await db.get(SupplierProduct, fi.supplier_product_id)
+                out.append({
+                    **base,
+                    "item_key": f"fi_{fi.id}",
+                    "product_name": sp.name if sp else li.product_name,
+                    "sku": sp.sku if sp else li.sku,
+                    "image_url": sp.image_url if sp else None,
+                    "quantity": fi.quantity,
+                    "fulfill_status": fi.fulfill_status,
+                    "tracking_number": fi.tracking_number or li.tracking_number,
+                    "fulfilled_at": (fi.fulfilled_at.isoformat() if fi.fulfilled_at
+                                    else (li.fulfilled_at.isoformat() if li.fulfilled_at else None)),
+                })
+        else:
+            resolved = False
+            if li.product_id:
+                comp_res = await db.execute(
+                    select(ProductComponent)
+                    .join(SupplierProduct, ProductComponent.supplier_product_id == SupplierProduct.id)
+                    .where(
+                        ProductComponent.product_id == li.product_id,
+                        SupplierProduct.supplier_id == supplier_id,
+                    )
+                )
+                comps = list(comp_res.scalars().all())
+                if comps:
+                    for comp in comps:
+                        sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                        out.append({
+                            **base,
+                            "item_key": f"comp_{comp.id}_{li.id}",
+                            "product_name": sp.name if sp else li.product_name,
+                            "sku": sp.sku if sp else li.sku,
+                            "image_url": sp.image_url if sp else None,
+                            "quantity": comp.quantity * li.quantity,
+                            "fulfill_status": li.fulfill_status,
+                            "tracking_number": li.tracking_number,
+                            "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                        })
+                    resolved = True
+            if not resolved:
+                out.append({
+                    **base,
+                    "item_key": f"li_{li.id}",
+                    "product_name": li.product_name,
+                    "sku": li.sku,
+                    "image_url": None,
+                    "quantity": li.quantity,
+                    "fulfill_status": li.fulfill_status,
+                    "tracking_number": li.tracking_number,
+                    "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                })
     return out
 
 

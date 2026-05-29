@@ -39,6 +39,15 @@ export default function OrderDetailPage() {
     onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
 
+  const markPrintedMut = useMutation({
+    mutationFn: (labelId: number) =>
+      ordersApi.markLabelPrinted(oid, labelId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["order", oid] });
+      qc.invalidateQueries({ queryKey: ["labels", oid] });
+    },
+  });
+
   // Auto-open Buy Label modal when navigated from supplier orders tab
   useEffect(() => {
     if (!order || autoOpenedForSupplier !== null) return;
@@ -93,15 +102,6 @@ export default function OrderDetailPage() {
     } catch {}
   };
 
-  const markPrintedMut = useMutation({
-    mutationFn: (labelId: number) =>
-      ordersApi.markLabelPrinted(oid, labelId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["order", oid] });
-      qc.invalidateQueries({ queryKey: ["labels", oid] });
-    },
-  });
-
   const printLabelsForGroup = (items: any[]) => {
     const labelIds = Array.from(new Set(items.map((li) => li.label_id).filter(Boolean)));
     if (labelIds.length === 0) {
@@ -115,7 +115,6 @@ export default function OrderDetailPage() {
         ? ordersApi.labelDownloadUrl(oid, lbl.id)
         : lbl.label_url;
       if (url) printLabel(url);
-      // Auto-mark items as shipped now that the supplier is printing
       markPrintedMut.mutate(labelId);
     }
   };
@@ -846,7 +845,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
           width: est.width > 0 ? String(est.width) : "",
           height: est.height > 0 ? String(est.height) : "",
         });
-        setEstimateInfo({ complete: !!est.complete, missing: est.missing || [] });
+        setEstimateInfo({ complete: !!est.complete, missing: est.complete, missing: est.missing || [] });
       })
       .catch(() => {});
   }, [orderId, supplierId]);
@@ -912,7 +911,6 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
               Covers <strong>{lineItemIds.length}</strong> item(s). Enter parcel dimensions for live carrier rates.
             </div>
 
-            {/* Debug preview — ship from / ship to */}
             <AddressPreview
               from={supplierForPreview}
               to={orderForPreview?.shipping_address}

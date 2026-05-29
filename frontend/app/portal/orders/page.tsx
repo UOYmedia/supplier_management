@@ -308,6 +308,8 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
   const [selectedRate, setSelectedRate] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [estimateInfo, setEstimateInfo] = useState<{ complete: boolean; missing: any[] } | null>(null);
+  const [debug, setDebug] = useState<any | null>(null);
+  const [showRawDebug, setShowRawDebug] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem("supplier_token");
@@ -366,6 +368,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
       const data = await resp.json();
       setShipmentId(data.shipment_id);
       setRates(data.rates);
+      setDebug(data.debug);
       if (data.rates.length > 0) setSelectedRate(data.rates[0].id);
       setStep("rates");
     } catch (e: any) {
@@ -457,6 +460,40 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
 
         {step === "rates" && (
           <>
+            {debug && (
+              <div className="mb-3 border border-gray-200 rounded-lg p-3 bg-gray-50 text-xs">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-semibold text-gray-600 uppercase tracking-wide">EasyPost Request</span>
+                  <button className="text-blue-600 hover:underline" onClick={() => setShowRawDebug((v) => !v)}>
+                    {showRawDebug ? "Hide raw" : "Show raw JSON"}
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-white p-2 rounded border border-gray-200">
+                    <div className="text-gray-500">Ship from</div>
+                    <div className="text-gray-700">{debug.from_address.name}</div>
+                    <div className="text-gray-700">{[debug.from_address.street1, debug.from_address.street2].filter(Boolean).join(", ")}</div>
+                    <div className="text-gray-700">{[debug.from_address.city, debug.from_address.state, debug.from_address.zip].filter(Boolean).join(", ")}</div>
+                  </div>
+                  <div className="bg-white p-2 rounded border border-gray-200">
+                    <div className="text-gray-500">Ship to</div>
+                    <div className="text-gray-700">{debug.to_address.name}</div>
+                    <div className="text-gray-700">{[debug.to_address.street1, debug.to_address.street2].filter(Boolean).join(", ")}</div>
+                    <div className="text-gray-700">{[debug.to_address.city, debug.to_address.state, debug.to_address.zip].filter(Boolean).join(", ")}</div>
+                  </div>
+                </div>
+                <div className="mt-2 bg-white p-2 rounded border border-gray-200">
+                  <span className="text-gray-500">Parcel:</span>{" "}
+                  <span className="font-medium">{debug.parcel.weight} oz · {debug.parcel.length}×{debug.parcel.width}×{debug.parcel.height} in</span>
+                  <span className="ml-3 text-gray-500">Rates:</span>{" "}
+                  <span className="font-medium">{debug.usps_rates} USPS / {debug.total_rates} total</span>
+                </div>
+                {showRawDebug && (
+                  <pre className="mt-2 text-[10px] leading-tight p-2 max-h-40 overflow-auto bg-gray-900 text-gray-100 rounded font-mono">{JSON.stringify(debug, null, 2)}</pre>
+                )}
+              </div>
+            )}
+
             {rates.length === 0 ? (
               <div className="text-center text-gray-400 py-8">No rates available.</div>
             ) : (

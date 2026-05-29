@@ -16,7 +16,7 @@ from app.models.supplier import Supplier, Invoice
 from app.models.product import Product, ProductSupplier
 from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus
 from app.api.v1.orders import _recalculate_order_status
-from app.api.v1.easypost import ParcelIn, RateOut, RatesResponse
+from app.api.v1.easypost import ParcelIn, RateOut, RatesResponse, DebugInfo
 from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
     supplier_to_ep_address, shipping_addr_to_ep, filter_usps_rates,
@@ -262,17 +262,16 @@ async def portal_easypost_rates(
         raise HTTPException(400, "Your supplier address is incomplete — ask the admin to update it")
 
     ep = EasyPostClient(settings.EASYPOST_API_KEY)
+    from_addr = supplier_to_ep_address(supplier)
+    to_addr = shipping_addr_to_ep(order.shipping_address)
+    parcel = {
+        "weight": body.parcel.weight,
+        "length": body.parcel.length,
+        "width": body.parcel.width,
+        "height": body.parcel.height,
+    }
     try:
-        shipment = await ep.create_shipment(
-            supplier_to_ep_address(supplier),
-            shipping_addr_to_ep(order.shipping_address),
-            {
-                "weight": body.parcel.weight,
-                "length": body.parcel.length,
-                "width": body.parcel.width,
-                "height": body.parcel.height,
-            },
-        )
+        shipment = await ep.create_shipment(from_addr, to_addr, parcel)
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 
@@ -294,7 +293,15 @@ async def portal_easypost_rates(
         ],
         key=lambda r: float(r.rate),
     )
-    return RatesResponse(shipment_id=shipment["id"], rates=rates_out)
+    debug = DebugInfo(
+        from_address=from_addr,
+        to_address=to_addr,
+        parcel=parcel,
+        total_rates=len(all_rates),
+        usps_rates=len(filter_usps_rates(all_rates)),
+        line_item_ids=[li.id for li in items],
+    )
+    return RatesResponse(shipment_id=shipment["id"], rates=rates_out, debug=debug)
 
 
 @router.post("/orders/easypost/buy", response_model=ShippingLabelOut, status_code=201)

@@ -229,14 +229,21 @@ async def import_supplier_catalog(
                             "In Excel: File → Save As → CSV (Comma delimited).")
 
     text = None
-    for enc in ("utf-8-sig", "utf-16", "cp1252", "latin-1"):
+    for enc in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1"):
         try:
-            text = raw.decode(enc)
+            candidate = raw.decode(enc)
+            # Reject if too many null bytes — UTF-16 decoded as a single-byte codec
+            if candidate.count('\x00') > len(candidate) * 0.2:
+                continue
+            text = candidate
             break
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError, LookupError):
             continue
     if text is None:
-        raise HTTPException(400, "Could not decode CSV — please save as UTF-8")
+        raise HTTPException(400, "Could not decode CSV — please save as UTF-8 or UTF-16")
+
+    # Strip BOM character that may remain after decoding
+    text = text.lstrip('﻿')
 
     # Try to auto-detect delimiter; fall back to comma then semicolon
     sample = text[:4096]
@@ -252,7 +259,8 @@ async def import_supplier_catalog(
         else:
             r = csv.DictReader(io.StringIO(text), dialect=dialect_or_delimiter)
         fnames = r.fieldnames or []
-        norm = {(f or "").strip().lower() for f in fnames}
+        # Strip BOM and whitespace from field names when normalizing
+        norm = {(f or "").strip().lstrip('﻿').lower() for f in fnames}
         return r, norm, fnames
 
     reader = None

@@ -20,7 +20,11 @@ async function proxy(req: NextRequest, { params }: { params: { path: string[] } 
     if (req.method !== "GET" && req.method !== "HEAD") {
       const ct = req.headers.get("content-type") || "";
       if (ct.includes("multipart/form-data")) {
-        body = await req.formData();
+        // Forward raw binary body so the original boundary is preserved.
+        // Re-serializing via req.formData() creates a new boundary which can
+        // cause parsing failures on the backend.
+        fwdHeaders["Content-Type"] = ct;
+        body = await req.arrayBuffer();
       } else {
         fwdHeaders["Content-Type"] = ct || "application/json";
         body = await req.text();

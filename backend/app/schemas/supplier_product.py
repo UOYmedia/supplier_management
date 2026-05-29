@@ -12,6 +12,7 @@ class SupplierProductCreate(BaseModel):
     length: Decimal | None = None
     width: Decimal | None = None
     height: Decimal | None = None
+    image_url: str | None = None
 
 
 class SupplierProductUpdate(BaseModel):
@@ -23,6 +24,7 @@ class SupplierProductUpdate(BaseModel):
     length: Decimal | None = None
     width: Decimal | None = None
     height: Decimal | None = None
+    image_url: str | None = None
 
 
 class SupplierProductOut(BaseModel):
@@ -39,6 +41,7 @@ class SupplierProductOut(BaseModel):
     length: Decimal | None = None
     width: Decimal | None = None
     height: Decimal | None = None
+    image_url: str | None = None
     created_at: datetime
     updated_at: datetime
 

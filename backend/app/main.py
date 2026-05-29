@@ -76,7 +76,17 @@ async def _run_migrations():
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS length NUMERIC(10, 2)",
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS width NUMERIC(10, 2)",
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS height NUMERIC(10, 2)",
+        # Product thumbnail for supplier catalog
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS image_url TEXT",
     ]
+    # ALTER TYPE must run outside a transaction (autocommit)
+    try:
+        async with engine.connect() as conn:
+            await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.execute(text("ALTER TYPE fulfillstatus ADD VALUE IF NOT EXISTS 'drop_off' AFTER 'pending'"))
+    except Exception as e:
+        print(f"WARNING: enum migration skipped ({e})", flush=True)
+
     try:
         async with engine.begin() as conn:
             # Abort any DDL that waits more than 3 s for a lock — prevents startup hangs

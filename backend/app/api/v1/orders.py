@@ -473,8 +473,8 @@ async def mark_label_printed(order_id: int, label_id: int, db: AsyncSession = De
     flipped = 0
     now = datetime.now(timezone.utc)
     for li in lis:
-        if li.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
-            li.fulfill_status = FulfillStatus.shipped
+        if li.fulfill_status not in (FulfillStatus.drop_off, FulfillStatus.shipped, FulfillStatus.delivered):
+            li.fulfill_status = FulfillStatus.drop_off
             if not li.fulfilled_at:
                 li.fulfilled_at = now
             flipped += 1
@@ -482,8 +482,8 @@ async def mark_label_printed(order_id: int, label_id: int, db: AsyncSession = De
             select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
         )
         for fi in fi_res.scalars().all():
-            if fi.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
-                fi.fulfill_status = FulfillStatus.shipped
+            if fi.fulfill_status not in (FulfillStatus.drop_off, FulfillStatus.shipped, FulfillStatus.delivered):
+                fi.fulfill_status = FulfillStatus.drop_off
                 if not fi.fulfilled_at:
                     fi.fulfilled_at = now
 
@@ -556,7 +556,7 @@ async def _recalculate_order_status(order: Order, db: AsyncSession):
         order.status = OrderStatus.fulfilled
     elif any(s in (FulfillStatus.shipped, FulfillStatus.delivered) for s in active):
         order.status = OrderStatus.partially_fulfilled
-    elif any(s == FulfillStatus.pending for s in active):
+    elif any(s in (FulfillStatus.pending, FulfillStatus.drop_off) for s in active):
         order.status = OrderStatus.processing
     else:
         order.status = OrderStatus.pending

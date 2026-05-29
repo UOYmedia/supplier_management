@@ -18,6 +18,7 @@ class OrderStatus(str, enum.Enum):
 class FulfillStatus(str, enum.Enum):
     unfulfilled = "unfulfilled"
     pending = "pending"
+    drop_off = "drop_off"
     shipped = "shipped"
     delivered = "delivered"
     cancelled = "cancelled"

@@ -1,14 +1,28 @@
 "use client";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { Printer, CheckCircle, ChevronDown, ChevronUp, Package, Truck, X, Tag, Loader2, AlertTriangle } from "lucide-react";
+import { Printer, ChevronDown, ChevronUp, Package, Truck, X, Tag, Loader2, AlertTriangle } from "lucide-react";
 
-const STATUS_COLORS: Record<string, string> = {
-  unfulfilled: "badge-yellow",
-  pending: "badge-yellow",
-  shipped: "badge-blue",
-  delivered: "badge-green",
-  cancelled: "badge-red",
+const SUPPLIER_STATUS_TABS = [
+  { value: "missing_label", label: "Missing Label" },
+  { value: "new_order", label: "New Orders" },
+  { value: "drop_off", label: "Drop Off" },
+  { value: "shipped", label: "Shipped" },
+  { value: "", label: "All" },
+];
+
+const SUPPLIER_STATUS_COLORS: Record<string, string> = {
+  missing_label: "badge-red",
+  new_order: "badge-yellow",
+  drop_off: "badge-blue",
+  shipped: "badge-green",
+};
+
+const SUPPLIER_STATUS_LABELS: Record<string, string> = {
+  missing_label: "Missing Label",
+  new_order: "New Order",
+  drop_off: "Drop Off",
+  shipped: "Shipped",
 };
 
 interface LineItem {
@@ -21,8 +35,11 @@ interface LineItem {
   shipping_address: any;
   product_name: string;
   sku: string | null;
+  supplier_sku: string | null;
+  image_url: string | null;
   quantity: number;
   fulfill_status: string;
+  supplier_status: string;
   tracking_number: string | null;
   label_id: number | null;
   label_url: string | null;
@@ -33,7 +50,7 @@ interface LineItem {
 export default function PortalOrdersPage() {
   const [items, setItems] = useState<LineItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState("unfulfilled");
+  const [filter, setFilter] = useState("new_order");
   const [expandedOrder, setExpandedOrder] = useState<number | null>(null);
   const [canBuyLabels, setCanBuyLabels] = useState(false);
   const [buyingFor, setBuyingFor] = useState<number | null>(null);
@@ -41,7 +58,7 @@ export default function PortalOrdersPage() {
 
   const load = () => {
     const token = localStorage.getItem("supplier_token");
-    const q = filter ? `?status=${filter}` : "";
+    const q = filter ? `?supplier_status=${filter}` : "";
     fetch(`/api/v1/portal/orders${q}`, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
       .then(setItems)
@@ -79,15 +96,17 @@ export default function PortalOrdersPage() {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then((r) => { if (r.ok) { toast.success("Label printed — order marked as shipped"); load(); } })
+      .then((r) => { if (r.ok) { toast.success("Label printed — order marked as Drop Off"); load(); } })
       .catch(() => {});
   };
 
   const handlePrintClick = (orderId: number, orderItems: LineItem[]) => {
     const info = labelInfoForOrder(orderItems);
     if (!info) return;
-    const allShipped = orderItems.every((i) => i.fulfill_status === "shipped" || i.fulfill_status === "delivered");
-    if (allShipped) {
+    const alreadyPrinted = orderItems.every(
+      (i) => i.supplier_status === "drop_off" || i.supplier_status === "shipped"
+    );
+    if (alreadyPrinted) {
       setConfirmReprintOrder(orderId);
     } else {
       printLabel(info.url, info.orderId, info.labelId);
@@ -107,15 +126,23 @@ export default function PortalOrdersPage() {
 
   const orderIds = Object.keys(orderGroups).map(Number);
 
+  const orderBadge = (orderItems: LineItem[]) => {
+    const statuses = orderItems.map((i) => i.supplier_status);
+    if (statuses.every((s) => s === "shipped")) return { label: "Shipped", cls: "badge-green" };
+    if (statuses.every((s) => s === "drop_off" || s === "shipped")) return { label: "Drop Off", cls: "badge-blue" };
+    if (statuses.some((s) => s === "missing_label")) return { label: "Missing Label", cls: "badge-red" };
+    return { label: "New Order", cls: "badge-yellow" };
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="page-title">Orders to Fulfill</h1>
-        <div className="flex gap-2">
-          {["unfulfilled", "pending", "shipped", ""].map((s) => (
-            <button key={s} onClick={() => setFilter(s)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${filter === s ? "bg-blue-600 text-white" : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
-              {s === "" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
+        <div className="flex gap-2 flex-wrap">
+          {SUPPLIER_STATUS_TABS.map((tab) => (
+            <button key={tab.value} onClick={() => setFilter(tab.value)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${filter === tab.value ? "bg-blue-600 text-white" : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
+              {tab.label}
             </button>
           ))}
         </div>
@@ -129,9 +156,11 @@ export default function PortalOrdersPage() {
             const orderItems = orderGroups[orderId];
             const first = orderItems[0];
             const isExpanded = expandedOrder === orderId;
-            const allShipped = orderItems.every((i) => i.fulfill_status === "shipped" || i.fulfill_status === "delivered");
-            const someShipped = orderItems.some((i) => i.fulfill_status === "shipped" || i.fulfill_status === "delivered");
+            const alreadyPrinted = orderItems.every(
+              (i) => i.supplier_status === "drop_off" || i.supplier_status === "shipped"
+            );
             const labelInfo = labelInfoForOrder(orderItems);
+            const badge = orderBadge(orderItems);
 
             return (
               <div key={orderId} className="card overflow-hidden">
@@ -147,9 +176,7 @@ export default function PortalOrdersPage() {
                         <span className="text-xs text-gray-400 font-mono">{first.external_order_id}</span>
                       )}
                       <span className="text-xs text-gray-400 capitalize">{first.marketplace}</span>
-                      <span className={`badge text-xs ${allShipped ? "badge-green" : someShipped ? "badge-blue" : "badge-yellow"}`}>
-                        {allShipped ? "Shipped" : someShipped ? "Partial" : "Pending"}
-                      </span>
+                      <span className={`badge text-xs ${badge.cls}`}>{badge.label}</span>
                     </div>
                     <div className="text-xs text-gray-500 mt-0.5">
                       {orderItems.length} item(s) · {first.buyer_name || "—"} · {new Date(first.ordered_at).toLocaleDateString()}
@@ -159,15 +186,15 @@ export default function PortalOrdersPage() {
                   {labelInfo ? (
                     <button
                       onClick={(e) => { e.stopPropagation(); handlePrintClick(orderId, orderItems); }}
-                      className={`text-xs py-1.5 shrink-0 flex items-center gap-1.5 ${allShipped ? "btn-secondary" : "btn-primary"}`}
+                      className={`text-xs py-1.5 shrink-0 flex items-center gap-1.5 ${alreadyPrinted ? "btn-secondary" : "btn-primary"}`}
                     >
                       <Printer className="w-3 h-3" />
-                      {allShipped ? "Reprint Label" : "Print Label"}
+                      {alreadyPrinted ? "Reprint Label" : "Print Label"}
                     </button>
-                  ) : canBuyLabels && !allShipped ? (
+                  ) : canBuyLabels && !alreadyPrinted ? (
                     <button
                       onClick={(e) => { e.stopPropagation(); setBuyingFor(orderId); }}
-                      className="btn-secondary text-xs py-1.5 shrink-0"
+                      className="btn-secondary text-xs py-1.5 shrink-0 flex items-center gap-1.5"
                     >
                       <Truck className="w-3 h-3" /> Buy Label
                     </button>
@@ -186,24 +213,44 @@ export default function PortalOrdersPage() {
                     </div>
                     <div className="divide-y divide-gray-100">
                       {orderItems.map((item) => (
-                        <div key={item.line_item_id} className="px-4 py-3 flex items-center gap-3">
+                        <div key={item.line_item_id} className="px-4 py-4 flex items-start gap-3">
+                          {item.image_url ? (
+                            <img
+                              src={item.image_url}
+                              alt={item.product_name}
+                              className="w-16 h-16 rounded-lg object-cover shrink-0 border border-gray-200"
+                            />
+                          ) : (
+                            <div className="w-16 h-16 rounded-lg bg-gray-100 flex items-center justify-center shrink-0 border border-gray-200">
+                              <Package className="w-6 h-6 text-gray-300" />
+                            </div>
+                          )}
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-0.5">
-                              <span className="font-medium text-sm">{item.product_name}</span>
-                              {item.sku && <span className="text-xs text-gray-400 font-mono">{item.sku}</span>}
-                              <span className={`badge text-xs ${STATUS_COLORS[item.fulfill_status] || "badge-gray"}`}>
-                                {item.fulfill_status}
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className="font-semibold text-sm">{item.product_name}</span>
+                              <span className={`badge text-xs ${SUPPLIER_STATUS_COLORS[item.supplier_status] || "badge-gray"}`}>
+                                {SUPPLIER_STATUS_LABELS[item.supplier_status] || item.supplier_status}
                               </span>
                             </div>
+                            {item.supplier_sku && (
+                              <div className="text-xs text-gray-500 font-mono mb-0.5">
+                                SKU: {item.supplier_sku}
+                              </div>
+                            )}
                             <div className="text-xs text-gray-500">Qty: {item.quantity}</div>
                             {item.tracking_number && (
                               <div className="text-xs text-gray-600 mt-0.5">
                                 Tracking: <span className="font-mono">{item.tracking_number}</span>
                               </div>
                             )}
-                            {(item.fulfill_status === "shipped" || item.fulfill_status === "delivered") && item.fulfilled_at && (
+                            {item.supplier_status === "shipped" && item.fulfilled_at && (
                               <div className="text-xs text-green-600 mt-0.5">
                                 Shipped {new Date(item.fulfilled_at).toLocaleString()}
+                              </div>
+                            )}
+                            {item.supplier_status === "drop_off" && item.fulfilled_at && (
+                              <div className="text-xs text-blue-600 mt-0.5">
+                                Label printed {new Date(item.fulfilled_at).toLocaleString()}
                               </div>
                             )}
                           </div>
@@ -237,14 +284,14 @@ export default function PortalOrdersPage() {
                 <div>
                   <h2 className="font-semibold">Reprint label?</h2>
                   <p className="text-sm text-gray-500 mt-1">
-                    Order #{confirmReprintOrder} is already marked as shipped. Are you sure you want to print the label again?
+                    Order #{confirmReprintOrder} label has already been printed. Are you sure you want to print it again?
                   </p>
                 </div>
               </div>
               <div className="flex justify-end gap-2">
                 <button className="btn-secondary" onClick={() => setConfirmReprintOrder(null)}>Cancel</button>
                 <button
-                  className="btn-primary"
+                  className="btn-primary flex items-center gap-1.5"
                   onClick={() => {
                     setConfirmReprintOrder(null);
                     if (info) printLabel(info.url, info.orderId, info.labelId);
@@ -351,7 +398,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
         const err = await resp.json().catch(() => null);
         throw new Error(err?.detail || "Purchase failed");
       }
-      toast.success("Label purchased — items moved to Pending");
+      toast.success("Label purchased — items moved to New Order");
       onBought();
     } catch (e: any) {
       toast.error(e.message || "Purchase failed");
@@ -386,7 +433,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
-              {([["weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
+              {([[["weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
                 <div key={k}>
                   <label className="label">{label} *</label>
                   <input className="input" type="number" step="0.1" min="0.1" value={(parcel as any)[k]} onChange={pf(k)} />

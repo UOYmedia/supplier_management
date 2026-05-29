@@ -14,7 +14,7 @@ from app.core.database import get_db
 from app.core.security import verify_password, create_access_token, decode_token
 from app.models.supplier import Supplier, Invoice, SupplierProduct
 from app.models.product import Product, ProductSupplier
-from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus
+from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderFulfillmentItem
 from app.api.v1.orders import _recalculate_order_status
 from app.api.v1.easypost import ParcelIn, RateOut, RatesResponse, DebugInfo
 from app.integrations.easypost.client import (
@@ -104,6 +104,7 @@ async def portal_products(
             "length": float(sp.length) if sp.length is not None else None,
             "width": float(sp.width) if sp.width is not None else None,
             "height": float(sp.height) if sp.height is not None else None,
+            "image_url": sp.image_url,
             "updated_at": sp.updated_at.isoformat() if sp.updated_at else None,
         }
         for sp in items
@@ -112,21 +113,64 @@ async def portal_products(
 
 # --- Orders to fulfill ---
 
+def _supplier_status(item: OrderLineItem) -> str:
+    if item.fulfill_status in (FulfillStatus.shipped, FulfillStatus.delivered):
+        return "shipped"
+    if item.fulfill_status == FulfillStatus.drop_off:
+        return "drop_off"
+    if item.fulfill_status == FulfillStatus.pending or item.label_id is not None:
+        return "new_order"
+    return "missing_label"
+
+
 @router.get("/orders")
 async def portal_orders(
-    status: str | None = None,
+    supplier_status: str | None = None,
     supplier: Supplier = Depends(get_current_supplier),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy import or_, and_
     q = select(OrderLineItem).where(OrderLineItem.supplier_id == supplier.id)
-    if status:
-        q = q.where(OrderLineItem.fulfill_status == status)
+    if supplier_status == "missing_label":
+        q = q.where(
+            OrderLineItem.fulfill_status == FulfillStatus.unfulfilled,
+            OrderLineItem.label_id.is_(None),
+        )
+    elif supplier_status == "new_order":
+        q = q.where(
+            or_(
+                OrderLineItem.fulfill_status == FulfillStatus.pending,
+                and_(
+                    OrderLineItem.fulfill_status == FulfillStatus.unfulfilled,
+                    OrderLineItem.label_id.isnot(None),
+                ),
+            )
+        )
+    elif supplier_status == "drop_off":
+        q = q.where(OrderLineItem.fulfill_status == FulfillStatus.drop_off)
+    elif supplier_status == "shipped":
+        q = q.where(
+            OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered])
+        )
     result = await db.execute(q.order_by(OrderLineItem.id.desc()))
     items = result.scalars().all()
     out = []
     for item in items:
         order = await db.get(Order, item.order_id)
         label = await db.get(ShippingLabel, item.label_id) if item.label_id else None
+        supplier_sku = None
+        image_url = None
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem)
+            .where(OrderFulfillmentItem.order_line_item_id == item.id)
+            .limit(1)
+        )
+        fi = fi_res.scalar_one_or_none()
+        if fi:
+            sp = await db.get(SupplierProduct, fi.supplier_product_id)
+            if sp:
+                supplier_sku = sp.sku
+                image_url = sp.image_url
         out.append({
             "line_item_id": item.id,
             "order_id": item.order_id,
@@ -137,8 +181,11 @@ async def portal_orders(
             "shipping_address": order.shipping_address if order else None,
             "product_name": item.product_name,
             "sku": item.sku,
+            "supplier_sku": supplier_sku,
+            "image_url": image_url,
             "quantity": item.quantity,
             "fulfill_status": item.fulfill_status,
+            "supplier_status": _supplier_status(item),
             "tracking_number": item.tracking_number,
             "label_id": item.label_id,
             "label_url": label.label_url if label else None,

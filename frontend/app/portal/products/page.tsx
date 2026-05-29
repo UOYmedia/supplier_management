@@ -48,6 +48,7 @@ export default function PortalProductsPage() {
           <table>
             <thead>
               <tr>
+                <th className="w-14"></th>
                 <th>Product</th>
                 <th>SKU</th>
                 <th>Unit Price</th>
@@ -59,6 +60,15 @@ export default function PortalProductsPage() {
             <tbody>
               {filtered.map((p) => (
                 <tr key={p.id}>
+                  <td>
+                    {p.image_url ? (
+                      <img src={p.image_url} alt={p.name} className="w-10 h-10 rounded-lg object-cover border border-gray-200" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center">
+                        <Package className="w-5 h-5 text-gray-300" />
+                      </div>
+                    )}
+                  </td>
                   <td className="font-medium">{p.name}</td>
                   <td className="font-mono text-xs text-gray-500">{p.sku}</td>
                   <td className="font-semibold">${p.unit_price.toFixed(2)}</td>

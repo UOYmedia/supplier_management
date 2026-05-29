@@ -57,6 +57,7 @@ class SupplierProduct(Base):
     length: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))  # in
     width: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))   # in
     height: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))  # in
+    image_url: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

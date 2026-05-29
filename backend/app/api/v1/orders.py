@@ -168,16 +168,6 @@ async def assign_supplier_to_line_item(
     body: AssignSupplierBody,
     db: AsyncSession = Depends(get_db),
 ):
-    """Assign a supplier (and optionally a specific catalog item) to a line item.
-
-    When supplier_product_id is supplied, the variant is mapped through to the
-    SupplierProduct via ProductComponent. This:
-      * remembers the mapping for future orders of the same variant
-      * recreates OrderFulfillmentItems on THIS line item so supplier stock /
-        invoicing is computed against the correct catalog row, with
-        quantity = units × line_item.quantity
-      * derives base_cost as unit_price × units when not explicitly provided
-    """
     result = await db.execute(
         select(OrderLineItem).where(OrderLineItem.id == li_id, OrderLineItem.order_id == order_id)
     )
@@ -252,8 +242,6 @@ async def assign_supplier_to_line_item(
                 quantity=body.units,
             ))
 
-        # Replace any existing fulfillment items that no longer reflect the
-        # mapping. Only safe to do when no fulfillment has progressed yet.
         existing_fi_q = await db.execute(
             select(OrderFulfillmentItem).where(
                 OrderFulfillmentItem.order_line_item_id == li.id,
@@ -316,7 +304,6 @@ async def update_fulfillment_item(
     if body.fulfill_status == FulfillStatus.shipped and not fi.fulfilled_at:
         fi.fulfilled_at = datetime.now(timezone.utc)
 
-    # Roll up: FI → LI → Order
     li = await db.get(OrderLineItem, li_id)
     if li:
         await _recalculate_line_item_status(li, db)
@@ -325,7 +312,6 @@ async def update_fulfillment_item(
     await db.commit()
     await db.refresh(fi)
 
-    # Auto-push tracking to marketplace after commit (best-effort)
     if body.fulfill_status == FulfillStatus.shipped and fi.tracking_number:
         await _push_tracking_to_marketplace(fi, order, db)
 
@@ -350,8 +336,6 @@ async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSessio
     db.add(label)
     await db.flush()
 
-    # Determine which line items to link:
-    # Use explicitly provided IDs, or auto-select all unshipped items for this supplier
     li_ids = body.line_item_ids
     if not li_ids:
         auto_result = await db.execute(
@@ -372,7 +356,6 @@ async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSessio
             li.label_id = label.id
             if body.tracking_number:
                 li.tracking_number = body.tracking_number
-            # Label bought → move to pending (awaiting shipment by supplier)
             if li.fulfill_status == FulfillStatus.unfulfilled:
                 li.fulfill_status = FulfillStatus.pending
 
@@ -389,15 +372,6 @@ async def estimate_parcel(
     line_item_ids: str | None = Query(None, description="Comma-separated line item IDs"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Estimate parcel weight (oz) and dimensions (in) by summing per-unit
-    SupplierProduct shipping data across the selected line items.
-
-    Weight: Σ (unit weight × fulfillment qty) across all FIs of all LIs.
-    Length / Width: max of any unit's dimension (items lay side-by-side).
-    Height: Σ of (unit height × fulfillment qty) (items stacked vertically).
-    Falls back to Product dimensions (kg/cm → oz/in) when no SupplierProduct
-    weight/dimensions are set.
-    """
     await _get_or_404(order_id, db)
 
     li_q = select(OrderLineItem).where(OrderLineItem.order_id == order_id)
@@ -454,7 +428,6 @@ async def estimate_parcel(
                     height_in_total += float(sp.height) * qty
                 covered.append(li.id)
         else:
-            # No fulfillment items — fall back to shop product dimensions
             product = await db.get(Product, li.product_id) if li.product_id else None
             if not product or product.weight is None:
                 missing.append({
@@ -464,7 +437,6 @@ async def estimate_parcel(
                 })
                 continue
             qty = li.quantity
-            # Product stores kg/cm; convert
             weight_oz += float(product.weight) * KG_TO_OZ * qty
             if product.length is not None:
                 max_length_in = max(max_length_in, float(product.length) * CM_TO_IN)
@@ -487,9 +459,6 @@ async def estimate_parcel(
 
 @router.post("/{order_id}/labels/{label_id}/mark-printed")
 async def mark_label_printed(order_id: int, label_id: int, db: AsyncSession = Depends(get_db)):
-    """Flip every line item (and its fulfillment items) attached to this label
-    to shipped. Called by the UI right after Print Label so the order status
-    follows the physical workflow without a separate manual step."""
     label = await db.get(ShippingLabel, label_id)
     if not label:
         raise HTTPException(404, "Label not found")
@@ -527,10 +496,18 @@ async def mark_label_printed(order_id: int, label_id: int, db: AsyncSession = De
 @router.get("/{order_id}/labels", response_model=list[ShippingLabelOut])
 async def list_labels(order_id: int, db: AsyncSession = Depends(get_db)):
     await _get_or_404(order_id, db)
+    # Two-step: collect distinct label_ids from line items, then fetch labels
+    li_res = await db.execute(
+        select(OrderLineItem.label_id).where(
+            OrderLineItem.order_id == order_id,
+            OrderLineItem.label_id.isnot(None),
+        ).distinct()
+    )
+    label_ids = [row[0] for row in li_res.all()]
+    if not label_ids:
+        return []
     result = await db.execute(
-        select(ShippingLabel).join(
-            OrderLineItem, OrderLineItem.label_id == ShippingLabel.id
-        ).where(OrderLineItem.order_id == order_id).distinct()
+        select(ShippingLabel).where(ShippingLabel.id.in_(label_ids))
     )
     return result.scalars().all()
 
@@ -538,12 +515,6 @@ async def list_labels(order_id: int, db: AsyncSession = Depends(get_db)):
 # --- Helpers ---
 
 async def _recalculate_line_item_status(li: OrderLineItem, db: AsyncSession):
-    """Roll up the line item's fulfill_status from its fulfillment items.
-
-    Only applies to line items that actually have fulfillment items (i.e. the
-    product had ProductComponents). Line items without fulfillment items keep
-    their manually-set status.
-    """
     fi_result = await db.execute(
         select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
     )
@@ -571,7 +542,6 @@ async def _recalculate_line_item_status(li: OrderLineItem, db: AsyncSession):
 
 
 async def _recalculate_order_status(order: Order, db: AsyncSession):
-    """Update order.status based on aggregate of line item fulfill_status values."""
     result = await db.execute(select(OrderLineItem).where(OrderLineItem.order_id == order.id))
     items = result.scalars().all()
     if not items:
@@ -623,7 +593,6 @@ async def _line_item_out(li: OrderLineItem, db: AsyncSession) -> OrderLineItemOu
 
 
 async def _push_tracking_to_marketplace(fi: OrderFulfillmentItem, order: Order, db: AsyncSession) -> None:
-    """Push tracking number to AMZ/Shopify after a fulfillment item is marked shipped."""
     try:
         li = await db.get(OrderLineItem, fi.order_line_item_id)
         if not li or not li.external_line_item_id or not fi.tracking_number:

@@ -424,26 +424,53 @@ async def supplier_orders(
     for li in items:
         order = orders_map.get(li.order_id)
         label = labels_map.get(li.label_id) if li.label_id else None
-        out.append({
-            "id": li.id,
+        base = {
+            "order_line_item_id": li.id,
             "order_id": li.order_id,
             "external_order_id": order.external_order_id if order else None,
             "marketplace": order.marketplace if order else None,
             "ordered_at": order.ordered_at.isoformat() if order else None,
             "buyer_name": order.buyer_name if order else None,
             "order_status": order.status if order else None,
-            "product_id": li.product_id,
-            "product_name": li.product_name,
-            "sku": li.sku,
-            "quantity": li.quantity,
+            "shipping_address": order.shipping_address if order else None,
             "price": float(li.price),
             "base_cost": float(li.base_cost),
-            "fulfill_status": li.fulfill_status,
-            "tracking_number": li.tracking_number,
+            "li_quantity": li.quantity,
             "label_id": li.label_id,
             "label_url": label.label_url if label else None,
             "label_has_pdf": bool(label and label.label_data) if label else False,
-        })
+        }
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        fis = list(fi_res.scalars().all())
+        if fis:
+            for fi in fis:
+                sp = await db.get(SupplierProduct, fi.supplier_product_id)
+                out.append({
+                    **base,
+                    "item_key": f"fi_{fi.id}",
+                    "product_name": sp.name if sp else li.product_name,
+                    "sku": sp.sku if sp else li.sku,
+                    "image_url": sp.image_url if sp else None,
+                    "quantity": fi.quantity,
+                    "fulfill_status": fi.fulfill_status,
+                    "tracking_number": fi.tracking_number or li.tracking_number,
+                    "fulfilled_at": (fi.fulfilled_at.isoformat() if fi.fulfilled_at
+                                    else (li.fulfilled_at.isoformat() if li.fulfilled_at else None)),
+                })
+        else:
+            out.append({
+                **base,
+                "item_key": f"li_{li.id}",
+                "product_name": li.product_name,
+                "sku": li.sku,
+                "image_url": None,
+                "quantity": li.quantity,
+                "fulfill_status": li.fulfill_status,
+                "tracking_number": li.tracking_number,
+                "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+            })
     return out
 
 

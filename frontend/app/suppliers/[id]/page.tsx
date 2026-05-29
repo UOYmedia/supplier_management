@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { suppliersApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Download, Pencil, Plus, Printer, Trash2, Truck, Upload, X, Pencil as PencilIcon } from "lucide-react";
+import { ArrowLeft, Download, Package, Pencil, Plus, Printer, Trash2, Truck, Upload, X, Pencil as PencilIcon } from "lucide-react";
 import Link from "next/link";
 import { SupplierModal } from "../supplier-modal";
 import { OrderStatusBadge } from "../../orders/order-status-badge";
@@ -173,10 +173,11 @@ export default function SupplierDetailPage() {
           {orders.length === 0 ? (
             <div className="card p-6 text-center text-gray-400">No orders.</div>
           ) : groupOrders(orders).map((group: any) => {
-            const unshipped = group.items.filter((i: any) => i.fulfill_status === "unfulfilled" || i.fulfill_status === "pending");
-            const needsLabel = unshipped.filter((i: any) => !i.tracking_number);
+            const unshipped = group.items.filter((i: any) => i.fulfill_status === "unfulfilled" || i.fulfill_status === "pending" || i.fulfill_status === "drop_off");
+            const needsLabel = Array.from(new Map(unshipped.filter((i: any) => !i.label_id).map((i: any) => [i.order_line_item_id, i])).values());
             const labeled = group.items.filter((i: any) => i.label_id);
-            const subtotal = group.items.reduce((s: number, i: any) => s + i.base_cost * i.quantity, 0);
+            const uniqueLIs = Array.from(new Map(group.items.map((i: any) => [i.order_line_item_id, i])).values());
+            const subtotal = uniqueLIs.reduce((s: number, i: any) => s + i.base_cost * i.li_quantity, 0);
             return (
               <div key={group.order_id} className="card mb-4">
                 <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100">
@@ -215,14 +216,22 @@ export default function SupplierDetailPage() {
                 </div>
                 <div className="table-wrapper">
                   <table>
-                    <thead><tr><th>Product</th><th>SKU</th><th>Qty</th><th>Price</th><th>Cost</th><th>Status</th><th>Tracking</th></tr></thead>
+                    <thead><tr><th className="w-12"></th><th>Catalog Product</th><th>Supplier SKU</th><th>Qty</th><th>Cost</th><th>Status</th><th>Tracking</th></tr></thead>
                     <tbody>
                       {group.items.map((o: any) => (
-                        <tr key={o.id}>
+                        <tr key={o.item_key}>
+                          <td>
+                            {o.image_url ? (
+                              <img src={o.image_url} alt={o.product_name} className="w-9 h-9 rounded object-cover border border-gray-200" />
+                            ) : (
+                              <div className="w-9 h-9 rounded bg-gray-100 flex items-center justify-center border border-gray-200">
+                                <Package className="w-4 h-4 text-gray-300" />
+                              </div>
+                            )}
+                          </td>
                           <td>{o.product_name}</td>
                           <td className="font-mono text-xs">{o.sku || "—"}</td>
                           <td>{o.quantity}</td>
-                          <td>${o.price.toFixed(2)}</td>
                           <td>${o.base_cost.toFixed(2)}</td>
                           <td><FulfillBadge status={o.fulfill_status} /></td>
                           <td className="text-xs text-gray-500">{o.tracking_number || "—"}</td>
@@ -499,7 +508,7 @@ function ProductFormModal({
 }
 
 function FulfillBadge({ status }: { status: string }) {
-  const map: Record<string, string> = { unfulfilled: "badge-gray", pending: "badge-yellow", shipped: "badge-blue", delivered: "badge-green", cancelled: "badge-red" };
+  const map: Record<string, string> = { unfulfilled: "badge-gray", pending: "badge-yellow", drop_off: "badge-blue", shipped: "badge-green", delivered: "badge-green", cancelled: "badge-red" };
   return <span className={map[status] || "badge-gray"}>{status}</span>;
 }
 

@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { suppliersApi } from "@/lib/api";
 import { useParams } from "next/navigation";
@@ -61,6 +61,8 @@ export default function SupplierDetailPage() {
     },
     onError: () => toast.error("Export failed"),
   });
+
+  const [showGenerateInvoice, setShowGenerateInvoice] = useState(false);
 
   const markPaidMut = useMutation({
     mutationFn: (invId: number) => suppliersApi.updateInvoice(sid, invId, { status: "paid", paid_at: new Date().toISOString() }),
@@ -160,7 +162,7 @@ export default function SupplierDetailPage() {
                 {catalog.length === 0 ? (
                   <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products in catalog. Add one to start tracking inventory.</td></tr>
                 ) : filteredCatalog.length === 0 ? (
-                  <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products match “{catalogSearch}”.</td></tr>
+                  <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products match "{catalogSearch}".</td></tr>
                 ) : filteredCatalog.map((item: any) => (
                   <CatalogRow
                     key={item.id}
@@ -265,31 +267,49 @@ export default function SupplierDetailPage() {
       )}
 
       {tab === "invoices" && (
-        <div className="card table-wrapper">
-          <table>
-            <thead><tr><th>Invoice #</th><th>Period</th><th>Total</th><th>Status</th><th>Paid At</th><th></th></tr></thead>
-            <tbody>
-              {invoices.length === 0 ? (
-                <tr><td colSpan={6} className="text-center py-6 text-gray-400">No invoices.</td></tr>
-              ) : invoices.map((inv: any) => (
-                <tr key={inv.id}>
-                  <td className="font-mono text-xs">{inv.invoice_number}</td>
-                  <td className="text-xs text-gray-500">
-                    {new Date(inv.period_start).toLocaleDateString()} — {new Date(inv.period_end).toLocaleDateString()}
-                  </td>
-                  <td>${parseFloat(inv.total_amount).toFixed(2)}</td>
-                  <td><InvoiceBadge status={inv.status} /></td>
-                  <td className="text-xs text-gray-500">{inv.paid_at ? new Date(inv.paid_at).toLocaleDateString() : "—"}</td>
-                  <td>
-                    {inv.status !== "paid" && (
-                      <button className="text-xs text-blue-600 hover:underline" onClick={() => markPaidMut.mutate(inv.id)}>Mark Paid</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div>
+          <div className="flex justify-end mb-3">
+            <button className="btn-primary" onClick={() => setShowGenerateInvoice(true)}>
+              <Plus className="w-4 h-4" /> Generate Invoice from Orders
+            </button>
+          </div>
+          <div className="card table-wrapper">
+            <table>
+              <thead><tr><th>Invoice #</th><th>Period</th><th>Total</th><th>Status</th><th>Paid At</th><th></th></tr></thead>
+              <tbody>
+                {invoices.length === 0 ? (
+                  <tr><td colSpan={6} className="text-center py-6 text-gray-400">No invoices.</td></tr>
+                ) : invoices.map((inv: any) => (
+                  <tr key={inv.id}>
+                    <td className="font-mono text-xs">{inv.invoice_number}</td>
+                    <td className="text-xs text-gray-500">
+                      {new Date(inv.period_start).toLocaleDateString()} — {new Date(inv.period_end).toLocaleDateString()}
+                    </td>
+                    <td>${parseFloat(inv.total_amount).toFixed(2)}</td>
+                    <td><InvoiceBadge status={inv.status} /></td>
+                    <td className="text-xs text-gray-500">{inv.paid_at ? new Date(inv.paid_at).toLocaleDateString() : "—"}</td>
+                    <td>
+                      {inv.status !== "paid" && (
+                        <button className="text-xs text-blue-600 hover:underline" onClick={() => markPaidMut.mutate(inv.id)}>Mark Paid</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
+      )}
+
+      {showGenerateInvoice && (
+        <GenerateInvoiceModal
+          supplierId={sid}
+          onClose={() => setShowGenerateInvoice(false)}
+          onCreated={() => {
+            qc.invalidateQueries({ queryKey: ["supplier-invoices", sid] });
+            setShowGenerateInvoice(false);
+          }}
+        />
       )}
 
       {showEdit && <SupplierModal supplier={supplier} onClose={() => setShowEdit(false)} />}
@@ -520,6 +540,164 @@ function ProductFormModal({
             {isEdit ? "Save" : "Add"}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function GenerateInvoiceModal({ supplierId, onClose, onCreated }: { supplierId: number; onClose: () => void; onCreated: () => void }) {
+  const [items, setItems] = useState<any[]>([]);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const createMut = useMutation({
+    mutationFn: (data: object) => suppliersApi.createInvoiceFromOrders(supplierId, data),
+    onSuccess: () => { toast.success("Invoice created"); onCreated(); },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Error creating invoice"),
+  });
+
+  useEffect(() => {
+    suppliersApi.previewInvoiceFromOrders(supplierId)
+      .then((data: any) => {
+        const rows = (data.items || []).map((it: any) => ({
+          ...it,
+          unit_cost_input: parseFloat(it.unit_cost).toFixed(2),
+        }));
+        setItems(rows);
+        setSelected(new Set(rows.map((r: any) => r.order_line_item_id)));
+        setLoading(false);
+      })
+      .catch(() => { setError("Failed to load fulfilled orders."); setLoading(false); });
+  }, [supplierId]);
+
+  const updateCost = (id: number, val: string) => {
+    setItems((prev) => prev.map((it) => it.order_line_item_id === id ? { ...it, unit_cost_input: val } : it));
+  };
+
+  const toggleItem = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const selectedItems = items.filter((it) => selected.has(it.order_line_item_id));
+  const total = selectedItems.reduce((s, it) => {
+    const unit = parseFloat(it.unit_cost_input) || 0;
+    return s + unit * it.quantity;
+  }, 0);
+
+  const handleSubmit = () => {
+    if (selectedItems.length === 0) { toast.error("Select at least one item"); return; }
+    createMut.mutate({
+      notes: notes || undefined,
+      items: selectedItems.map((it) => {
+        const unit = parseFloat(it.unit_cost_input) || 0;
+        return {
+          order_line_item_id: it.order_line_item_id,
+          description: `${it.product_name}${it.sku ? ` (${it.sku})` : ""} — Order #${it.order_id}`,
+          quantity: it.quantity,
+          unit_amount: unit,
+          total_amount: +(unit * it.quantity).toFixed(2),
+        };
+      }),
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-3xl p-6 max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Generate Invoice from Fulfilled Orders</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        {loading && <p className="text-gray-400 text-sm py-8 text-center">Loading…</p>}
+        {error && <p className="text-red-500 text-sm py-4">{error}</p>}
+
+        {!loading && !error && (
+          <>
+            {items.length === 0 ? (
+              <p className="text-gray-400 text-sm py-8 text-center">No uninvoiced fulfilled orders for this supplier.</p>
+            ) : (
+              <div className="overflow-auto flex-1 mb-4">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-left text-xs text-gray-500">
+                      <th className="pb-2 pr-2 w-8">
+                        <input
+                          type="checkbox"
+                          checked={selected.size === items.length}
+                          onChange={() => setSelected(selected.size === items.length ? new Set() : new Set(items.map((i) => i.order_line_item_id)))}
+                        />
+                      </th>
+                      <th className="pb-2 pr-2">Order</th>
+                      <th className="pb-2 pr-2">Product</th>
+                      <th className="pb-2 pr-2">SKU</th>
+                      <th className="pb-2 pr-2 text-center">Qty</th>
+                      <th className="pb-2 pr-2 text-right">Unit Cost ($)</th>
+                      <th className="pb-2 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((it) => {
+                      const unit = parseFloat(it.unit_cost_input) || 0;
+                      const rowTotal = unit * it.quantity;
+                      return (
+                        <tr key={it.order_line_item_id} className="border-b border-gray-100 last:border-0">
+                          <td className="py-2 pr-2">
+                            <input type="checkbox" checked={selected.has(it.order_line_item_id)} onChange={() => toggleItem(it.order_line_item_id)} />
+                          </td>
+                          <td className="py-2 pr-2 text-xs text-gray-500">
+                            #{it.order_id}{it.order_external_id ? <><br /><span className="font-mono">{it.order_external_id}</span></> : ""}
+                          </td>
+                          <td className="py-2 pr-2">{it.product_name}</td>
+                          <td className="py-2 pr-2 font-mono text-xs text-gray-500">{it.sku || "—"}</td>
+                          <td className="py-2 pr-2 text-center">{it.quantity}</td>
+                          <td className="py-2 pr-2">
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              className="input text-right w-24"
+                              value={it.unit_cost_input}
+                              onChange={(e) => updateCost(it.order_line_item_id, e.target.value)}
+                            />
+                          </td>
+                          <td className="py-2 text-right font-medium">${rowTotal.toFixed(2)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="border-t border-gray-200 pt-4 space-y-3">
+              <div>
+                <label className="label">Notes (optional)</label>
+                <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. June 2026 fulfillment" />
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-500">{selectedItems.length} item(s) selected</span>
+                <span className="font-semibold">Total: ${total.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button className="btn-secondary" onClick={onClose}>Cancel</button>
+                <button
+                  className="btn-primary"
+                  disabled={selectedItems.length === 0 || createMut.isPending}
+                  onClick={handleSubmit}
+                >
+                  {createMut.isPending ? "Creating…" : "Create Invoice"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

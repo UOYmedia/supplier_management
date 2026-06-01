@@ -8,7 +8,8 @@ from app.models.product import ProductSupplier
 from app.models.order import Order, OrderLineItem, OrderFulfillmentItem, FulfillStatus, ShippingLabel
 from app.schemas.supplier import (
     SupplierCreate, SupplierUpdate, SupplierOut, SupplierListOut,
-    InvoiceCreate, InvoiceUpdate, InvoiceOut
+    InvoiceCreate, InvoiceUpdate, InvoiceOut,
+    InvoicePreviewResponse, InvoicePreviewItem, InvoiceFromOrdersCreate,
 )
 from app.schemas.supplier_product import (
     SupplierProductCreate, SupplierProductUpdate, SupplierProductOut
@@ -492,6 +493,127 @@ async def list_invoices(supplier_id: int, db: AsyncSession = Depends(get_db)):
         ]
         out.append(InvoiceOut(**inv_dict))
     return out
+
+
+@router.get("/{supplier_id}/invoices/preview-from-orders", response_model=InvoicePreviewResponse)
+async def preview_invoice_from_orders(supplier_id: int, db: AsyncSession = Depends(get_db)):
+    """Return fulfilled order line items for this supplier that have not yet been invoiced."""
+    supplier = await _get_or_404(supplier_id, db)
+
+    # Find order_line_item_ids already linked to an invoice
+    invoiced_ids_result = await db.execute(
+        select(InvoiceLineItem.order_line_item_id).where(InvoiceLineItem.order_line_item_id.isnot(None))
+    )
+    invoiced_ids = {r for r in invoiced_ids_result.scalars().all()}
+
+    # Fetch fulfilled line items for this supplier
+    result = await db.execute(
+        select(OrderLineItem)
+        .where(
+            OrderLineItem.supplier_id == supplier_id,
+            OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
+        )
+        .order_by(OrderLineItem.order_id)
+    )
+    line_items = result.scalars().all()
+
+    # Load orders to get external_order_id
+    order_ids = {li.order_id for li in line_items}
+    orders_by_id: dict[int, Order] = {}
+    if order_ids:
+        ord_result = await db.execute(select(Order).where(Order.id.in_(order_ids)))
+        for o in ord_result.scalars().all():
+            orders_by_id[o.id] = o
+
+    items = []
+    for li in line_items:
+        if li.id in invoiced_ids:
+            continue
+        unit_cost = li.base_cost
+        total_cost = unit_cost * li.quantity
+        order = orders_by_id.get(li.order_id)
+        items.append(InvoicePreviewItem(
+            order_line_item_id=li.id,
+            order_id=li.order_id,
+            order_external_id=order.external_order_id if order else None,
+            product_name=li.product_name,
+            sku=li.sku,
+            quantity=li.quantity,
+            unit_cost=unit_cost,
+            total_cost=total_cost,
+            fulfill_status=li.fulfill_status.value,
+            fulfilled_at=li.fulfilled_at,
+        ))
+
+    total = sum(i.total_cost for i in items)
+    return InvoicePreviewResponse(
+        supplier_id=supplier_id,
+        supplier_name=supplier.name,
+        items=items,
+        total_amount=total,
+    )
+
+
+@router.post("/{supplier_id}/invoices/create-from-orders", response_model=InvoiceOut, status_code=201)
+async def create_invoice_from_orders(supplier_id: int, body: InvoiceFromOrdersCreate, db: AsyncSession = Depends(get_db)):
+    """Create an invoice from fulfilled order line items with optional cost adjustments."""
+    await _get_or_404(supplier_id, db)
+
+    if not body.items:
+        raise HTTPException(400, "No line items provided")
+
+    # Verify none of these line items are already invoiced
+    item_ids = [it.order_line_item_id for it in body.items]
+    already_result = await db.execute(
+        select(InvoiceLineItem.order_line_item_id).where(
+            InvoiceLineItem.order_line_item_id.in_(item_ids)
+        )
+    )
+    already_invoiced = {r for r in already_result.scalars().all()}
+    if already_invoiced:
+        raise HTTPException(400, f"Line items already invoiced: {sorted(already_invoiced)}")
+
+    # Determine invoice period from the fulfilled_at dates of the line items
+    li_result = await db.execute(
+        select(OrderLineItem).where(OrderLineItem.id.in_(item_ids))
+    )
+    db_items = {li.id: li for li in li_result.scalars().all()}
+
+    dates = [li.fulfilled_at or li.order.created_at for li in db_items.values() if li.fulfilled_at]
+    now = datetime.now(timezone.utc)
+    period_start = min(dates) if dates else now
+    period_end = max(dates) if dates else now
+
+    total = sum(it.total_amount for it in body.items)
+    inv_number = f"INV-{supplier_id}-{now.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+    invoice = Invoice(
+        supplier_id=supplier_id,
+        invoice_number=inv_number,
+        period_start=period_start,
+        period_end=period_end,
+        total_amount=total,
+        notes=body.notes,
+    )
+    db.add(invoice)
+    await db.flush()
+
+    for it in body.items:
+        db.add(InvoiceLineItem(
+            invoice_id=invoice.id,
+            order_line_item_id=it.order_line_item_id,
+            description=it.description,
+            quantity=it.quantity,
+            unit_amount=it.unit_amount,
+            total_amount=it.total_amount,
+        ))
+
+    await db.commit()
+    await db.refresh(invoice)
+    li_result2 = await db.execute(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice.id))
+    li_list = li_result2.scalars().all()
+    inv_dict = {c.name: getattr(invoice, c.name) for c in invoice.__table__.columns}
+    inv_dict["line_items"] = [{c.name: getattr(li, c.name) for c in li.__table__.columns} for li in li_list]
+    return InvoiceOut(**inv_dict)
 
 
 @router.post("/{supplier_id}/invoices", response_model=InvoiceOut, status_code=201)

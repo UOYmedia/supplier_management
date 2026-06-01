@@ -178,6 +178,7 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         carrier=selected_rate.get("carrier", "USPS"),
         service=selected_rate.get("service", ""),
         tracking_number=tracking,
+        shipment_id=bought.get("id") or body.shipment_id,
         label_url=label_url,
         label_data=label_data,
         cost=Decimal(str(cost_str)),

@@ -97,10 +97,14 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
                     carrier = reader.pages[0]
                     cw = float(carrier.mediabox.width)
                     ch = float(carrier.mediabox.height)
-                    # Scale carrier to fill 4x6 if its dimensions differ by more than 2 pt
+                    # Scale + center carrier onto 4x6 if dimensions differ by more than 2 pt
                     if cw > 0 and ch > 0 and (abs(cw - LABEL_W) > 2 or abs(ch - LABEL_H) > 2):
                         scale = min(LABEL_W / cw, LABEL_H / ch)
-                        carrier.add_transformation(Transformation().scale(scale, scale))
+                        tx = (LABEL_W - cw * scale) / 2
+                        ty = (LABEL_H - ch * scale) / 2
+                        carrier.add_transformation(
+                            Transformation().scale(scale, scale).translate(tx, ty)
+                        )
                     out_page.merge_page(carrier)
             except Exception:
                 pass  # Corrupt label — info strip will appear on the blank page

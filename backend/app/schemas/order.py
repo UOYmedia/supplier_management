@@ -151,3 +151,12 @@ class ShippingLabelOut(BaseModel):
     has_label_data: bool = False
     cost: Decimal = Decimal("0")
     purchased_at: datetime
+
+
+class ShippingLabelUpdate(BaseModel):
+    """Edit an existing label (manual override / replay)."""
+    carrier: str | None = None
+    service: str | None = None
+    tracking_number: str | None = None
+    cost: Decimal | None = None
+    label_url: str | None = None

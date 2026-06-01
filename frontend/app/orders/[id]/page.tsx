@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, suppliersApi, easypostApi, amazonShippingApi } from "@/lib/api";
 import { useParams, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag, ExternalLink, Download, Printer } from "lucide-react";
+import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag, ExternalLink, Download, Printer, Pencil, Upload } from "lucide-react";
 import Link from "next/link";
 import { OrderStatusBadge } from "../order-status-badge";
 
@@ -16,6 +16,8 @@ export default function OrderDetailPage() {
   const qc = useQueryClient();
   const searchParams = useSearchParams();
   const [showLabel, setShowLabel] = useState<{ supplierId: number; lineItemIds: number[] } | null>(null);
+  const [manualLabel, setManualLabel] = useState<{ supplierId: number; lineItemIds: number[] } | null>(null);
+  const [editingLabel, setEditingLabel] = useState<any>(null);
   const [assigningItem, setAssigningItem] = useState<number | null>(null);
   const [autoOpenedForSupplier, setAutoOpenedForSupplier] = useState<number | null>(null);
 
@@ -260,6 +262,15 @@ export default function OrderDetailPage() {
                     <Truck className="w-3 h-3" /> Buy Label ({needsLabel.length})
                   </button>
                 )}
+                {sid !== null && needsLabel.length > 0 && (
+                  <button
+                    className="btn-secondary text-xs py-1"
+                    onClick={() => setManualLabel({ supplierId: sid, lineItemIds: needsLabel.map((li: any) => li.id) })}
+                    title="Provide a label manually (tracking + optional PDF) without buying through a carrier"
+                  >
+                    <Tag className="w-3 h-3" /> Manual Label
+                  </button>
+                )}
                 {unshipped.length > 0 && (
                   <button
                     className="btn-secondary text-xs py-1"
@@ -319,6 +330,15 @@ export default function OrderDetailPage() {
                     <ExternalLink className="w-3 h-3" /> Download
                   </a>
                 )}
+                {!l.has_label_data && !l.label_url && (
+                  <span className="text-xs text-amber-600">No PDF — upload one</span>
+                )}
+                <button
+                  className="flex items-center gap-1 text-gray-500 hover:text-gray-800 text-xs ml-auto"
+                  onClick={() => setEditingLabel(l)}
+                >
+                  <Pencil className="w-3 h-3" /> Edit
+                </button>
               </div>
             ))}
           </div>
@@ -347,6 +367,207 @@ export default function OrderDetailPage() {
           loading={assignSupplierMut.isPending}
         />
       )}
+
+      {manualLabel !== null && (
+        <ManualLabelModal
+          orderId={oid}
+          supplierId={manualLabel.supplierId}
+          lineItemIds={manualLabel.lineItemIds}
+          onClose={() => setManualLabel(null)}
+          onDone={() => {
+            qc.invalidateQueries({ queryKey: ["order", oid] });
+            qc.invalidateQueries({ queryKey: ["labels", oid] });
+            setManualLabel(null);
+          }}
+        />
+      )}
+
+      {editingLabel !== null && (
+        <EditLabelModal
+          orderId={oid}
+          label={editingLabel}
+          onClose={() => setEditingLabel(null)}
+          onDone={() => {
+            qc.invalidateQueries({ queryKey: ["order", oid] });
+            qc.invalidateQueries({ queryKey: ["labels", oid] });
+            setEditingLabel(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ManualLabelModal({ orderId, supplierId, lineItemIds, onClose, onDone }: {
+  orderId: number;
+  supplierId: number;
+  lineItemIds: number[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [carrier, setCarrier] = useState("");
+  const [service, setService] = useState("");
+  const [tracking, setTracking] = useState("");
+  const [cost, setCost] = useState("0");
+  const [labelUrl, setLabelUrl] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!carrier.trim()) { toast.error("Carrier is required"); return; }
+    setSaving(true);
+    try {
+      const label = await ordersApi.createLabel(orderId, {
+        supplier_id: supplierId,
+        carrier: carrier.trim(),
+        service: service.trim() || undefined,
+        tracking_number: tracking.trim() || undefined,
+        label_url: labelUrl.trim() || undefined,
+        cost: parseFloat(cost) || 0,
+        line_item_ids: lineItemIds,
+      });
+      if (file) {
+        await ordersApi.uploadLabel(orderId, label.id, file);
+      }
+      toast.success("Manual label saved");
+      onDone();
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || "Error saving label");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-md p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Manual Label</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">
+          Provide a label bought outside the system for {lineItemIds.length} item(s). Items move to <strong>pending</strong>.
+        </p>
+        <div className="space-y-3">
+          <div>
+            <label className="label">Carrier *</label>
+            <input className="input" value={carrier} onChange={(e) => setCarrier(e.target.value)} placeholder="e.g. USPS, UPS, DHL" />
+          </div>
+          <div>
+            <label className="label">Service</label>
+            <input className="input" value={service} onChange={(e) => setService(e.target.value)} placeholder="e.g. Ground, Priority" />
+          </div>
+          <div>
+            <label className="label">Tracking Number</label>
+            <input className="input" value={tracking} onChange={(e) => setTracking(e.target.value)} placeholder="Tracking #" />
+          </div>
+          <div>
+            <label className="label">Cost ($)</label>
+            <input className="input" type="number" step="0.01" min="0" value={cost} onChange={(e) => setCost(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Label URL (optional)</label>
+            <input className="input" value={labelUrl} onChange={(e) => setLabelUrl(e.target.value)} placeholder="https://…" />
+          </div>
+          <div>
+            <label className="label">Or upload label PDF (optional)</label>
+            <label className="btn-secondary cursor-pointer inline-flex">
+              <Upload className="w-4 h-4" /> {file ? file.name : "Choose PDF"}
+              <input type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            </label>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={!carrier.trim() || saving} onClick={handleSubmit}>
+            {saving ? "Saving…" : "Save Label"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditLabelModal({ orderId, label, onClose, onDone }: {
+  orderId: number;
+  label: any;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [carrier, setCarrier] = useState(label.carrier || "");
+  const [service, setService] = useState(label.service || "");
+  const [tracking, setTracking] = useState(label.tracking_number || "");
+  const [cost, setCost] = useState(String(label.cost ?? "0"));
+  const [labelUrl, setLabelUrl] = useState(label.label_url || "");
+  const [file, setFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async () => {
+    setSaving(true);
+    try {
+      await ordersApi.updateLabel(orderId, label.id, {
+        carrier: carrier.trim() || undefined,
+        service: service.trim() || null,
+        tracking_number: tracking.trim() || null,
+        cost: parseFloat(cost) || 0,
+        label_url: labelUrl.trim() || null,
+      });
+      if (file) {
+        await ordersApi.uploadLabel(orderId, label.id, file);
+      }
+      toast.success("Label updated");
+      onDone();
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || "Error updating label");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-md p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Edit Label</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="label">Carrier</label>
+            <input className="input" value={carrier} onChange={(e) => setCarrier(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Service</label>
+            <input className="input" value={service} onChange={(e) => setService(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Tracking Number</label>
+            <input className="input" value={tracking} onChange={(e) => setTracking(e.target.value)} />
+            <p className="text-xs text-gray-400 mt-1">Updating this also updates the tracking number on all linked items.</p>
+          </div>
+          <div>
+            <label className="label">Cost ($)</label>
+            <input className="input" type="number" step="0.01" min="0" value={cost} onChange={(e) => setCost(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Label URL</label>
+            <input className="input" value={labelUrl} onChange={(e) => setLabelUrl(e.target.value)} placeholder="https://…" />
+          </div>
+          <div>
+            <label className="label">{label.has_label_data ? "Replace label PDF" : "Upload label PDF"}</label>
+            <label className="btn-secondary cursor-pointer inline-flex">
+              <Upload className="w-4 h-4" /> {file ? file.name : "Choose PDF"}
+              <input type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            </label>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={saving} onClick={handleSubmit}>
+            {saving ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

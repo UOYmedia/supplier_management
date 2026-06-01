@@ -1,15 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timezone
+import base64
 from app.core.database import get_db
 from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus, OrderFulfillmentItem
 from app.models.product import Product, ProductSupplier, ProductComponent
 from app.models.supplier import Supplier, SupplierProduct
 from app.schemas.order import (
     OrderCreate, OrderUpdate, OrderOut, OrderLineItemUpdate,
-    OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut, AssignSupplierBody,
-    MarkShippedBody,
+    OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut, ShippingLabelUpdate,
+    AssignSupplierBody, MarkShippedBody,
 )
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -296,6 +297,73 @@ async def mark_label_printed(order_id: int, label_id: int, db: AsyncSession = De
     if not label:
         raise HTTPException(404, "Label not found")
     return {"status": "ok", "label_id": label_id}
+
+
+@router.patch("/{order_id}/labels/{label_id}", response_model=ShippingLabelOut)
+async def update_label(
+    order_id: int, label_id: int, body: ShippingLabelUpdate, db: AsyncSession = Depends(get_db)
+):
+    """Edit an existing label (manual override / replay).
+
+    Lets an admin fix the carrier/service/cost, swap in a new tracking number,
+    or point label_url at a manually-provided label. The new tracking number
+    cascades to every line item (and fulfillment item) linked to this label.
+    """
+    order = await _get_or_404(order_id, db)
+    label = await db.get(ShippingLabel, label_id)
+    if not label:
+        raise HTTPException(404, "Label not found")
+
+    data = body.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(label, k, v)
+
+    # Cascade a changed tracking number to the linked line/fulfillment items
+    if "tracking_number" in data:
+        li_res = await db.execute(
+            select(OrderLineItem).where(
+                OrderLineItem.order_id == order_id,
+                OrderLineItem.label_id == label_id,
+            )
+        )
+        for li in li_res.scalars().all():
+            li.tracking_number = data["tracking_number"]
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.label_id == label_id)
+        )
+        for fi in fi_res.scalars().all():
+            fi.tracking_number = data["tracking_number"]
+
+    await db.commit()
+    await db.refresh(label)
+    return label
+
+
+@router.post("/{order_id}/labels/{label_id}/upload", response_model=ShippingLabelOut)
+async def upload_label_pdf(
+    order_id: int, label_id: int, file: UploadFile = File(...), db: AsyncSession = Depends(get_db)
+):
+    """Attach a manually-provided PDF label to an existing label record.
+
+    Useful when a label was bought outside the system, or when the archived
+    PDF is missing and needs to be re-supplied ("replay"). The PDF is stored
+    base64-encoded so it can be served same-origin for printing.
+    """
+    await _get_or_404(order_id, db)
+    label = await db.get(ShippingLabel, label_id)
+    if not label:
+        raise HTTPException(404, "Label not found")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Uploaded file is empty")
+    if raw[:5] != b"%PDF-":
+        raise HTTPException(400, "Please upload a PDF file")
+
+    label.label_data = base64.b64encode(raw).decode()
+    await db.commit()
+    await db.refresh(label)
+    return label
 
 
 @router.get("/{order_id}/parcel-estimate")

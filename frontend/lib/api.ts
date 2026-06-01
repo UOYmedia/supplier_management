@@ -110,6 +110,13 @@ export const ordersApi = {
   listLabels: (orderId: number) => api.get(`/orders/${orderId}/labels`).then((r) => r.data),
   markLabelPrinted: (orderId: number, labelId: number) =>
     api.post(`/orders/${orderId}/labels/${labelId}/mark-printed`).then((r) => r.data),
+  updateLabel: (orderId: number, labelId: number, data: object) =>
+    api.patch(`/orders/${orderId}/labels/${labelId}`, data).then((r) => r.data),
+  uploadLabel: (orderId: number, labelId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return api.post(`/orders/${orderId}/labels/${labelId}/upload`, fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+  },
   markShipped: (orderId: number, data: object) =>
     api.post(`/orders/${orderId}/mark-shipped`, data).then((r) => r.data),
   labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, Numeric, ForeignKey, Integer, DateTime, Text, Enum as SAEnum, JSON
+from sqlalchemy import String, Numeric, ForeignKey, Integer, DateTime, Text, Enum as SAEnum
+from sqlalchemy.dialects.postgresql import JSONB as JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 import enum

@@ -73,6 +73,10 @@ async def _run_migrations():
         "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS purchased_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()",
         "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS cost NUMERIC(8,2) NOT NULL DEFAULT 0",
         "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS service VARCHAR(100)",
+        # Convert JSON → JSONB to support DISTINCT queries (JSON has no equality operator)
+        "ALTER TABLE shipping_labels ALTER COLUMN from_address TYPE JSONB USING from_address::text::jsonb",
+        "ALTER TABLE shipping_labels ALTER COLUMN to_address TYPE JSONB USING to_address::text::jsonb",
+        "ALTER TABLE orders ALTER COLUMN shipping_address TYPE JSONB USING shipping_address::text::jsonb",
         # Allow marketplace listings without a linked shop product (for sync + mapping flow)
         "ALTER TABLE marketplace_listings ALTER COLUMN product_id DROP NOT NULL",
         # orders: new columns added after initial deploy

@@ -234,11 +234,11 @@ async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSessio
 @router.get("/{order_id}/labels", response_model=list[ShippingLabelOut])
 async def list_labels(order_id: int, db: AsyncSession = Depends(get_db)):
     await _get_or_404(order_id, db)
-    result = await db.execute(
-        select(ShippingLabel).join(
-            OrderLineItem, OrderLineItem.label_id == ShippingLabel.id
-        ).where(OrderLineItem.order_id == order_id).distinct()
-    )
+    label_ids_q = select(OrderLineItem.label_id).where(
+        OrderLineItem.order_id == order_id,
+        OrderLineItem.label_id.isnot(None),
+    ).distinct()
+    result = await db.execute(select(ShippingLabel).where(ShippingLabel.id.in_(label_ids_q)))
     return result.scalars().all()
 
 

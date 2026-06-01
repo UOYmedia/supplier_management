@@ -1,9 +1,10 @@
 """
 EasyPost shipping endpoints.
 
-POST /orders/{order_id}/easypost/rates  — create shipment, return USPS + UPS rates
+POST /orders/{order_id}/easypost/rates  — create shipment, return all carrier rates
 POST /orders/{order_id}/easypost/buy    — buy a rate, save ShippingLabel
 """
+import base64
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -16,9 +17,9 @@ from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus
 from app.models.supplier import Supplier
 from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
-    supplier_to_ep_address, shipping_addr_to_ep, filter_usps_rates, filter_supported_rates,
+    supplier_to_ep_address, shipping_addr_to_ep,
 )
-from app.api.v1.orders import _recalculate_order_status, _line_item_out
+from app.api.v1.orders import _recalculate_order_status, _line_item_out, _catalog_items_for_line_item
 from app.schemas.order import ShippingLabelOut
 
 router = APIRouter(prefix="/orders", tags=["easypost"])
@@ -78,7 +79,7 @@ def _require_easypost() -> EasyPostClient:
 
 @router.post("/{order_id}/easypost/rates", response_model=RatesResponse)
 async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depends(get_db)):
-    """Create an EasyPost shipment and return available USPS + UPS rates."""
+    """Create an EasyPost shipment and return available rates for all configured carriers."""
     ep = _require_easypost()
 
     order = await db.get(Order, order_id)
@@ -104,13 +105,19 @@ async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depend
         "height": body.parcel.height,
     }
 
+    carrier_accounts = [
+        x.strip() for x in settings.EASYPOST_CARRIER_ACCOUNT_IDS.split(",") if x.strip()
+    ] or None
+
     try:
-        shipment = await ep.create_shipment(from_addr, to_addr, parcel)
+        shipment = await ep.create_shipment(to_addr, from_addr, parcel, carrier_accounts)
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Unexpected error: {e}")
 
     all_rates: list[dict] = shipment.get("rates", [])
-    shown_rates = filter_supported_rates(all_rates)
+    shown_rates = all_rates
 
     rates_out = [
         RateOut(
@@ -164,24 +171,8 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         or bought.get("postage_label", {}).get("label_pdf_url")
     )
     cost_str = selected_rate.get("rate", "0")
-    # Archive the PDF so we can serve same-origin (enables auto-print) and
-    # survive EasyPost URL expiry.
-    label_data = await ep.fetch_label_pdf_b64(bought)
-    label = ShippingLabel(
-        supplier_id=body.supplier_id,
-        carrier=selected_rate.get("carrier", "USPS"),
-        service=selected_rate.get("service", ""),
-        tracking_number=tracking,
-        label_url=label_url,
-        label_data=label_data,
-        cost=Decimal(str(cost_str)),
-        from_address=bought.get("from_address"),
-        to_address=bought.get("to_address"),
-    )
-    db.add(label)
-    await db.flush()
 
-    # Determine which line items to attach
+    # Determine which line items to attach (needed for catalog lookup)
     li_ids = body.line_item_ids
     if not li_ids:
         auto = await db.execute(
@@ -192,6 +183,47 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
             )
         )
         li_ids = [li.id for li in auto.scalars().all()]
+
+    # Resolve catalog names (ProductComponent → SupplierProduct)
+    pack_items = []
+    for li_id in li_ids:
+        li_obj = await db.get(OrderLineItem, li_id)
+        if li_obj:
+            pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
+
+    # Download carrier PNG and build combined PDF with catalog overlay
+    carrier_b64 = await ep.fetch_label_pdf_b64(bought)
+    if carrier_b64 and pack_items:
+        from app.integrations.pdf_labels import LabelEntry, build_batch_label_pdf, decode_label_data
+        def _ship_name(addr: dict | None) -> str | None:
+            if not addr:
+                return None
+            return addr.get("name") or addr.get("Name") or addr.get("buyer_name")
+        entry = LabelEntry(
+            order_label=(order.external_order_id or f"Order #{order_id}"),
+            ship_to=_ship_name(order.shipping_address),
+            tracking_number=tracking,
+            label_pdf=decode_label_data(carrier_b64),
+            items=pack_items,
+        )
+        label_data = base64.b64encode(build_batch_label_pdf([entry])).decode()
+    else:
+        label_data = carrier_b64
+
+    label = ShippingLabel(
+        supplier_id=body.supplier_id,
+        carrier=selected_rate.get("carrier", "USPS"),
+        service=selected_rate.get("service", ""),
+        tracking_number=tracking,
+        shipment_id=bought.get("id") or body.shipment_id,
+        label_url=label_url,
+        label_data=label_data,
+        cost=Decimal(str(cost_str)),
+        from_address=bought.get("from_address"),
+        to_address=bought.get("to_address"),
+    )
+    db.add(label)
+    await db.flush()
 
     for li_id in li_ids:
         res = await db.execute(

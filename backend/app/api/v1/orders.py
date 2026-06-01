@@ -373,36 +373,62 @@ async def regenerate_label(
     size: str = Query("4x6", description="EasyPost label size, e.g. 4x6 or 7x3"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Regenerate the label PDF from EasyPost on demand (e.g. to repair a missing
-    archive or change the printed size). Requires the label to have an EasyPost
-    shipment id — otherwise upload a PDF manually instead.
+    """Regenerate the label PDF on demand (e.g. to repair a missing archive or
+    change the printed size).
+
+    Preferred path: re-request the label from EasyPost at the chosen size (needs
+    the label's EasyPost shipment id). Fallback for older labels: re-fetch the
+    stored label_url and archive it as a printable PDF (converting an image to a
+    4x6 PDF if needed).
     """
     await _get_or_404(order_id, db)
     label = await db.get(ShippingLabel, label_id)
     if not label:
         raise HTTPException(404, "Label not found")
-    if not label.shipment_id:
-        raise HTTPException(400, "This label has no EasyPost shipment to regenerate from — upload a PDF manually instead.")
 
     from app.core.config import settings
-    from app.integrations.easypost.client import EasyPostClient, EasyPostError
-    if not settings.EASYPOST_API_KEY:
-        raise HTTPException(503, "EasyPost is not configured")
 
-    ep = EasyPostClient(settings.EASYPOST_API_KEY)
-    try:
-        pdf_b64, pdf_url = await ep.regenerate_label(label.shipment_id, size)
-    except EasyPostError as e:
-        raise HTTPException(e.status, str(e))
-    if not pdf_b64:
-        raise HTTPException(502, "EasyPost did not return a label PDF")
+    # Preferred: regenerate from the EasyPost shipment at the requested size
+    if label.shipment_id and settings.EASYPOST_API_KEY:
+        from app.integrations.easypost.client import EasyPostClient, EasyPostError
+        ep = EasyPostClient(settings.EASYPOST_API_KEY)
+        try:
+            pdf_b64, pdf_url = await ep.regenerate_label(label.shipment_id, size)
+        except EasyPostError as e:
+            raise HTTPException(e.status, str(e))
+        if pdf_b64:
+            label.label_data = pdf_b64
+            if pdf_url:
+                label.label_url = pdf_url
+            await db.commit()
+            await db.refresh(label)
+            return label
 
-    label.label_data = pdf_b64
-    if pdf_url:
-        label.label_url = pdf_url
-    await db.commit()
-    await db.refresh(label)
-    return label
+    # Fallback: re-fetch the stored label URL and archive it as a PDF
+    if label.label_url:
+        import httpx
+        from app.integrations.pdf_labels import image_to_label_pdf
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
+                r = await http.get(label.label_url)
+        except Exception as e:
+            raise HTTPException(502, f"Could not fetch the stored label URL: {e}")
+        if not r.is_success:
+            raise HTTPException(502, f"Label URL returned HTTP {r.status_code} — it may have expired. Upload a PDF manually instead.")
+        content = r.content
+        if content[:5] == b"%PDF-":
+            label.label_data = base64.b64encode(content).decode()
+        else:
+            try:
+                pdf = image_to_label_pdf(content)
+            except Exception as e:
+                raise HTTPException(502, f"Could not convert the label image to PDF: {e}")
+            label.label_data = base64.b64encode(pdf).decode()
+        await db.commit()
+        await db.refresh(label)
+        return label
+
+    raise HTTPException(400, "This label has no EasyPost shipment or stored URL to regenerate from — upload a PDF manually instead.")
 
 
 @router.get("/{order_id}/parcel-estimate")

@@ -93,26 +93,38 @@ def _build_label_overlay(entry: LabelEntry) -> bytes:
 
 
 def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
-    """Overlay item info onto each carrier label page — no extra pages added."""
+    """Overlay item info onto each carrier label page.
+
+    Each output page is always exactly 4x6 inches. The carrier label is
+    scaled to fit if its dimensions differ from 4x6 (e.g. letter-size PDF).
+    """
+    from pypdf import Transformation
+
     writer = PdfWriter()
     for entry in entries:
         overlay_bytes = _build_label_overlay(entry)
         overlay_page = PdfReader(io.BytesIO(overlay_bytes)).pages[0]
 
+        # Always start with a fresh 4x6 output page so the dimensions are guaranteed
+        out_page = writer.add_blank_page(width=LABEL_W, height=LABEL_H)
+
         if entry.label_pdf:
             try:
                 reader = PdfReader(io.BytesIO(entry.label_pdf))
-                for i, page in enumerate(reader.pages):
-                    if i == 0:
-                        # Overlay info strip onto the first (carrier) page
-                        page.merge_page(overlay_page)
-                    writer.add_page(page)
+                if reader.pages:
+                    carrier = reader.pages[0]
+                    cw = float(carrier.mediabox.width)
+                    ch = float(carrier.mediabox.height)
+                    # Scale carrier to fill 4x6 if its dimensions differ by more than 2 pt
+                    if cw > 0 and ch > 0 and (abs(cw - LABEL_W) > 2 or abs(ch - LABEL_H) > 2):
+                        scale = min(LABEL_W / cw, LABEL_H / ch)
+                        carrier.add_transformation(Transformation().scale(scale, scale))
+                    out_page.merge_page(carrier)
             except Exception:
-                # Corrupt/unreadable label — emit the overlay on a blank page
-                writer.add_page(overlay_page)
-        else:
-            # No carrier PDF yet — emit overlay on a blank page
-            writer.add_page(overlay_page)
+                pass  # Corrupt label — info strip will appear on the blank page
+
+        # Overlay item info strip on top
+        out_page.merge_page(overlay_page)
 
     out = io.BytesIO()
     writer.write(out)

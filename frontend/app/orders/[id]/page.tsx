@@ -48,6 +48,29 @@ export default function OrderDetailPage() {
     },
   });
 
+  const markShippedMut = useMutation({
+    mutationFn: (data: object) => ordersApi.markShipped(oid, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["order", oid] });
+      toast.success("Marked as shipped");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
+  });
+
+  const markGroupShipped = (sid: number | null, items: any[]) => {
+    if (items.length === 0) return;
+    const tracking = window.prompt(
+      `Mark ${items.length} item(s) as shipped without buying a label?\n\nOptional — enter a tracking number (leave blank to skip):`,
+      ""
+    );
+    if (tracking === null) return; // cancelled
+    markShippedMut.mutate({
+      line_item_ids: items.map((li: any) => li.id),
+      supplier_id: sid,
+      tracking_number: tracking.trim() || undefined,
+    });
+  };
+
   // Auto-open Buy Label modal when navigated from supplier orders tab
   useEffect(() => {
     if (!order || autoOpenedForSupplier !== null) return;
@@ -235,6 +258,16 @@ export default function OrderDetailPage() {
                     onClick={() => openBuyLabel(sid, needsLabel)}
                   >
                     <Truck className="w-3 h-3" /> Buy Label ({needsLabel.length})
+                  </button>
+                )}
+                {unshipped.length > 0 && (
+                  <button
+                    className="btn-secondary text-xs py-1"
+                    onClick={() => markGroupShipped(sid, unshipped)}
+                    disabled={markShippedMut.isPending}
+                    title="Mark these items shipped without buying a label (e.g. shipped outside the system)"
+                  >
+                    <CheckCircle2 className="w-3 h-3" /> Mark Shipped ({unshipped.length})
                   </button>
                 )}
               </div>
@@ -1124,8 +1157,7 @@ function EasyPostDebugPanel({
           <span className="font-medium">{debug.parcel.weight} oz</span>{" · "}
           <span className="font-medium">{debug.parcel.length}×{debug.parcel.width}×{debug.parcel.height} in</span>
           <span className="ml-3 text-gray-500">Rates returned:</span>{" "}
-          <span className="font-medium">{debug.usps_rates} USPS</span>
-          <span className="text-gray-500"> / {debug.total_rates} total</span>
+          <span className="font-medium">{debug.total_rates} total</span>
           <span className="ml-3 text-gray-500">Line items:</span>{" "}
           <span className="font-mono">{(debug.line_item_ids || []).join(", ")}</span>
         </div>

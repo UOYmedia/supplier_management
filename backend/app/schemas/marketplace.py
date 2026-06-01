@@ -29,18 +29,6 @@ class ConnectionOut(BaseModel):
     last_synced_at: datetime | None
     error_message: str | None
     created_at: datetime
-    # Return non-secret credential fields only (client_id, sandbox) so the UI
-    # can pre-fill them. Secrets (access_token, client_secret, refresh_token) are stripped.
-    client_id: str | None = None
-    sandbox: bool = False
-
-    @classmethod
-    def model_validate(cls, obj, **kwargs):
-        instance = super().model_validate(obj, **kwargs)
-        creds = getattr(obj, "credentials", None) or {}
-        instance.client_id = creds.get("client_id")
-        instance.sandbox = bool(creds.get("sandbox", False))
-        return instance
 
 
 class ListingCreate(BaseModel):
@@ -54,7 +42,6 @@ class ListingCreate(BaseModel):
 
 
 class ListingUpdate(BaseModel):
-    product_id: int | None = None
     external_id: str | None = None
     marketplace_sku: str | None = None
     title: str | None = None
@@ -66,7 +53,7 @@ class ListingUpdate(BaseModel):
 class ListingOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    product_id: int | None
+    product_id: int
     connection_id: int
     external_id: str | None
     marketplace_sku: str | None
@@ -89,8 +76,3 @@ class SyncResult(BaseModel):
     success: int = 0
     failed: int = 0
     errors: list[str] = []
-
-
-class AutoMapResult(BaseModel):
-    mapped: int = 0
-    unmatched: list[str] = []

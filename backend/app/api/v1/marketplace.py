@@ -2,12 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.database import get_db
-from app.models.marketplace import MarketplaceConnection, MarketplaceListing, MarketplaceType, ConnectionStatus, ListingStatus
+from app.models.marketplace import MarketplaceConnection, MarketplaceListing, MarketplaceType, ConnectionStatus
 from app.models.product import Product
 from app.schemas.marketplace import (
     ConnectionCreate, ConnectionUpdate, ConnectionOut,
     ListingCreate, ListingUpdate, ListingOut,
-    PushListingRequest, SyncResult, AutoMapResult
+    PushListingRequest, SyncResult
 )
 from app.integrations.amazon.sync import AmazonSync
 from app.integrations.shopify.sync import ShopifySync
@@ -39,11 +39,7 @@ async def get_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
 @router.patch("/connections/{conn_id}", response_model=ConnectionOut)
 async def update_connection(conn_id: int, body: ConnectionUpdate, db: AsyncSession = Depends(get_db)):
     conn = await _get_conn_or_404(conn_id, db)
-    data = body.model_dump(exclude_none=True)
-    if "credentials" in data:
-        # Merge so that updating client_id doesn't wipe the stored access_token
-        conn.credentials = {**(conn.credentials or {}), **data.pop("credentials")}
-    for k, v in data.items():
+    for k, v in body.model_dump(exclude_none=True).items():
         setattr(conn, k, v)
     await db.commit()
     await db.refresh(conn)
@@ -79,7 +75,6 @@ async def test_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
 async def list_listings(
     connection_id: int | None = None,
     product_id: int | None = None,
-    unlinked: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
     q = select(MarketplaceListing)
@@ -87,13 +82,11 @@ async def list_listings(
         q = q.where(MarketplaceListing.connection_id == connection_id)
     if product_id:
         q = q.where(MarketplaceListing.product_id == product_id)
-    if unlinked:
-        q = q.where(MarketplaceListing.product_id.is_(None))
     result = await db.execute(q)
     listings = result.scalars().all()
     out = []
     for l in listings:
-        p = await db.get(Product, l.product_id) if l.product_id else None
+        p = await db.get(Product, l.product_id)
         data = {c.name: getattr(l, c.name) for c in l.__table__.columns}
         data["product_name"] = p.name if p else None
         data["product_sku"] = p.sku if p else None
@@ -119,42 +112,15 @@ async def update_listing(listing_id: int, body: ListingUpdate, db: AsyncSession 
     listing = await db.get(MarketplaceListing, listing_id)
     if not listing:
         raise HTTPException(404, "Listing not found")
-    for k, v in body.model_dump(exclude_unset=True).items():
+    for k, v in body.model_dump(exclude_none=True).items():
         setattr(listing, k, v)
     await db.commit()
     await db.refresh(listing)
-    p = await db.get(Product, listing.product_id) if listing.product_id else None
+    p = await db.get(Product, listing.product_id)
     data = {c.name: getattr(listing, c.name) for c in listing.__table__.columns}
     data["product_name"] = p.name if p else None
     data["product_sku"] = p.sku if p else None
     return ListingOut(**data)
-
-
-@router.post("/auto-map", response_model=AutoMapResult)
-async def auto_map_listings(db: AsyncSession = Depends(get_db)):
-    """Match unlinked listings to products by marketplace_sku = product.sku."""
-    q = await db.execute(
-        select(MarketplaceListing).where(MarketplaceListing.product_id.is_(None))
-    )
-    unlinked = q.scalars().all()
-
-    mapped = 0
-    unmatched = []
-    for listing in unlinked:
-        sku = listing.marketplace_sku
-        if not sku:
-            unmatched.append(f"(no SKU) {listing.title or listing.external_id or ''}")
-            continue
-        prod_result = await db.execute(select(Product).where(Product.sku == sku))
-        product = prod_result.scalar_one_or_none()
-        if product:
-            listing.product_id = product.id
-            mapped += 1
-        else:
-            unmatched.append(f"{sku} — {listing.title or ''}")
-
-    await db.commit()
-    return AutoMapResult(mapped=mapped, unmatched=unmatched)
 
 
 # --- Push to marketplace ---
@@ -208,29 +174,10 @@ async def push_to_marketplace(
 
 # --- Sync orders from marketplace ---
 
-@router.post("/connections/{conn_id}/sync-locations")
-async def sync_locations(conn_id: int, db: AsyncSession = Depends(get_db)):
-    """Pull Shopify locations and upsert as Suppliers (Shopify only)."""
-    conn = await _get_conn_or_404(conn_id, db)
-    if conn.marketplace != MarketplaceType.shopify:
-        raise HTTPException(400, "Location sync is only supported for Shopify connections")
-    syncer = ShopifySync(conn)
-    result = await syncer.sync_locations(db)
-    conn.last_synced_at = datetime.now(timezone.utc)
-    await db.commit()
-    return result
-
-
 @router.post("/connections/{conn_id}/sync-orders")
-async def sync_orders(
-    conn_id: int,
-    background_tasks: BackgroundTasks,
-    created_after: str | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    """Sync orders from marketplace. Pass created_after (ISO8601) for full re-sync."""
+async def sync_orders(conn_id: int, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     conn = await _get_conn_or_404(conn_id, db)
-    background_tasks.add_task(_do_sync_orders, conn_id, created_after)
+    background_tasks.add_task(_do_sync_orders, conn_id)
     return {"message": "Order sync started in background"}
 
 
@@ -241,53 +188,15 @@ async def sync_products(conn_id: int, background_tasks: BackgroundTasks, db: Asy
     return {"message": "Product sync started in background"}
 
 
-@router.post("/connections/{conn_id}/sync-listings")
-async def sync_listings(conn_id: int, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
-    """Pull active listings from Amazon (FBA inventory) into local MarketplaceListing records."""
-    conn = await _get_conn_or_404(conn_id, db)
-    if conn.marketplace != MarketplaceType.amazon:
-        raise HTTPException(400, "Listing sync is only supported for Amazon connections")
-    background_tasks.add_task(_do_sync_listings, conn_id)
-    return {"message": "Listing sync started in background"}
-
-
-async def _do_sync_orders(conn_id: int, created_after: str | None = None):
+async def _do_sync_orders(conn_id: int):
     from app.core.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         conn = await db.get(MarketplaceConnection, conn_id)
         if not conn:
             return
-        try:
-            syncer = _get_syncer(conn)
-            if conn.marketplace == MarketplaceType.amazon:
-                await syncer.sync_orders(db, created_after=created_after)
-            else:
-                await syncer.sync_orders(db)
-            conn.last_synced_at = datetime.now(timezone.utc)
-            conn.error_message = None
-        except Exception as e:
-            conn.status = ConnectionStatus.error
-            conn.error_message = str(e)[:500]
-            print(f"ERROR sync_orders conn={conn_id}: {e}", flush=True)
-        await db.commit()
-
-
-async def _do_sync_listings(conn_id: int):
-    from app.core.database import AsyncSessionLocal
-    async with AsyncSessionLocal() as db:
-        conn = await db.get(MarketplaceConnection, conn_id)
-        if not conn:
-            return
-        try:
-            from app.integrations.amazon.sync import AmazonSync
-            syncer = AmazonSync(conn)
-            await syncer.sync_listings(db)
-            conn.last_synced_at = datetime.now(timezone.utc)
-            conn.error_message = None
-        except Exception as e:
-            conn.status = ConnectionStatus.error
-            conn.error_message = str(e)[:500]
-            print(f"ERROR sync_listings conn={conn_id}: {e}", flush=True)
+        syncer = _get_syncer(conn)
+        await syncer.sync_orders(db)
+        conn.last_synced_at = datetime.now(timezone.utc)
         await db.commit()
 
 
@@ -297,15 +206,9 @@ async def _do_sync_products(conn_id: int):
         conn = await db.get(MarketplaceConnection, conn_id)
         if not conn:
             return
-        try:
-            syncer = _get_syncer(conn)
-            await syncer.sync_products(db)
-            conn.last_synced_at = datetime.now(timezone.utc)
-            conn.error_message = None
-        except Exception as e:
-            conn.status = ConnectionStatus.error
-            conn.error_message = str(e)[:500]
-            print(f"ERROR sync_products conn={conn_id}: {e}", flush=True)
+        syncer = _get_syncer(conn)
+        await syncer.sync_products(db)
+        conn.last_synced_at = datetime.now(timezone.utc)
         await db.commit()
 
 

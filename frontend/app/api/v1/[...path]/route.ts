@@ -5,53 +5,38 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 
+const BACKEND = (process.env.BACKEND_URL || "http://localhost:8000").replace(/\/$/, "");
+
 async function proxy(req: NextRequest, { params }: { params: { path: string[] } }) {
-  const backend = (process.env.BACKEND_URL || "http://localhost:8000").replace(/\/$/, "");
-  const path = params.path.join("/");
+  const path = (await params).path.join("/");
   const search = req.nextUrl.search;
-  const targetUrl = `${backend}/api/v1/${path}${search}`;
+  const targetUrl = `${BACKEND}/api/v1/${path}${search}`;
 
-  try {
-    const fwdHeaders: Record<string, string> = {};
-    const auth = req.headers.get("authorization");
-    if (auth) fwdHeaders["Authorization"] = auth;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
 
-    let body: BodyInit | undefined;
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      const ct = req.headers.get("content-type") || "";
-      if (ct.includes("multipart/form-data")) {
-        // Forward raw binary body so the original boundary is preserved.
-        // Re-serializing via req.formData() creates a new boundary which can
-        // cause parsing failures on the backend.
-        fwdHeaders["Content-Type"] = ct;
-        body = await req.arrayBuffer();
-      } else {
-        fwdHeaders["Content-Type"] = ct || "application/json";
-        body = await req.text();
-      }
-    }
+  // Forward Authorization header (needed for admin + supplier auth)
+  const auth = req.headers.get("authorization");
+  if (auth) headers["Authorization"] = auth;
 
-    const resp = await fetch(targetUrl, { method: req.method, headers: fwdHeaders, body });
-
-    const contentType = resp.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
+  let body: string | undefined;
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    const ct = req.headers.get("content-type") || "";
+    if (ct.includes("multipart/form-data")) {
+      const formData = await req.formData();
+      const fwdHeaders: Record<string, string> = {};
+      if (auth) fwdHeaders["Authorization"] = auth;
+      const resp = await fetch(targetUrl, { method: req.method, headers: fwdHeaders, body: formData });
       const data = await resp.json().catch(() => null);
       return NextResponse.json(data, { status: resp.status });
     }
-
-    // Pass binary responses through (e.g. PDF label downloads)
-    const buf = await resp.arrayBuffer();
-    return new NextResponse(buf, {
-      status: resp.status,
-      headers: { "Content-Type": contentType },
-    });
-  } catch (err) {
-    console.error(`[proxy] ${req.method} ${targetUrl} failed:`, err);
-    return NextResponse.json(
-      { detail: `Backend unreachable (BACKEND_URL=${backend})` },
-      { status: 502 }
-    );
+    body = await req.text();
   }
+
+  const resp = await fetch(targetUrl, { method: req.method, headers, body });
+  const data = await resp.json().catch(() => null);
+  return NextResponse.json(data, { status: resp.status });
 }
 
 export const GET = proxy;

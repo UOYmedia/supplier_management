@@ -126,5 +126,14 @@ def shipping_addr_to_ep(addr: dict) -> dict:
     }
 
 
+SUPPORTED_CARRIERS = {"USPS", "UPS"}
+
+
 def filter_usps_rates(rates: list[dict]) -> list[dict]:
     return [r for r in rates if r.get("carrier", "").upper() == "USPS"]
+
+
+def filter_supported_rates(rates: list[dict]) -> list[dict]:
+    """Return USPS + UPS rates; falls back to all rates if neither is present."""
+    filtered = [r for r in rates if r.get("carrier", "").upper() in SUPPORTED_CARRIERS]
+    return filtered or rates

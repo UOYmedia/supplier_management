@@ -17,12 +17,20 @@ export default function SupplierDetailPage() {
   const [showEdit, setShowEdit] = useState(false);
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
+  const [catalogSearch, setCatalogSearch] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const { data: supplier } = useQuery({ queryKey: ["supplier", sid], queryFn: () => suppliersApi.get(sid) });
   const { data: catalog = [] } = useQuery({ queryKey: ["supplier-catalog", sid], queryFn: () => suppliersApi.listProducts(sid) });
   const { data: orders = [] } = useQuery({ queryKey: ["supplier-orders", sid], queryFn: () => suppliersApi.orders(sid) });
   const { data: invoices = [] } = useQuery({ queryKey: ["supplier-invoices", sid], queryFn: () => suppliersApi.invoices(sid) });
+
+  const q = catalogSearch.trim().toLowerCase();
+  const filteredCatalog = q
+    ? catalog.filter((i: any) =>
+        (i.name || "").toLowerCase().includes(q) || (i.sku || "").toLowerCase().includes(q)
+      )
+    : catalog;
 
   const deleteMut = useMutation({
     mutationFn: (spId: number) => suppliersApi.deleteProduct(sid, spId),
@@ -88,13 +96,21 @@ export default function SupplierDetailPage() {
 
       {tab === "catalog" && (
         <div>
-          <div className="flex justify-between items-center mb-3">
-            <button
-              className="text-xs text-blue-600 hover:underline"
-              onClick={() => suppliersApi.downloadCatalogTemplate(sid)}
-            >
-              Download CSV template
-            </button>
+          <div className="flex justify-between items-center mb-3 gap-3">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <input
+                className="input w-64"
+                placeholder="Search by name or SKU…"
+                value={catalogSearch}
+                onChange={(e) => setCatalogSearch(e.target.value)}
+              />
+              <button
+                className="text-xs text-blue-600 hover:underline whitespace-nowrap"
+                onClick={() => suppliersApi.downloadCatalogTemplate(sid)}
+              >
+                Download CSV template
+              </button>
+            </div>
             <div className="flex gap-2">
               <input
                 ref={fileRef}
@@ -143,7 +159,9 @@ export default function SupplierDetailPage() {
               <tbody>
                 {catalog.length === 0 ? (
                   <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products in catalog. Add one to start tracking inventory.</td></tr>
-                ) : catalog.map((item: any) => (
+                ) : filteredCatalog.length === 0 ? (
+                  <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products match “{catalogSearch}”.</td></tr>
+                ) : filteredCatalog.map((item: any) => (
                   <CatalogRow
                     key={item.id}
                     item={item}

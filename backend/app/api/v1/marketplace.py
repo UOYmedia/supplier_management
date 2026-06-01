@@ -7,7 +7,7 @@ from app.models.product import Product
 from app.schemas.marketplace import (
     ConnectionCreate, ConnectionUpdate, ConnectionOut,
     ListingCreate, ListingUpdate, ListingOut,
-    PushListingRequest, SyncResult
+    PushListingRequest, SyncResult, AutoMapResult
 )
 from app.integrations.amazon.sync import AmazonSync
 from app.integrations.shopify.sync import ShopifySync
@@ -121,6 +121,33 @@ async def update_listing(listing_id: int, body: ListingUpdate, db: AsyncSession 
     data["product_name"] = p.name if p else None
     data["product_sku"] = p.sku if p else None
     return ListingOut(**data)
+
+
+@router.post("/auto-map", response_model=AutoMapResult)
+async def auto_map_listings(db: AsyncSession = Depends(get_db)):
+    """Match unlinked listings to products by marketplace_sku = product.sku."""
+    q = await db.execute(
+        select(MarketplaceListing).where(MarketplaceListing.product_id.is_(None))
+    )
+    unlinked = q.scalars().all()
+
+    mapped = 0
+    unmatched = []
+    for listing in unlinked:
+        sku = listing.marketplace_sku
+        if not sku:
+            unmatched.append(f"(no SKU) {listing.title or listing.external_id or ''}")
+            continue
+        prod_result = await db.execute(select(Product).where(Product.sku == sku))
+        product = prod_result.scalar_one_or_none()
+        if product:
+            listing.product_id = product.id
+            mapped += 1
+        else:
+            unmatched.append(f"{sku} — {listing.title or ''}")
+
+    await db.commit()
+    return AutoMapResult(mapped=mapped, unmatched=unmatched)
 
 
 # --- Push to marketplace ---

@@ -61,6 +61,16 @@ export const suppliersApi = {
   invoices: (id: number) => api.get(`/suppliers/${id}/invoices`).then((r) => r.data),
   createInvoice: (id: number, data: object) => api.post(`/suppliers/${id}/invoices`, data).then((r) => r.data),
   updateInvoice: (id: number, invId: number, data: object) => api.patch(`/suppliers/${id}/invoices/${invId}`, data).then((r) => r.data),
+  listProducts: (id: number) => api.get(`/suppliers/${id}/products`).then((r) => r.data),
+  exportCatalog: (id: number, filename?: string) =>
+    api.get(`/suppliers/${id}/products/export.csv`, { responseType: "blob" }).then((r) => {
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || `supplier_${id}_catalog.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }),
 };
 
 // Orders
@@ -75,6 +85,24 @@ export const ordersApi = {
     api.patch(`/orders/${orderId}/line-items/${liId}/assign-supplier`, data).then((r) => r.data),
   createLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/labels`, data).then((r) => r.data),
   listLabels: (orderId: number) => api.get(`/orders/${orderId}/labels`).then((r) => r.data),
+  parcelEstimate: (orderId: number, params?: object) =>
+    api.get(`/orders/${orderId}/parcel-estimate`, { params }).then((r) => r.data),
+};
+
+// EasyPost shipping
+export const easypostApi = {
+  getRates: (orderId: number, data: object) =>
+    api.post(`/orders/${orderId}/easypost/rates`, data).then((r) => r.data),
+  buyLabel: (orderId: number, data: object) =>
+    api.post(`/orders/${orderId}/easypost/buy`, data).then((r) => r.data),
+};
+
+// Amazon shipping
+export const amazonShippingApi = {
+  getRates: (orderId: number, data: object) =>
+    api.post(`/orders/${orderId}/amazon/rates`, data).then((r) => r.data),
+  buyLabel: (orderId: number, data: object) =>
+    api.post(`/orders/${orderId}/amazon/buy`, data).then((r) => r.data),
 };
 
 // Marketplace
@@ -90,6 +118,7 @@ export const marketplaceApi = {
   createListing: (data: object) => api.post("/marketplace/listings", data).then((r) => r.data),
   updateListing: (id: number, data: object) => api.patch(`/marketplace/listings/${id}`, data).then((r) => r.data),
   push: (data: object) => api.post("/marketplace/push", data).then((r) => r.data),
+  autoMap: () => api.post("/marketplace/auto-map").then((r) => r.data),
 };
 
 // Auth & Users

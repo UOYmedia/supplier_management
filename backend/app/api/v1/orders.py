@@ -3,9 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timezone
 from app.core.database import get_db
-from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus
-from app.models.product import Product, ProductSupplier
-from app.models.supplier import Supplier
+from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus, OrderFulfillmentItem
+from app.models.product import Product, ProductSupplier, ProductComponent
+from app.models.supplier import Supplier, SupplierProduct
 from app.schemas.order import (
     OrderCreate, OrderUpdate, OrderOut, OrderLineItemUpdate,
     OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut, AssignSupplierBody,
@@ -240,6 +240,107 @@ async def list_labels(order_id: int, db: AsyncSession = Depends(get_db)):
         ).where(OrderLineItem.order_id == order_id).distinct()
     )
     return result.scalars().all()
+
+
+@router.post("/{order_id}/labels/{label_id}/mark-printed")
+async def mark_label_printed(order_id: int, label_id: int, db: AsyncSession = Depends(get_db)):
+    label = await db.get(ShippingLabel, label_id)
+    if not label:
+        raise HTTPException(404, "Label not found")
+    return {"status": "ok", "label_id": label_id}
+
+
+@router.get("/{order_id}/parcel-estimate")
+async def estimate_parcel(
+    order_id: int,
+    supplier_id: int | None = Query(None),
+    line_item_ids: str | None = Query(None, description="Comma-separated line item IDs"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Estimate parcel weight (oz) and dimensions (in) from SupplierProduct shipping data."""
+    await _get_or_404(order_id, db)
+
+    li_q = select(OrderLineItem).where(OrderLineItem.order_id == order_id)
+    if supplier_id is not None:
+        li_q = li_q.where(OrderLineItem.supplier_id == supplier_id)
+    if line_item_ids:
+        try:
+            ids = [int(x) for x in line_item_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(400, "Invalid line_item_ids")
+        li_q = li_q.where(OrderLineItem.id.in_(ids))
+    li_res = await db.execute(li_q)
+    lis = list(li_res.scalars().all())
+    if not lis:
+        raise HTTPException(404, "No matching line items")
+
+    weight_oz = 0.0
+    max_length_in = 0.0
+    max_width_in = 0.0
+    height_in_total = 0.0
+    covered: list[int] = []
+    missing: list[dict] = []
+
+    KG_TO_OZ = 35.274
+    CM_TO_IN = 0.393701
+
+    for li in lis:
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        fis = list(fi_res.scalars().all())
+
+        if fis:
+            for fi in fis:
+                sp = await db.get(SupplierProduct, fi.supplier_product_id)
+                if not sp:
+                    missing.append({"line_item_id": li.id, "reason": "supplier_product_missing"})
+                    continue
+                qty = fi.quantity
+                if sp.weight is None:
+                    missing.append({
+                        "line_item_id": li.id,
+                        "supplier_product_id": sp.id,
+                        "supplier_product_name": sp.name,
+                        "reason": "no_weight",
+                    })
+                else:
+                    weight_oz += float(sp.weight) * qty
+                if sp.length is not None:
+                    max_length_in = max(max_length_in, float(sp.length))
+                if sp.width is not None:
+                    max_width_in = max(max_width_in, float(sp.width))
+                if sp.height is not None:
+                    height_in_total += float(sp.height) * qty
+                covered.append(li.id)
+        else:
+            product = await db.get(Product, li.product_id) if li.product_id else None
+            if not product or product.weight is None:
+                missing.append({
+                    "line_item_id": li.id,
+                    "product_name": li.product_name,
+                    "reason": "no_component_or_product_dims",
+                })
+                continue
+            qty = li.quantity
+            weight_oz += float(product.weight) * KG_TO_OZ * qty
+            if product.length is not None:
+                max_length_in = max(max_length_in, float(product.length) * CM_TO_IN)
+            if product.width is not None:
+                max_width_in = max(max_width_in, float(product.width) * CM_TO_IN)
+            if product.height is not None:
+                height_in_total += float(product.height) * CM_TO_IN * qty
+            covered.append(li.id)
+
+    return {
+        "weight": round(weight_oz, 2),
+        "length": round(max_length_in, 2),
+        "width": round(max_width_in, 2),
+        "height": round(height_in_total, 2),
+        "covered_line_item_ids": list(set(covered)),
+        "missing": missing,
+        "complete": len(missing) == 0 and weight_oz > 0,
+    }
 
 
 # --- Helpers ---

@@ -4,6 +4,7 @@ EasyPost shipping endpoints.
 POST /orders/{order_id}/easypost/rates  — create shipment, return all carrier rates
 POST /orders/{order_id}/easypost/buy    — buy a rate, save ShippingLabel
 """
+import base64
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -18,7 +19,7 @@ from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
     supplier_to_ep_address, shipping_addr_to_ep,
 )
-from app.api.v1.orders import _recalculate_order_status, _line_item_out
+from app.api.v1.orders import _recalculate_order_status, _line_item_out, _catalog_items_for_line_item
 from app.schemas.order import ShippingLabelOut
 
 router = APIRouter(prefix="/orders", tags=["easypost"])
@@ -170,9 +171,45 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         or bought.get("postage_label", {}).get("label_pdf_url")
     )
     cost_str = selected_rate.get("rate", "0")
-    # Archive the PDF so we can serve same-origin (enables auto-print) and
-    # survive EasyPost URL expiry.
-    label_data = await ep.fetch_label_pdf_b64(bought)
+
+    # Determine which line items to attach (needed for catalog lookup)
+    li_ids = body.line_item_ids
+    if not li_ids:
+        auto = await db.execute(
+            select(OrderLineItem).where(
+                OrderLineItem.order_id == order_id,
+                OrderLineItem.supplier_id == body.supplier_id,
+                OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+            )
+        )
+        li_ids = [li.id for li in auto.scalars().all()]
+
+    # Resolve catalog names (ProductComponent → SupplierProduct)
+    pack_items = []
+    for li_id in li_ids:
+        li_obj = await db.get(OrderLineItem, li_id)
+        if li_obj:
+            pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
+
+    # Download carrier PNG and build combined PDF with catalog overlay
+    carrier_b64 = await ep.fetch_label_pdf_b64(bought)
+    if carrier_b64 and pack_items:
+        from app.integrations.pdf_labels import LabelEntry, build_batch_label_pdf, decode_label_data
+        def _ship_name(addr: dict | None) -> str | None:
+            if not addr:
+                return None
+            return addr.get("name") or addr.get("Name") or addr.get("buyer_name")
+        entry = LabelEntry(
+            order_label=(order.external_order_id or f"Order #{order_id}"),
+            ship_to=_ship_name(order.shipping_address),
+            tracking_number=tracking,
+            label_pdf=decode_label_data(carrier_b64),
+            items=pack_items,
+        )
+        label_data = base64.b64encode(build_batch_label_pdf([entry])).decode()
+    else:
+        label_data = carrier_b64
+
     label = ShippingLabel(
         supplier_id=body.supplier_id,
         carrier=selected_rate.get("carrier", "USPS"),
@@ -187,18 +224,6 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     )
     db.add(label)
     await db.flush()
-
-    # Determine which line items to attach
-    li_ids = body.line_item_ids
-    if not li_ids:
-        auto = await db.execute(
-            select(OrderLineItem).where(
-                OrderLineItem.order_id == order_id,
-                OrderLineItem.supplier_id == body.supplier_id,
-                OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
-            )
-        )
-        li_ids = [li.id for li in auto.scalars().all()]
 
     for li_id in li_ids:
         res = await db.execute(

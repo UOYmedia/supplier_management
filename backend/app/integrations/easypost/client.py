@@ -1,4 +1,5 @@
-"""Async EasyPost REST client (httpx).
+"""
+Async EasyPost REST client (httpx).
 Docs: https://www.easypost.com/docs/api
 """
 import base64
@@ -47,10 +48,10 @@ class EasyPostClient:
         return r.json()
 
     async def fetch_label_pdf_b64(self, shipment: dict) -> str | None:
-        """Download the EasyPost PNG label and convert it to a 4x6 PDF in-process.
+        """Download EasyPost PNG label and return base64-encoded PNG bytes.
 
-        Using PNG avoids EasyPost's PDF formatting quirks (letter-size wrappers,
-        misaligned content). The PNG is always available immediately after buy.
+        Returns raw PNG (not a PDF) so callers can combine with catalog overlay
+        in a single reportlab canvas pass via build_label_from_png.
         """
         pl = shipment.get("postage_label") or {}
         png_url = pl.get("label_png_url") or pl.get("label_url")
@@ -61,9 +62,7 @@ class EasyPostClient:
                 r = await http.get(png_url)
                 if not r.is_success:
                     return None
-            from app.integrations.pdf_labels import image_to_label_pdf
-            pdf_bytes = image_to_label_pdf(r.content)
-            return base64.b64encode(pdf_bytes).decode()
+            return base64.b64encode(r.content).decode()
         except Exception:
             return None
 
@@ -93,12 +92,7 @@ class EasyPostClient:
     async def regenerate_label(
         self, shipment_id: str, label_size: str = "4x6"
     ) -> tuple[str | None, str | None]:
-        """Re-fetch the PNG label for a bought shipment and convert to 4x6 PDF.
-
-        Returns (label_data_b64, label_url). Using PNG avoids EasyPost's
-        letter-size PDF wrapper issues.
-        """
-        # Request PNG format so we get the raw label image
+        """Re-fetch label PNG for a bought shipment. Returns (png_b64, label_url)."""
         converted = await self._get(
             f"/shipments/{shipment_id}/label",
             params={"file_format": "png", "label_size": label_size},
@@ -112,9 +106,7 @@ class EasyPostClient:
                 r = await http.get(png_url)
                 if not r.is_success:
                     return None, png_url
-            from app.integrations.pdf_labels import image_to_label_pdf
-            pdf_bytes = image_to_label_pdf(r.content)
-            return base64.b64encode(pdf_bytes).decode(), png_url
+            return base64.b64encode(r.content).decode(), png_url
         except Exception:
             return None, png_url
 

@@ -1,8 +1,7 @@
 """Build a batch shipping-label PDF for suppliers.
 
-For each label we overlay a compact info strip at the bottom of the carrier
-label page showing the order, ship-to, and items (name / SKU / qty from the
-supplier catalog). No extra pages — everything is on the carrier label itself.
+PNG carrier labels from EasyPost are combined with a catalog info strip
+(name + qty) in a single reportlab canvas pass — no pypdf merge needed.
 """
 import base64
 import io
@@ -15,7 +14,7 @@ from reportlab.pdfgen import canvas
 LABEL_W = 4 * inch
 LABEL_H = 6 * inch
 MARGIN = 0.3 * inch
-OVERLAY_H = 0.9 * inch  # height of info strip at the bottom of the label
+OVERLAY_H = 0.9 * inch  # height of catalog info strip at the bottom
 
 
 @dataclass
@@ -27,10 +26,10 @@ class PackItem:
 
 @dataclass
 class LabelEntry:
-    order_label: str          # e.g. "Order #123" or external id
+    order_label: str
     ship_to: str | None
     tracking_number: str | None
-    label_pdf: bytes | None   # decoded label PDF bytes (may be None)
+    label_pdf: bytes | None   # unused when building from PNG; kept for compat
     items: list[PackItem] = field(default_factory=list)
 
 
@@ -39,24 +38,17 @@ def _clip(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def _build_label_overlay(entry: LabelEntry) -> bytes:
-    """Build a 4x6 overlay with catalog name + quantity in the bottom strip."""
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=(LABEL_W, LABEL_H))
-
-    # White background strip
+def _draw_overlay(c: canvas.Canvas, items: list[PackItem]) -> None:
+    """Draw catalog strip in the bottom OVERLAY_H area of an already-sized canvas."""
     c.setFillColorRGB(1, 1, 1)
     c.rect(0, 0, LABEL_W, OVERLAY_H, fill=1, stroke=0)
 
-    # Separator line at top of strip
     c.setStrokeColorRGB(0.4, 0.4, 0.4)
     c.setLineWidth(0.6)
     c.line(MARGIN, OVERLAY_H - 0.05 * inch, LABEL_W - MARGIN, OVERLAY_H - 0.05 * inch)
 
     y = OVERLAY_H - 0.22 * inch
-    row_h = 0.22 * inch
-
-    for it in entry.items:
+    for it in items:
         if y < 0.06 * inch:
             c.setFont("Helvetica-Oblique", 7)
             c.setFillColorRGB(0.5, 0.5, 0.5)
@@ -67,33 +59,79 @@ def _build_label_overlay(entry: LabelEntry) -> bytes:
         c.drawString(MARGIN, y, f"x{it.quantity}")
         c.setFont("Helvetica", 9)
         c.drawString(MARGIN + 0.3 * inch, y, _clip(it.name, 36))
-        y -= row_h
+        y -= 0.22 * inch
 
+
+def build_label_from_png(png_bytes: bytes, entry: LabelEntry) -> bytes:
+    """Single-pass: draw carrier PNG + catalog strip on one reportlab canvas.
+
+    Avoids pypdf merge_page coordinate issues entirely.
+    """
+    from reportlab.lib.utils import ImageReader
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(LABEL_W, LABEL_H))
+
+    # Carrier image occupies the upper (LABEL_H - OVERLAY_H) area
+    usable_h = LABEL_H - OVERLAY_H
+    img = ImageReader(io.BytesIO(png_bytes))
+    iw, ih = img.getSize()
+    scale = min(LABEL_W / iw, usable_h / ih) if iw and ih else 1.0
+    w, h = iw * scale, ih * scale
+    c.drawImage(
+        img,
+        (LABEL_W - w) / 2,
+        OVERLAY_H + (usable_h - h) / 2,
+        width=w,
+        height=h,
+        preserveAspectRatio=True,
+        anchor="c",
+    )
+
+    _draw_overlay(c, entry.items)
     c.showPage()
     c.save()
     return buf.getvalue()
 
 
-def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
-    """Overlay catalog/qty strip onto each carrier label page.
+def concat_label_pdfs(pdf_list: list[bytes]) -> bytes:
+    """Concatenate pre-built label PDFs into one file (pages only, no re-overlay)."""
+    writer = PdfWriter()
+    for pdf in pdf_list:
+        if pdf and pdf[:5] == b"%PDF-":
+            try:
+                reader = PdfReader(io.BytesIO(pdf))
+                for page in reader.pages:
+                    writer.add_page(page)
+            except Exception:
+                pass
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
-    label_pdf is always a clean 4x6 PDF (built from PNG via image_to_label_pdf),
-    so no scaling or mediabox fixup is needed — just merge and overlay.
+
+def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
+    """Fallback for PDF-based labels (e.g. manually uploaded).
+
+    Draws catalog info overlay on top of each PDF page via pypdf merge.
+    Prefer build_label_from_png for EasyPost PNG labels.
     """
     writer = PdfWriter()
     for entry in entries:
-        overlay_bytes = _build_label_overlay(entry)
-        overlay_page = PdfReader(io.BytesIO(overlay_bytes)).pages[0]
+        overlay_buf = io.BytesIO()
+        oc = canvas.Canvas(overlay_buf, pagesize=(LABEL_W, LABEL_H))
+        _draw_overlay(oc, entry.items)
+        oc.showPage()
+        oc.save()
+        overlay_page = PdfReader(io.BytesIO(overlay_buf.getvalue())).pages[0]
 
         out_page = writer.add_blank_page(width=LABEL_W, height=LABEL_H)
-
-        if entry.label_pdf:
+        if entry.label_pdf and entry.label_pdf[:5] == b"%PDF-":
             try:
                 carrier = PdfReader(io.BytesIO(entry.label_pdf)).pages[0]
                 out_page.merge_page(carrier)
             except Exception:
                 pass
-
         out_page.merge_page(overlay_page)
         out_page.mediabox.lower_left = (0, 0)
         out_page.mediabox.upper_right = (LABEL_W, LABEL_H)
@@ -106,12 +144,11 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
 def image_to_label_pdf(
     image_bytes: bytes,
     size: tuple[float, float] = (LABEL_W, LABEL_H),
-    reserve_bottom: float = OVERLAY_H,
+    reserve_bottom: float = 0.0,
 ) -> bytes:
-    """Wrap a raw label image (PNG/JPG) into a single-page PDF at the given size.
+    """Wrap a raw image (PNG/JPG) into a single-page PDF.
 
-    reserve_bottom leaves that many points empty at the bottom so the catalog
-    overlay strip can sit there without covering carrier content.
+    reserve_bottom: leave that many points empty at the bottom (for an overlay).
     """
     from reportlab.lib.utils import ImageReader
 
@@ -123,9 +160,8 @@ def image_to_label_pdf(
     iw, ih = img.getSize()
     scale = min(pw / iw, usable_h / ih) if iw and ih else 1.0
     w, h = iw * scale, ih * scale
-    x = (pw - w) / 2
-    y = reserve_bottom + (usable_h - h) / 2
-    c.drawImage(img, x, y, width=w, height=h, preserveAspectRatio=True, anchor="c")
+    c.drawImage(img, (pw - w) / 2, reserve_bottom + (usable_h - h) / 2,
+                width=w, height=h, preserveAspectRatio=True, anchor="c")
     c.showPage()
     c.save()
     return buf.getvalue()

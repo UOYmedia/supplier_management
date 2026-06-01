@@ -169,3 +169,8 @@ app.include_router(api_router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/version")
+async def version():
+    return {"version": "2026-06-01-all-carriers"}

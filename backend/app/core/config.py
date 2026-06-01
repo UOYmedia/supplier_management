@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     SHOPIFY_API_KEY: str = ""
     SHOPIFY_API_SECRET: str = ""
     EASYPOST_API_KEY: str = ""
+    # Comma-separated EasyPost carrier account IDs to request rates from.
+    # Leave blank to use all connected carrier accounts (default).
+    # Example: "ca_abc123,ca_def456" — get the ID from EasyPost Dashboard → Carrier Accounts.
+    EASYPOST_CARRIER_ACCOUNT_IDS: str = ""
     BACKEND_URL: str = "http://localhost:8000"
 
     FRONTEND_URL: str = "http://localhost:3000"

@@ -1,7 +1,7 @@
 """
 EasyPost shipping endpoints.
 
-POST /orders/{order_id}/easypost/rates  — create shipment, return USPS + UPS rates
+POST /orders/{order_id}/easypost/rates  — create shipment, return all carrier rates
 POST /orders/{order_id}/easypost/buy    — buy a rate, save ShippingLabel
 """
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,7 +16,7 @@ from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus
 from app.models.supplier import Supplier
 from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
-    supplier_to_ep_address, shipping_addr_to_ep, filter_usps_rates, filter_supported_rates,
+    supplier_to_ep_address, shipping_addr_to_ep,
 )
 from app.api.v1.orders import _recalculate_order_status, _line_item_out
 from app.schemas.order import ShippingLabelOut
@@ -78,7 +78,7 @@ def _require_easypost() -> EasyPostClient:
 
 @router.post("/{order_id}/easypost/rates", response_model=RatesResponse)
 async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depends(get_db)):
-    """Create an EasyPost shipment and return available USPS + UPS rates."""
+    """Create an EasyPost shipment and return available rates for all configured carriers."""
     ep = _require_easypost()
 
     order = await db.get(Order, order_id)
@@ -104,15 +104,19 @@ async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depend
         "height": body.parcel.height,
     }
 
+    carrier_accounts = [
+        x.strip() for x in settings.EASYPOST_CARRIER_ACCOUNT_IDS.split(",") if x.strip()
+    ] or None
+
     try:
-        shipment = await ep.create_shipment(from_addr, to_addr, parcel)
+        shipment = await ep.create_shipment(to_addr, from_addr, parcel, carrier_accounts)
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
     except Exception as e:
         raise HTTPException(500, f"Unexpected error: {e}")
 
     all_rates: list[dict] = shipment.get("rates", [])
-    shown_rates = filter_supported_rates(all_rates)
+    shown_rates = all_rates
 
     rates_out = [
         RateOut(

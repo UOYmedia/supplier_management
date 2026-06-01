@@ -329,8 +329,11 @@ async def portal_easypost_rates(
         "width": body.parcel.width,
         "height": body.parcel.height,
     }
+    carrier_accounts = [
+        x.strip() for x in settings.EASYPOST_CARRIER_ACCOUNT_IDS.split(",") if x.strip()
+    ] or None
     try:
-        shipment = await ep.create_shipment(to_addr, from_addr, parcel)
+        shipment = await ep.create_shipment(to_addr, from_addr, parcel, carrier_accounts)
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 

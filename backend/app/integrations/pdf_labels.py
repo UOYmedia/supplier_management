@@ -108,6 +108,10 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
         # Overlay item info strip on top
         out_page.merge_page(overlay_page)
 
+        # merge_page can inherit the carrier's mediabox — force 4x6 every time
+        out_page.mediabox.lower_left = (0, 0)
+        out_page.mediabox.upper_right = (LABEL_W, LABEL_H)
+
     out = io.BytesIO()
     writer.write(out)
     return out.getvalue()

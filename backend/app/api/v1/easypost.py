@@ -108,6 +108,8 @@ async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depend
         shipment = await ep.create_shipment(from_addr, to_addr, parcel)
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Unexpected error: {e}")
 
     all_rates: list[dict] = shipment.get("rates", [])
     shown_rates = filter_supported_rates(all_rates)

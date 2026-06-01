@@ -20,18 +20,30 @@ class EasyPostClient:
         self._auth = (api_key, "")
 
     async def _post(self, path: str, payload: dict) -> dict:
-        async with httpx.AsyncClient(timeout=30) as http:
-            r = await http.post(f"{EASYPOST_BASE}{path}", json=payload, auth=self._auth)
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                r = await http.post(f"{EASYPOST_BASE}{path}", json=payload, auth=self._auth)
+        except httpx.HTTPError as e:
+            raise EasyPostError(503, f"EasyPost unreachable: {e}")
         if not r.is_success:
-            detail = r.json().get("error", {}).get("message", r.text)
+            try:
+                detail = r.json().get("error", {}).get("message", r.text)
+            except Exception:
+                detail = r.text or f"HTTP {r.status_code}"
             raise EasyPostError(r.status_code, detail)
         return r.json()
 
     async def _get(self, path: str, params: dict | None = None) -> dict:
-        async with httpx.AsyncClient(timeout=30) as http:
-            r = await http.get(f"{EASYPOST_BASE}{path}", params=params, auth=self._auth)
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                r = await http.get(f"{EASYPOST_BASE}{path}", params=params, auth=self._auth)
+        except httpx.HTTPError as e:
+            raise EasyPostError(503, f"EasyPost unreachable: {e}")
         if not r.is_success:
-            detail = r.json().get("error", {}).get("message", r.text)
+            try:
+                detail = r.json().get("error", {}).get("message", r.text)
+            except Exception:
+                detail = r.text or f"HTTP {r.status_code}"
             raise EasyPostError(r.status_code, detail)
         return r.json()
 

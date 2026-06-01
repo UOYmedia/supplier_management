@@ -357,7 +357,7 @@ async def portal_easypost_rates(
         to_address=to_addr,
         parcel=parcel,
         total_rates=len(all_rates),
-        usps_rates=len(filter_usps_rates(all_rates)),
+        filtered_rates=len(filter_usps_rates(all_rates)),
         line_item_ids=[li.id for li in items],
     )
     return RatesResponse(shipment_id=shipment["id"], rates=rates_out, debug=debug)

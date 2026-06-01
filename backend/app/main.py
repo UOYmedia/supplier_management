@@ -78,6 +78,27 @@ async def _run_migrations():
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS height NUMERIC(10, 2)",
         # Product thumbnail for supplier catalog
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS image_url TEXT",
+        # Timestamps on supplier catalog items
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()",
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()",
+        # product_components table (combo/set product support)
+        """CREATE TABLE IF NOT EXISTS product_components (
+            id SERIAL PRIMARY KEY,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            supplier_product_id INTEGER NOT NULL REFERENCES supplier_products(id) ON DELETE CASCADE,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(product_id, supplier_product_id)
+        )""",
+        # order_fulfillment_items table
+        """CREATE TABLE IF NOT EXISTS order_fulfillment_items (
+            id SERIAL PRIMARY KEY,
+            order_line_item_id INTEGER NOT NULL REFERENCES order_line_items(id) ON DELETE CASCADE,
+            supplier_product_id INTEGER NOT NULL REFERENCES supplier_products(id),
+            quantity INTEGER NOT NULL DEFAULT 1,
+            fulfill_status VARCHAR(50) NOT NULL DEFAULT 'unfulfilled',
+            tracking_number VARCHAR(255),
+            fulfilled_at TIMESTAMP WITH TIME ZONE
+        )""",
     ]
     # ALTER TYPE must run outside a transaction (autocommit)
     try:

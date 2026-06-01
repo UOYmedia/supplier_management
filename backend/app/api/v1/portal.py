@@ -19,7 +19,7 @@ from app.api.v1.orders import _recalculate_order_status
 from app.api.v1.easypost import ParcelIn, RateOut, RatesResponse, DebugInfo
 from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
-    supplier_to_ep_address, shipping_addr_to_ep, filter_usps_rates, filter_supported_rates,
+    supplier_to_ep_address, shipping_addr_to_ep,
 )
 from app.schemas.order import ShippingLabelOut
 
@@ -334,6 +334,7 @@ async def portal_easypost_rates(
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 
+    # Return all rates from all carriers — no filtering
     all_rates = shipment.get("rates", [])
     rates_out = sorted(
         [
@@ -341,7 +342,7 @@ async def portal_easypost_rates(
                 id=r["id"],
                 carrier=r.get("carrier", ""),
                 service=r.get("service", ""),
-                rate=r.get("rate", "0"),
+                rate=r.get("rate") or "0",
                 currency=r.get("currency", "USD"),
                 delivery_days=r.get("delivery_days"),
                 delivery_date=r.get("delivery_date"),
@@ -356,7 +357,7 @@ async def portal_easypost_rates(
         to_address=to_addr,
         parcel=parcel,
         total_rates=len(all_rates),
-        filtered_rates=len(all_rates),
+        filtered_rates=len(rates_out),
         line_item_ids=[li.id for li in items],
     )
     return RatesResponse(shipment_id=shipment["id"], rates=rates_out, debug=debug)

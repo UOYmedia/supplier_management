@@ -1,10 +1,9 @@
 """
-Build a combined "batch" shipping-label PDF for suppliers.
+Build a batch shipping-label PDF for suppliers.
 
-For each label we emit the original 4x6 label page(s) followed by a compact
-4x6 "pack list" page that lists the items (name / SKU / qty) and the ship-to
-name. This lets the supplier print every un-fulfilled label in one go and
-carry a readable packing slip alongside each label while packing.
+For each label we overlay a compact info strip at the bottom of the carrier
+label page showing the order, ship-to, and items (name / SKU / qty from the
+supplier catalog). No extra pages — everything is on the carrier label itself.
 """
 import base64
 import io
@@ -17,6 +16,7 @@ from reportlab.pdfgen import canvas
 LABEL_W = 4 * inch
 LABEL_H = 6 * inch
 MARGIN = 0.3 * inch
+OVERLAY_H = 1.65 * inch  # height of info strip at the bottom of the label
 
 
 @dataclass
@@ -40,45 +40,52 @@ def _clip(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def _build_packlist_page(entry: LabelEntry) -> bytes:
+def _build_label_overlay(entry: LabelEntry) -> bytes:
+    """Build a 4x6 overlay with item info in the bottom strip of the label."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(LABEL_W, LABEL_H))
 
-    y = LABEL_H - MARGIN - 0.1 * inch
-    c.setFont("Helvetica-Bold", 15)
-    c.drawString(MARGIN, y, _clip(f"PACK LIST — {entry.order_label}", 30))
-    y -= 0.32 * inch
+    # White background strip to cover any carrier content underneath
+    c.setFillColorRGB(1, 1, 1)
+    c.rect(0, 0, LABEL_W, OVERLAY_H, fill=1, stroke=0)
 
-    c.setFont("Helvetica", 9)
+    # Separator line at top of strip
+    c.setStrokeColorRGB(0.2, 0.2, 0.2)
+    c.setLineWidth(0.8)
+    c.line(MARGIN, OVERLAY_H - 0.06 * inch, LABEL_W - MARGIN, OVERLAY_H - 0.06 * inch)
+
+    y = OVERLAY_H - 0.24 * inch
+
+    # Header: order label + ship-to on one compact line
+    c.setFillColorRGB(0, 0, 0)
+    c.setFont("Helvetica-Bold", 7)
+    header = _clip(entry.order_label or "", 18)
     if entry.ship_to:
-        c.drawString(MARGIN, y, _clip(f"Ship to: {entry.ship_to}", 50))
-        y -= 0.24 * inch
-    if entry.tracking_number:
-        c.drawString(MARGIN, y, _clip(f"Tracking: {entry.tracking_number}", 50))
-        y -= 0.24 * inch
+        header += f"  ▸  {_clip(entry.ship_to, 22)}"
+    c.drawString(MARGIN, y, header)
+    y -= 0.21 * inch
 
-    y -= 0.05 * inch
-    c.setLineWidth(1)
-    c.line(MARGIN, y, LABEL_W - MARGIN, y)
-    y -= 0.3 * inch
-
-    total_units = sum(it.quantity for it in entry.items)
-    c.setFont("Helvetica", 8)
-    c.drawString(MARGIN, y, f"{len(entry.items)} line(s) · {total_units} unit(s)")
-    y -= 0.3 * inch
-
+    # Items (using supplier catalog name)
     for it in entry.items:
-        if y < 0.5 * inch:
-            c.setFont("Helvetica-Oblique", 8)
-            c.drawString(MARGIN, y, "… more items on order")
+        if y < 0.07 * inch:
+            c.setFont("Helvetica-Oblique", 6)
+            c.setFillColorRGB(0.5, 0.5, 0.5)
+            c.drawString(MARGIN, y, "…more items")
             break
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(MARGIN, y, _clip(f"x{it.quantity}", 5))
-        c.drawString(MARGIN + 0.55 * inch, y, _clip(it.name, 28))
+        # Quantity
+        c.setFillColorRGB(0, 0, 0)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(MARGIN, y, f"x{it.quantity}")
+        # Catalog name
+        c.setFont("Helvetica", 8.5)
+        c.drawString(MARGIN + 0.32 * inch, y, _clip(it.name, 32))
+        y -= 0.19 * inch
+        # SKU
+        c.setFont("Helvetica", 7)
+        c.setFillColorRGB(0.45, 0.45, 0.45)
+        c.drawString(MARGIN + 0.32 * inch, y, _clip(f"SKU: {it.sku or '—'}", 40))
+        c.setFillColorRGB(0, 0, 0)
         y -= 0.22 * inch
-        c.setFont("Helvetica", 9)
-        c.drawString(MARGIN + 0.55 * inch, y, _clip(f"SKU: {it.sku or '—'}", 36))
-        y -= 0.34 * inch
 
     c.showPage()
     c.save()
@@ -86,18 +93,26 @@ def _build_packlist_page(entry: LabelEntry) -> bytes:
 
 
 def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
-    """Merge label pages + pack-list pages for every entry into one PDF."""
+    """Overlay item info onto each carrier label page — no extra pages added."""
     writer = PdfWriter()
     for entry in entries:
+        overlay_bytes = _build_label_overlay(entry)
+        overlay_page = PdfReader(io.BytesIO(overlay_bytes)).pages[0]
+
         if entry.label_pdf:
             try:
                 reader = PdfReader(io.BytesIO(entry.label_pdf))
-                for page in reader.pages:
+                for i, page in enumerate(reader.pages):
+                    if i == 0:
+                        # Overlay info strip onto the first (carrier) page
+                        page.merge_page(overlay_page)
                     writer.add_page(page)
             except Exception:
-                pass  # corrupt/unreadable label — still emit the pack list
-        packlist = _build_packlist_page(entry)
-        writer.add_page(PdfReader(io.BytesIO(packlist)).pages[0])
+                # Corrupt/unreadable label — emit the overlay on a blank page
+                writer.add_page(overlay_page)
+        else:
+            # No carrier PDF yet — emit overlay on a blank page
+            writer.add_page(overlay_page)
 
     out = io.BytesIO()
     writer.write(out)
@@ -105,11 +120,7 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
 
 
 def image_to_label_pdf(image_bytes: bytes, size: tuple[float, float] = (LABEL_W, LABEL_H)) -> bytes:
-    """Wrap a raw label image (PNG/JPG) into a single-page PDF at the given size.
-
-    Used to regenerate a printable PDF for older labels that only have an
-    EasyPost image URL (no archived PDF / shipment to re-request).
-    """
+    """Wrap a raw label image (PNG/JPG) into a single-page PDF at the given size."""
     from reportlab.lib.utils import ImageReader
 
     buf = io.BytesIO()

@@ -45,6 +45,10 @@ export const productsApi = {
   addSupplier: (id: number, data: object) => api.post(`/products/${id}/suppliers`, data).then((r) => r.data),
   updateSupplier: (id: number, psId: number, data: object) => api.patch(`/products/${id}/suppliers/${psId}`, data).then((r) => r.data),
   removeSupplier: (id: number, psId: number) => api.delete(`/products/${id}/suppliers/${psId}`),
+  listComponents: (id: number) => api.get(`/products/${id}/components`).then((r) => r.data),
+  addComponent: (id: number, data: object) => api.post(`/products/${id}/components`, data).then((r) => r.data),
+  updateComponent: (id: number, compId: number, data: object) => api.patch(`/products/${id}/components/${compId}`, data).then((r) => r.data),
+  removeComponent: (id: number, compId: number) => api.delete(`/products/${id}/components/${compId}`),
 };
 
 // Suppliers
@@ -62,6 +66,9 @@ export const suppliersApi = {
   createInvoice: (id: number, data: object) => api.post(`/suppliers/${id}/invoices`, data).then((r) => r.data),
   updateInvoice: (id: number, invId: number, data: object) => api.patch(`/suppliers/${id}/invoices/${invId}`, data).then((r) => r.data),
   listProducts: (id: number) => api.get(`/suppliers/${id}/products`).then((r) => r.data),
+  createProduct: (id: number, data: object) => api.post(`/suppliers/${id}/products`, data).then((r) => r.data),
+  updateProduct: (id: number, spId: number, data: object) => api.patch(`/suppliers/${id}/products/${spId}`, data).then((r) => r.data),
+  deleteProduct: (id: number, spId: number) => api.delete(`/suppliers/${id}/products/${spId}`),
   exportCatalog: (id: number, filename?: string) =>
     api.get(`/suppliers/${id}/products/export.csv`, { responseType: "blob" }).then((r) => {
       const url = URL.createObjectURL(r.data);
@@ -71,6 +78,20 @@ export const suppliersApi = {
       a.click();
       URL.revokeObjectURL(url);
     }),
+  downloadCatalogTemplate: (id: number) =>
+    api.get(`/suppliers/${id}/products/template.csv`, { responseType: "blob" }).then((r) => {
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `supplier_${id}_catalog_template.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }),
+  importCatalog: (id: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return api.post(`/suppliers/${id}/products/import/csv`, fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+  },
 };
 
 // Orders
@@ -85,6 +106,9 @@ export const ordersApi = {
     api.patch(`/orders/${orderId}/line-items/${liId}/assign-supplier`, data).then((r) => r.data),
   createLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/labels`, data).then((r) => r.data),
   listLabels: (orderId: number) => api.get(`/orders/${orderId}/labels`).then((r) => r.data),
+  markLabelPrinted: (orderId: number, labelId: number) =>
+    api.post(`/orders/${orderId}/labels/${labelId}/mark-printed`).then((r) => r.data),
+  labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,
   parcelEstimate: (orderId: number, params?: object) =>
     api.get(`/orders/${orderId}/parcel-estimate`, { params }).then((r) => r.data),
 };
@@ -115,6 +139,7 @@ export const marketplaceApi = {
   syncOrders: (id: number) => api.post(`/marketplace/connections/${id}/sync-orders`).then((r) => r.data),
   syncProducts: (id: number) => api.post(`/marketplace/connections/${id}/sync-products`).then((r) => r.data),
   syncLocations: (id: number) => api.post(`/marketplace/connections/${id}/sync-locations`).then((r) => r.data),
+  syncListings: (id: number) => api.post(`/marketplace/connections/${id}/sync-listings`).then((r) => r.data),
   listListings: (params?: object) => api.get("/marketplace/listings", { params }).then((r) => r.data),
   createListing: (data: object) => api.post("/marketplace/listings", data).then((r) => r.data),
   updateListing: (id: number, data: object) => api.patch(`/marketplace/listings/${id}`, data).then((r) => r.data),

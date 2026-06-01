@@ -420,7 +420,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
         {step === "parcel" && (
           <>
             <div className="mb-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
-              Enter parcel dimensions to get live USPS rates. Label cost will be recorded against the company.
+              Enter parcel dimensions to get live USPS &amp; UPS rates. Label cost will be recorded against the company.
             </div>
             {estimateInfo && (
               <div className={`mb-3 p-2 rounded-lg text-xs ${estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"}`}>
@@ -430,7 +430,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
-              {([["weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
+              {([[ "weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
                 <div key={k}>
                   <label className="label">{label} *</label>
                   <input className="input" type="number" step="0.1" min="0.1" value={(parcel as any)[k]} onChange={pf(k)} />
@@ -475,7 +475,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
                   <span className="text-gray-500">Parcel:</span>{" "}
                   <span className="font-medium">{debug.parcel.weight} oz · {debug.parcel.length}×{debug.parcel.width}×{debug.parcel.height} in</span>
                   <span className="ml-3 text-gray-500">Rates:</span>{" "}
-                  <span className="font-medium">{debug.usps_rates} USPS / {debug.total_rates} total</span>
+                  <span className="font-medium">{debug.filtered_rates} shown / {debug.total_rates} total</span>
                 </div>
                 {showRawDebug && (
                   <pre className="mt-2 text-[10px] leading-tight p-2 max-h-40 overflow-auto bg-gray-900 text-gray-100 rounded font-mono">{JSON.stringify(debug, null, 2)}</pre>
@@ -491,7 +491,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
                     <input type="radio" name="rate" checked={selectedRate === r.id} onChange={() => setSelectedRate(r.id)} className="accent-blue-600" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="font-medium text-sm">{r.carrier}</span>
+                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${r.carrier === "UPS" ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-800"}`}>{r.carrier}</span>
                         <span className="text-xs text-gray-500">{r.service}</span>
                       </div>
                       {(r.delivery_days || r.est_delivery_days) && (

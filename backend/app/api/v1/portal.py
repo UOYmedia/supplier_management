@@ -19,7 +19,7 @@ from app.api.v1.orders import _recalculate_order_status
 from app.api.v1.easypost import ParcelIn, RateOut, RatesResponse, DebugInfo
 from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
-    supplier_to_ep_address, shipping_addr_to_ep, filter_usps_rates,
+    supplier_to_ep_address, shipping_addr_to_ep, filter_usps_rates, filter_supported_rates,
 )
 from app.schemas.order import ShippingLabelOut
 
@@ -335,7 +335,7 @@ async def portal_easypost_rates(
         raise HTTPException(e.status, str(e))
 
     all_rates = shipment.get("rates", [])
-    usps = filter_usps_rates(all_rates) or all_rates
+    shown_rates = filter_supported_rates(all_rates)
     rates_out = sorted(
         [
             RateOut(
@@ -348,7 +348,7 @@ async def portal_easypost_rates(
                 delivery_date=r.get("delivery_date"),
                 est_delivery_days=r.get("est_delivery_days"),
             )
-            for r in usps
+            for r in shown_rates
         ],
         key=lambda r: float(r.rate),
     )
@@ -357,7 +357,7 @@ async def portal_easypost_rates(
         to_address=to_addr,
         parcel=parcel,
         total_rates=len(all_rates),
-        filtered_rates=len(filter_usps_rates(all_rates)),
+        filtered_rates=len(shown_rates),
         line_item_ids=[li.id for li in items],
     )
     return RatesResponse(shipment_id=shipment["id"], rates=rates_out, debug=debug)
@@ -392,17 +392,17 @@ async def portal_easypost_buy(
         bought.get("postage_label", {}).get("label_url")
         or bought.get("postage_label", {}).get("label_pdf_url")
     )
-    cost_str = bought.get("selected_rate", {}).get("rate", "0")
     label_data = await ep.fetch_label_pdf_b64(bought)
 
+    selected_rate = bought.get("selected_rate", {})
     label = ShippingLabel(
         supplier_id=supplier.id,
-        carrier="USPS",
-        service=bought.get("selected_rate", {}).get("service", ""),
+        carrier=selected_rate.get("carrier", "USPS"),
+        service=selected_rate.get("service", ""),
         tracking_number=tracking,
         label_url=label_url,
         label_data=label_data,
-        cost=Decimal(str(cost_str)),
+        cost=Decimal(str(selected_rate.get("rate", "0"))),
         from_address=bought.get("from_address"),
         to_address=bought.get("to_address"),
     )

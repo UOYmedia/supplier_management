@@ -1,4 +1,4 @@
-"""
+""" 
 Supplier Portal API — authenticated with supplier JWT.
 Token payload: {"sub": str(supplier_id), "role": "supplier"}
 """
@@ -330,15 +330,20 @@ async def portal_easypost_rates(
         "height": body.parcel.height,
     }
     try:
-        shipment = await ep.create_shipment(from_addr, to_addr, parcel)
+        shipment = await ep.create_shipment(to_addr, from_addr, parcel)
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 
     # Return all rates from all carriers — no filtering
     all_rates = shipment.get("rates", [])
-    rates_out = sorted(
-        [
-            RateOut(
+    print(f"[PORTAL RATES] EasyPost returned {len(all_rates)} rates total", flush=True)
+    for r in all_rates:
+        print(f"  carrier={r.get('carrier')} service={r.get('service')} rate={r.get('rate')}", flush=True)
+
+    rates_out = []
+    for r in all_rates:
+        try:
+            rates_out.append(RateOut(
                 id=r["id"],
                 carrier=r.get("carrier", ""),
                 service=r.get("service", ""),
@@ -347,11 +352,12 @@ async def portal_easypost_rates(
                 delivery_days=r.get("delivery_days"),
                 delivery_date=r.get("delivery_date"),
                 est_delivery_days=r.get("est_delivery_days"),
-            )
-            for r in all_rates
-        ],
-        key=lambda r: float(r.rate),
-    )
+            ))
+        except Exception as e:
+            print(f"  [SKIP] rate build failed: {e} — raw: {r}", flush=True)
+
+    print(f"[PORTAL RATES] rates_out has {len(rates_out)} items after build", flush=True)
+    rates_out = sorted(rates_out, key=lambda r: float(r.rate))
     debug = DebugInfo(
         from_address=from_addr,
         to_address=to_addr,

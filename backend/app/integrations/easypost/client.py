@@ -111,6 +111,8 @@ class EasyPostClient:
 
 def supplier_to_ep_address(supplier) -> dict:
     """Convert Supplier ORM object to EasyPost address dict."""
+    raw_country = supplier.country or "US"
+    country = "US" if raw_country.lower() in ("united states", "united states of america", "us") else raw_country
     return {
         "name": supplier.name,
         "street1": supplier.street1 or "",
@@ -118,7 +120,7 @@ def supplier_to_ep_address(supplier) -> dict:
         "city": supplier.city or "",
         "state": supplier.state or "",
         "zip": supplier.zipcode or "",
-        "country": supplier.country or "US",
+        "country": country,
         "phone": supplier.phone or "",
         "email": supplier.email or "",
     }

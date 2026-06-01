@@ -1,5 +1,4 @@
-"""
-Build a batch shipping-label PDF for suppliers.
+"""Build a batch shipping-label PDF for suppliers.
 
 For each label we overlay a compact info strip at the bottom of the carrier
 label page showing the order, ship-to, and items (name / SKU / qty from the
@@ -16,7 +15,7 @@ from reportlab.pdfgen import canvas
 LABEL_W = 4 * inch
 LABEL_H = 6 * inch
 MARGIN = 0.3 * inch
-OVERLAY_H = 1.65 * inch  # height of info strip at the bottom of the label
+OVERLAY_H = 0.9 * inch  # height of info strip at the bottom of the label
 
 
 @dataclass
@@ -41,51 +40,34 @@ def _clip(text: str, n: int) -> str:
 
 
 def _build_label_overlay(entry: LabelEntry) -> bytes:
-    """Build a 4x6 overlay with item info in the bottom strip of the label."""
+    """Build a 4x6 overlay with catalog name + quantity in the bottom strip."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(LABEL_W, LABEL_H))
 
-    # White background strip to cover any carrier content underneath
+    # White background strip
     c.setFillColorRGB(1, 1, 1)
     c.rect(0, 0, LABEL_W, OVERLAY_H, fill=1, stroke=0)
 
     # Separator line at top of strip
-    c.setStrokeColorRGB(0.2, 0.2, 0.2)
-    c.setLineWidth(0.8)
-    c.line(MARGIN, OVERLAY_H - 0.06 * inch, LABEL_W - MARGIN, OVERLAY_H - 0.06 * inch)
+    c.setStrokeColorRGB(0.4, 0.4, 0.4)
+    c.setLineWidth(0.6)
+    c.line(MARGIN, OVERLAY_H - 0.05 * inch, LABEL_W - MARGIN, OVERLAY_H - 0.05 * inch)
 
-    y = OVERLAY_H - 0.24 * inch
+    y = OVERLAY_H - 0.22 * inch
+    row_h = 0.22 * inch
 
-    # Header: order label + ship-to on one compact line
-    c.setFillColorRGB(0, 0, 0)
-    c.setFont("Helvetica-Bold", 7)
-    header = _clip(entry.order_label or "", 18)
-    if entry.ship_to:
-        header += f"  ▸  {_clip(entry.ship_to, 22)}"
-    c.drawString(MARGIN, y, header)
-    y -= 0.21 * inch
-
-    # Items (using supplier catalog name)
     for it in entry.items:
-        if y < 0.07 * inch:
-            c.setFont("Helvetica-Oblique", 6)
+        if y < 0.06 * inch:
+            c.setFont("Helvetica-Oblique", 7)
             c.setFillColorRGB(0.5, 0.5, 0.5)
             c.drawString(MARGIN, y, "…more items")
             break
-        # Quantity
         c.setFillColorRGB(0, 0, 0)
         c.setFont("Helvetica-Bold", 9)
         c.drawString(MARGIN, y, f"x{it.quantity}")
-        # Catalog name
-        c.setFont("Helvetica", 8.5)
-        c.drawString(MARGIN + 0.32 * inch, y, _clip(it.name, 32))
-        y -= 0.19 * inch
-        # SKU
-        c.setFont("Helvetica", 7)
-        c.setFillColorRGB(0.45, 0.45, 0.45)
-        c.drawString(MARGIN + 0.32 * inch, y, _clip(f"SKU: {it.sku or '—'}", 40))
-        c.setFillColorRGB(0, 0, 0)
-        y -= 0.22 * inch
+        c.setFont("Helvetica", 9)
+        c.drawString(MARGIN + 0.3 * inch, y, _clip(it.name, 36))
+        y -= row_h
 
     c.showPage()
     c.save()
@@ -125,6 +107,10 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
 
         # Overlay item info strip on top
         out_page.merge_page(overlay_page)
+
+        # merge_page can inherit the carrier's mediabox — force 4x6 every time
+        out_page.mediabox.lower_left = (0, 0)
+        out_page.mediabox.upper_right = (LABEL_W, LABEL_H)
 
     out = io.BytesIO()
     writer.write(out)

@@ -35,6 +35,13 @@ class OrderLineItemUpdate(BaseModel):
     fulfilled_at: datetime | None = None
 
 
+class MarkShippedBody(BaseModel):
+    """Bulk mark line items as shipped (admin override — skips the buy-label flow)."""
+    line_item_ids: list[int] = []
+    supplier_id: int | None = None
+    tracking_number: str | None = None
+
+
 class OrderFulfillmentItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

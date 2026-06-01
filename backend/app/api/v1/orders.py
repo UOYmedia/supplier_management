@@ -9,6 +9,7 @@ from app.models.supplier import Supplier, SupplierProduct
 from app.schemas.order import (
     OrderCreate, OrderUpdate, OrderOut, OrderLineItemUpdate,
     OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut, AssignSupplierBody,
+    MarkShippedBody,
 )
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -125,6 +126,53 @@ async def update_line_item(order_id: int, li_id: int, body: OrderLineItemUpdate,
     await db.commit()
     await db.refresh(li)
     return await _line_item_out(li, db)
+
+
+@router.post("/{order_id}/mark-shipped", response_model=OrderOut)
+async def mark_shipped(order_id: int, body: MarkShippedBody, db: AsyncSession = Depends(get_db)):
+    """Admin override: mark unshipped line items as shipped without buying a label.
+
+    Use for orders already shipped outside the system. Targets the explicitly
+    provided line_item_ids, or all unshipped items for a given supplier_id, or
+    every unshipped item in the order when neither is supplied. Cascades the
+    shipped status (and optional tracking number) to any fulfillment items.
+    """
+    order = await _get_or_404(order_id, db)
+
+    q = select(OrderLineItem).where(
+        OrderLineItem.order_id == order_id,
+        OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+    )
+    if body.line_item_ids:
+        q = q.where(OrderLineItem.id.in_(body.line_item_ids))
+    elif body.supplier_id is not None:
+        q = q.where(OrderLineItem.supplier_id == body.supplier_id)
+
+    result = await db.execute(q)
+    items = list(result.scalars().all())
+    if not items:
+        raise HTTPException(404, "No unshipped line items match this request")
+
+    now = datetime.now(timezone.utc)
+    for li in items:
+        li.fulfill_status = FulfillStatus.shipped
+        li.fulfilled_at = now
+        if body.tracking_number:
+            li.tracking_number = body.tracking_number
+
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        for fi in fi_res.scalars().all():
+            if fi.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+                fi.fulfill_status = FulfillStatus.shipped
+                fi.fulfilled_at = now
+                if body.tracking_number:
+                    fi.tracking_number = body.tracking_number
+
+    await _recalculate_order_status(order, db)
+    await db.commit()
+    return await _order_out(order, db)
 
 
 @router.patch("/{order_id}/line-items/{li_id}/assign-supplier", response_model=OrderLineItemOut)

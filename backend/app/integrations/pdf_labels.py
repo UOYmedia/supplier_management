@@ -104,6 +104,28 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
     return out.getvalue()
 
 
+def image_to_label_pdf(image_bytes: bytes, size: tuple[float, float] = (LABEL_W, LABEL_H)) -> bytes:
+    """Wrap a raw label image (PNG/JPG) into a single-page PDF at the given size.
+
+    Used to regenerate a printable PDF for older labels that only have an
+    EasyPost image URL (no archived PDF / shipment to re-request).
+    """
+    from reportlab.lib.utils import ImageReader
+
+    buf = io.BytesIO()
+    pw, ph = size
+    c = canvas.Canvas(buf, pagesize=size)
+    img = ImageReader(io.BytesIO(image_bytes))
+    iw, ih = img.getSize()
+    scale = min(pw / iw, ph / ih) if iw and ih else 1.0
+    w, h = iw * scale, ih * scale
+    c.drawImage(img, (pw - w) / 2, (ph - h) / 2, width=w, height=h,
+                preserveAspectRatio=True, anchor="c")
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
 def decode_label_data(label_data: str | None) -> bytes | None:
     if not label_data:
         return None

@@ -15,4 +15,6 @@ python-dotenv==1.0.1
 pandas==2.2.3
 openpyxl==3.1.5
 cryptography==43.0.1
-# cache-bust: 2026-06-01
+pypdf==4.3.1
+reportlab==4.2.2
+# cache-bust: 2026-06-02

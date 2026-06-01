@@ -99,6 +99,60 @@ export default function PortalOrdersPage() {
       .catch(() => {});
   };
 
+  const [batchPrinting, setBatchPrinting] = useState(false);
+
+  // Distinct labels that are bought but not yet shipped/printed in the current view
+  const printableLabels = (() => {
+    const map = new Map<number, number>(); // label_id -> order_id
+    for (const i of items) {
+      if (i.label_id && i.label_has_pdf && i.supplier_status === "unfulfilled") {
+        map.set(i.label_id, i.order_id);
+      }
+    }
+    return map;
+  })();
+
+  const printAllLabels = async () => {
+    const labelIds = Array.from(printableLabels.keys());
+    if (labelIds.length === 0) return;
+    setBatchPrinting(true);
+    const token = localStorage.getItem("supplier_token");
+    try {
+      const res = await fetch(
+        `/api/v1/portal/orders/batch-labels.pdf?label_ids=${labelIds.join(",")}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!res.ok) {
+        toast.error("Failed to build batch labels");
+        return;
+      }
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const win = window.open(objUrl, "_blank");
+      if (!win) {
+        toast.error("Popup blocked — allow popups to print labels");
+        return;
+      }
+      try { win.focus(); setTimeout(() => { try { win.print(); } catch {} }, 1000); } catch {}
+
+      // Mark each label printed (matches single-label print behaviour)
+      await Promise.all(
+        Array.from(printableLabels.entries()).map(([labelId, orderId]) =>
+          fetch(`/api/v1/portal/orders/${orderId}/labels/${labelId}/mark-printed`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+          }).catch(() => {})
+        )
+      );
+      toast.success(`Printed ${labelIds.length} label(s)`);
+      load();
+    } catch {
+      toast.error("Failed to print batch");
+    } finally {
+      setBatchPrinting(false);
+    }
+  };
+
   const handlePrintClick = (orderId: number, orderItems: PortalItem[]) => {
     const info = labelInfoForOrder(orderItems);
     if (!info) return;
@@ -135,8 +189,21 @@ export default function PortalOrdersPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="page-title">Orders to Fulfill</h1>
+      <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
+          <h1 className="page-title">Orders to Fulfill</h1>
+          {printableLabels.size > 0 && (
+            <button
+              onClick={printAllLabels}
+              disabled={batchPrinting}
+              className="btn-primary text-xs py-1.5 flex items-center gap-1.5"
+              title="Print every un-fulfilled label at once, each followed by a pack list"
+            >
+              {batchPrinting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Printer className="w-3 h-3" />}
+              Print All ({printableLabels.size})
+            </button>
+          )}
+        </div>
         <div className="flex gap-2 flex-wrap">
           {SUPPLIER_STATUS_TABS.map((tab) => (
             <button key={tab.value} onClick={() => setFilter(tab.value)}

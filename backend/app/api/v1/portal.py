@@ -1,9 +1,10 @@
-"""
+""" 
 Supplier Portal API — authenticated with supplier JWT.
 Token payload: {"sub": str(supplier_id), "role": "supplier"}
 """
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -13,13 +14,13 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import verify_password, create_access_token, decode_token
 from app.models.supplier import Supplier, Invoice, SupplierProduct
-from app.models.product import Product, ProductSupplier, ProductComponent
+from app.models.product import Product, ProductSupplier
 from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderFulfillmentItem
 from app.api.v1.orders import _recalculate_order_status
 from app.api.v1.easypost import ParcelIn, RateOut, RatesResponse, DebugInfo
 from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
-    supplier_to_ep_address, shipping_addr_to_ep, filter_supported_rates,
+    supplier_to_ep_address, shipping_addr_to_ep,
 )
 from app.schemas.order import ShippingLabelOut
 
@@ -192,45 +193,80 @@ async def portal_orders(
                                      else (li.fulfilled_at.isoformat() if li.fulfilled_at else None)),
                 })
         else:
-            resolved = False
-            if li.product_id:
-                comp_res = await db.execute(
-                    select(ProductComponent)
-                    .join(SupplierProduct, ProductComponent.supplier_product_id == SupplierProduct.id)
-                    .where(
-                        ProductComponent.product_id == li.product_id,
-                        SupplierProduct.supplier_id == supplier.id,
-                    )
-                )
-                comps = list(comp_res.scalars().all())
-                if comps:
-                    for comp in comps:
-                        sp = await db.get(SupplierProduct, comp.supplier_product_id)
-                        out.append({
-                            **base,
-                            "item_key": f"comp_{comp.id}_{li.id}",
-                            "product_name": sp.name if sp else li.product_name,
-                            "sku": sp.sku if sp else li.sku,
-                            "image_url": sp.image_url if sp else None,
-                            "quantity": comp.quantity * li.quantity,
-                            "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
-                            "tracking_number": li.tracking_number,
-                            "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
-                        })
-                    resolved = True
-            if not resolved:
-                out.append({
-                    **base,
-                    "item_key": f"li_{li.id}",
-                    "product_name": li.product_name,
-                    "sku": li.sku,
-                    "image_url": None,
-                    "quantity": li.quantity,
-                    "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
-                    "tracking_number": li.tracking_number,
-                    "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
-                })
+            out.append({
+                **base,
+                "item_key": f"li_{li.id}",
+                "product_name": li.product_name,
+                "sku": li.sku,
+                "image_url": None,
+                "quantity": li.quantity,
+                "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
+                "tracking_number": li.tracking_number,
+                "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+            })
     return out
+
+
+def _addr_name(addr: dict | None) -> str | None:
+    if not addr:
+        return None
+    parts = [addr.get("name"), addr.get("city"), addr.get("state")]
+    return ", ".join(p for p in parts if p) or None
+
+
+@router.get("/orders/batch-labels.pdf")
+async def portal_batch_labels(
+    label_ids: str | None = Query(None, description="Comma-separated label IDs; default = all printable un-fulfilled labels"),
+    supplier: Supplier = Depends(get_current_supplier),
+    db: AsyncSession = Depends(get_db),
+):
+    """Combine every un-fulfilled label for this supplier into one PDF.
+
+    Each label already has the carrier image and catalog overlay baked in
+    (built at buy time). This endpoint just concatenates them.
+    """
+    from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs
+
+    wanted_ids: set[int] | None = None
+    if label_ids:
+        try:
+            wanted_ids = {int(x) for x in label_ids.split(",") if x.strip()}
+        except ValueError:
+            raise HTTPException(400, "Invalid label_ids")
+
+    # All of this supplier's line items that have a label and are not yet shipped
+    q = select(OrderLineItem).where(
+        OrderLineItem.supplier_id == supplier.id,
+        OrderLineItem.label_id.isnot(None),
+        OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+    ).order_by(OrderLineItem.order_id)
+    lis = (await db.execute(q)).scalars().all()
+
+    # Collect pre-built label PDFs (already have carrier + overlay baked in)
+    seen: set[int] = set()
+    pdf_list: list[bytes] = []
+    for li in lis:
+        if li.label_id is None or li.label_id in seen:
+            continue
+        if wanted_ids is not None and li.label_id not in wanted_ids:
+            continue
+        seen.add(li.label_id)
+        label = await db.get(ShippingLabel, li.label_id)
+        if not label or label.supplier_id != supplier.id:
+            continue
+        pdf = decode_label_data(label.label_data)
+        if pdf:
+            pdf_list.append(pdf)
+
+    if not pdf_list:
+        raise HTTPException(404, "No printable labels found")
+
+    pdf_bytes = concat_label_pdfs(pdf_list)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="batch_labels.pdf"'},
+    )
 
 
 @router.patch("/orders/{item_id}/ship")
@@ -356,35 +392,44 @@ async def portal_easypost_rates(
         "width": body.parcel.width,
         "height": body.parcel.height,
     }
+    carrier_accounts = [
+        x.strip() for x in settings.EASYPOST_CARRIER_ACCOUNT_IDS.split(",") if x.strip()
+    ] or None
     try:
-        shipment = await ep.create_shipment(from_addr, to_addr, parcel)
+        shipment = await ep.create_shipment(to_addr, from_addr, parcel, carrier_accounts)
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 
+    # Return all rates from all carriers — no filtering
     all_rates = shipment.get("rates", [])
-    shown_rates = filter_supported_rates(all_rates)
-    rates_out = sorted(
-        [
-            RateOut(
+    print(f"[PORTAL RATES] EasyPost returned {len(all_rates)} rates total", flush=True)
+    for r in all_rates:
+        print(f"  carrier={r.get('carrier')} service={r.get('service')} rate={r.get('rate')}", flush=True)
+
+    rates_out = []
+    for r in all_rates:
+        try:
+            rates_out.append(RateOut(
                 id=r["id"],
                 carrier=r.get("carrier", ""),
                 service=r.get("service", ""),
-                rate=r.get("rate", "0"),
+                rate=r.get("rate") or "0",
                 currency=r.get("currency", "USD"),
                 delivery_days=r.get("delivery_days"),
                 delivery_date=r.get("delivery_date"),
                 est_delivery_days=r.get("est_delivery_days"),
-            )
-            for r in shown_rates
-        ],
-        key=lambda r: float(r.rate),
-    )
+            ))
+        except Exception as e:
+            print(f"  [SKIP] rate build failed: {e} — raw: {r}", flush=True)
+
+    print(f"[PORTAL RATES] rates_out has {len(rates_out)} items after build", flush=True)
+    rates_out = sorted(rates_out, key=lambda r: float(r.rate))
     debug = DebugInfo(
         from_address=from_addr,
         to_address=to_addr,
         parcel=parcel,
         total_rates=len(all_rates),
-        filtered_rates=len(shown_rates),
+        filtered_rates=len(rates_out),
         line_item_ids=[li.id for li in items],
     )
     return RatesResponse(shipment_id=shipment["id"], rates=rates_out, debug=debug)
@@ -414,23 +459,47 @@ async def portal_easypost_buy(
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 
-    selected_rate = bought.get("selected_rate", {})
-    tracking = bought.get("tracking_code") or selected_rate.get("tracking_code")
+    tracking = bought.get("tracking_code") or bought.get("selected_rate", {}).get("tracking_code")
     label_url = (
         bought.get("postage_label", {}).get("label_url")
         or bought.get("postage_label", {}).get("label_pdf_url")
     )
-    cost_str = selected_rate.get("rate", "0")
-    label_data = await ep.fetch_label_pdf_b64(bought)
 
+    # Resolve catalog pack items
+    from app.api.v1.orders import _catalog_items_for_line_item
+    import base64
+    pack_items = []
+    for li in items:
+        pack_items.extend(await _catalog_items_for_line_item(li, db))
+
+    carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
+    if carrier_png_b64 and pack_items:
+        from app.integrations.pdf_labels import LabelEntry, build_label_from_png
+        png_bytes = base64.b64decode(carrier_png_b64)
+        entry = LabelEntry(
+            order_label=(order.external_order_id or f"Order #{body.order_id}"),
+            ship_to=_addr_name(order.shipping_address),
+            tracking_number=tracking,
+            label_pdf=None,
+            items=pack_items,
+        )
+        label_data = base64.b64encode(build_label_from_png(png_bytes, entry)).decode()
+    elif carrier_png_b64:
+        from app.integrations.pdf_labels import image_to_label_pdf
+        label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
+    else:
+        label_data = None
+
+    selected_rate = bought.get("selected_rate", {})
     label = ShippingLabel(
         supplier_id=supplier.id,
         carrier=selected_rate.get("carrier", "USPS"),
         service=selected_rate.get("service", ""),
         tracking_number=tracking,
+        shipment_id=bought.get("id") or body.shipment_id,
         label_url=label_url,
         label_data=label_data,
-        cost=Decimal(str(cost_str)),
+        cost=Decimal(str(selected_rate.get("rate", "0"))),
         from_address=bought.get("from_address"),
         to_address=bought.get("to_address"),
     )

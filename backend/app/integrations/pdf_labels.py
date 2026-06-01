@@ -39,24 +39,15 @@ def _clip(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def _build_label_overlay(entry: LabelEntry) -> bytes:
-    """Build a 4x6 overlay with catalog name + quantity in the bottom strip."""
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=(LABEL_W, LABEL_H))
-
-    # White background strip
+def _draw_overlay(c: canvas.Canvas, items: list[PackItem]) -> None:
+    """Draw catalog strip in the bottom OVERLAY_H area of an already-sized canvas."""
     c.setFillColorRGB(1, 1, 1)
     c.rect(0, 0, LABEL_W, OVERLAY_H, fill=1, stroke=0)
-
-    # Separator line at top of strip
     c.setStrokeColorRGB(0.4, 0.4, 0.4)
     c.setLineWidth(0.6)
     c.line(MARGIN, OVERLAY_H - 0.05 * inch, LABEL_W - MARGIN, OVERLAY_H - 0.05 * inch)
-
     y = OVERLAY_H - 0.22 * inch
-    row_h = 0.22 * inch
-
-    for it in entry.items:
+    for it in items:
         if y < 0.06 * inch:
             c.setFont("Helvetica-Oblique", 7)
             c.setFillColorRGB(0.5, 0.5, 0.5)
@@ -67,33 +58,69 @@ def _build_label_overlay(entry: LabelEntry) -> bytes:
         c.drawString(MARGIN, y, f"x{it.quantity}")
         c.setFont("Helvetica", 9)
         c.drawString(MARGIN + 0.3 * inch, y, _clip(it.name, 36))
-        y -= row_h
+        y -= 0.22 * inch
 
+
+def build_label_from_png(png_bytes: bytes, entry: LabelEntry) -> bytes:
+    """Single-pass: draw carrier PNG + catalog strip on one reportlab canvas."""
+    from reportlab.lib.utils import ImageReader
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(LABEL_W, LABEL_H))
+    usable_h = LABEL_H - OVERLAY_H
+    img = ImageReader(io.BytesIO(png_bytes))
+    iw, ih = img.getSize()
+    scale = min(LABEL_W / iw, usable_h / ih) if iw and ih else 1.0
+    w, h = iw * scale, ih * scale
+    c.drawImage(
+        img,
+        (LABEL_W - w) / 2,
+        OVERLAY_H + (usable_h - h) / 2,
+        width=w,
+        height=h,
+        preserveAspectRatio=True,
+        anchor="c",
+    )
+    _draw_overlay(c, entry.items)
     c.showPage()
     c.save()
     return buf.getvalue()
 
 
-def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
-    """Overlay catalog/qty strip onto each carrier label page.
+def concat_label_pdfs(pdf_list: list[bytes]) -> bytes:
+    """Concatenate pre-built label PDFs (pages only, no re-overlay)."""
+    writer = PdfWriter()
+    for pdf in pdf_list:
+        if pdf and pdf[:5] == b"%PDF-":
+            try:
+                reader = PdfReader(io.BytesIO(pdf))
+                for page in reader.pages:
+                    writer.add_page(page)
+            except Exception:
+                pass
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
-    label_pdf is always a clean 4x6 PDF (built from PNG via image_to_label_pdf),
-    so no scaling or mediabox fixup is needed — just merge and overlay.
-    """
+
+def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
+    """Fallback for PDF-based labels (manually uploaded). Uses pypdf merge."""
     writer = PdfWriter()
     for entry in entries:
-        overlay_bytes = _build_label_overlay(entry)
-        overlay_page = PdfReader(io.BytesIO(overlay_bytes)).pages[0]
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=(LABEL_W, LABEL_H))
+        _draw_overlay(c, entry.items)
+        c.showPage()
+        c.save()
+        overlay_page = PdfReader(io.BytesIO(buf.getvalue())).pages[0]
 
         out_page = writer.add_blank_page(width=LABEL_W, height=LABEL_H)
-
         if entry.label_pdf:
             try:
                 carrier = PdfReader(io.BytesIO(entry.label_pdf)).pages[0]
                 out_page.merge_page(carrier)
             except Exception:
                 pass
-
         out_page.merge_page(overlay_page)
         out_page.mediabox.lower_left = (0, 0)
         out_page.mediabox.upper_right = (LABEL_W, LABEL_H)
@@ -106,13 +133,9 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
 def image_to_label_pdf(
     image_bytes: bytes,
     size: tuple[float, float] = (LABEL_W, LABEL_H),
-    reserve_bottom: float = OVERLAY_H,
+    reserve_bottom: float = 0.0,
 ) -> bytes:
-    """Wrap a raw label image (PNG/JPG) into a single-page PDF at the given size.
-
-    reserve_bottom leaves that many points empty at the bottom so the catalog
-    overlay strip can sit there without covering carrier content.
-    """
+    """Wrap a raw label image (PNG/JPG) into a single-page PDF at the given size."""
     from reportlab.lib.utils import ImageReader
 
     buf = io.BytesIO()

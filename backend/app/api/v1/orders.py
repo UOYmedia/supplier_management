@@ -346,7 +346,7 @@ async def upload_label_pdf(
     """Attach a manually-provided PDF label to an existing label record.
 
     Useful when a label was bought outside the system, or when the archived
-    PDF is missing and needs to be re-supplied ("replay"). The PDF is stored
+    PDF is missing and needs to be re-supplied (\"replay\"). The PDF is stored
     base64-encoded so it can be served same-origin for printing.
     """
     await _get_or_404(order_id, db)
@@ -376,13 +376,8 @@ async def regenerate_label(
     """Regenerate the label PDF on demand (e.g. to repair a missing archive or
     change the printed size).
 
-    Preferred path: re-request the label from EasyPost at the chosen size (needs
-    the label's EasyPost shipment id). Fallback for older labels: re-fetch the
-    stored label_url and archive it as a printable PDF (converting an image to a
-    4x6 PDF if needed).
-
-    The resulting PDF includes both the carrier label and a pack-list page
-    (name / SKU / qty + ship-to) matching the batch print format.
+    Preferred path: re-request the label PNG from EasyPost and build a combined
+    PDF with the catalog overlay strip. Fallback: re-fetch the stored label_url.
     """
     label = await db.get(ShippingLabel, label_id)
     if not label:
@@ -390,26 +385,27 @@ async def regenerate_label(
 
     from app.core.config import settings
     from app.integrations.pdf_labels import (
-        LabelEntry, PackItem, build_batch_label_pdf, decode_label_data, image_to_label_pdf,
+        LabelEntry, PackItem, build_label_from_png, build_batch_label_pdf, image_to_label_pdf,
     )
 
+    raw_png_bytes: bytes | None = None
     raw_pdf_bytes: bytes | None = None
 
-    # Preferred: regenerate from the EasyPost shipment at the requested size
+    # Preferred: regenerate PNG from EasyPost
     if label.shipment_id and settings.EASYPOST_API_KEY:
         from app.integrations.easypost.client import EasyPostClient, EasyPostError
         ep = EasyPostClient(settings.EASYPOST_API_KEY)
         try:
-            pdf_b64, pdf_url = await ep.regenerate_label(label.shipment_id, size)
+            png_b64, png_url = await ep.regenerate_label(label.shipment_id, size)
         except EasyPostError as e:
             raise HTTPException(e.status, str(e))
-        if pdf_b64:
-            raw_pdf_bytes = base64.b64decode(pdf_b64)
-            if pdf_url:
-                label.label_url = pdf_url
+        if png_b64:
+            raw_png_bytes = base64.b64decode(png_b64)
+            if png_url:
+                label.label_url = png_url
 
-    # Fallback: re-fetch the stored label URL and archive it as a PDF
-    if raw_pdf_bytes is None and label.label_url:
+    # Fallback: re-fetch the stored label URL
+    if raw_png_bytes is None and label.label_url:
         import httpx
         try:
             async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
@@ -422,15 +418,12 @@ async def regenerate_label(
         if content[:5] == b"%PDF-":
             raw_pdf_bytes = content
         else:
-            try:
-                raw_pdf_bytes = image_to_label_pdf(content)
-            except Exception as e:
-                raise HTTPException(502, f"Could not convert the label image to PDF: {e}")
+            raw_png_bytes = content
 
-    if raw_pdf_bytes is None:
+    if raw_png_bytes is None and raw_pdf_bytes is None:
         raise HTTPException(400, "This label has no EasyPost shipment or stored URL to regenerate from — upload a PDF manually instead.")
 
-    # Build the pack-list page and combine with the carrier label
+    # Build pack items using catalog lookup
     order = await _get_or_404(order_id, db)
     lis_result = await db.execute(
         select(OrderLineItem).where(
@@ -442,41 +435,39 @@ async def regenerate_label(
 
     pack_items: list[PackItem] = []
     for li in lis:
-        fis = (await db.execute(
-            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
-        )).scalars().all()
-        if fis:
-            for fi in fis:
-                sp = await db.get(SupplierProduct, fi.supplier_product_id)
-                pack_items.append(PackItem(
-                    name=sp.name if sp else li.product_name,
-                    sku=sp.sku if sp else li.sku,
-                    quantity=fi.quantity,
-                ))
-        else:
-            pack_items.append(PackItem(name=li.product_name, sku=li.sku, quantity=li.quantity))
+        pack_items.extend(await _catalog_items_for_line_item(li, db))
 
-    # Fall back to all line items for this order if none linked to this label yet
     if not pack_items:
         all_lis_result = await db.execute(
             select(OrderLineItem).where(OrderLineItem.order_id == order_id)
         )
         for li in all_lis_result.scalars().all():
-            pack_items.append(PackItem(name=li.product_name, sku=li.sku, quantity=li.quantity))
+            pack_items.extend(await _catalog_items_for_line_item(li, db))
 
     def _addr_name(addr: dict | None) -> str | None:
         if not addr:
             return None
         return addr.get("name") or addr.get("Name") or addr.get("full_name") or addr.get("buyer_name")
 
-    entry = LabelEntry(
-        order_label=(order.external_order_id if order.external_order_id else f"Order #{order_id}"),
-        ship_to=_addr_name(order.shipping_address),
-        tracking_number=label.tracking_number,
-        label_pdf=raw_pdf_bytes,
-        items=pack_items,
-    )
-    combined_pdf = build_batch_label_pdf([entry])
+    if raw_png_bytes:
+        entry = LabelEntry(
+            order_label=(order.external_order_id or f"Order #{order_id}"),
+            ship_to=_addr_name(order.shipping_address),
+            tracking_number=label.tracking_number,
+            label_pdf=None,
+            items=pack_items,
+        )
+        combined_pdf = build_label_from_png(raw_png_bytes, entry)
+    else:
+        entry = LabelEntry(
+            order_label=(order.external_order_id or f"Order #{order_id}"),
+            ship_to=_addr_name(order.shipping_address),
+            tracking_number=label.tracking_number,
+            label_pdf=raw_pdf_bytes,
+            items=pack_items,
+        )
+        combined_pdf = build_batch_label_pdf([entry])
+
     label.label_data = base64.b64encode(combined_pdf).decode()
     await db.commit()
     await db.refresh(label)
@@ -605,6 +596,25 @@ async def _get_or_404(order_id: int, db: AsyncSession) -> Order:
     if not o:
         raise HTTPException(404, "Order not found")
     return o
+
+
+async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> list:
+    """Resolve catalog name+qty for a line item via ProductComponent → SupplierProduct."""
+    from app.integrations.pdf_labels import PackItem
+    if li.product_id:
+        comps = (await db.execute(
+            select(ProductComponent).where(ProductComponent.product_id == li.product_id)
+        )).scalars().all()
+        if comps:
+            items = []
+            for comp in comps:
+                sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                if sp:
+                    items.append(PackItem(name=sp.name, sku=sp.sku,
+                                          quantity=li.quantity * comp.quantity))
+            if items:
+                return items
+    return [PackItem(name=li.product_name, sku=li.sku, quantity=li.quantity)]
 
 
 async def _line_item_out(li: OrderLineItem, db: AsyncSession) -> OrderLineItemOut:

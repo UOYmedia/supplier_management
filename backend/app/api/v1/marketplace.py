@@ -201,6 +201,20 @@ async def push_to_marketplace(
 
 # --- Sync orders from marketplace ---
 
+@router.post("/connections/{conn_id}/sync-locations")
+async def sync_locations(conn_id: int, db: AsyncSession = Depends(get_db)):
+    """Pull Shopify locations and upsert as Suppliers (Shopify only)."""
+    from app.models.marketplace import MarketplaceType
+    conn = await _get_conn_or_404(conn_id, db)
+    if conn.marketplace != MarketplaceType.shopify:
+        raise HTTPException(400, "Location sync is only supported for Shopify connections")
+    syncer = ShopifySync(conn)
+    result = await syncer.sync_locations(db)
+    conn.last_synced_at = datetime.now(timezone.utc)
+    await db.commit()
+    return result
+
+
 @router.post("/connections/{conn_id}/sync-orders")
 async def sync_orders(conn_id: int, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     conn = await _get_conn_or_404(conn_id, db)

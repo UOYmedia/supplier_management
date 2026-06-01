@@ -114,6 +114,7 @@ export const marketplaceApi = {
   testConnection: (id: number) => api.post(`/marketplace/connections/${id}/test`).then((r) => r.data),
   syncOrders: (id: number) => api.post(`/marketplace/connections/${id}/sync-orders`).then((r) => r.data),
   syncProducts: (id: number) => api.post(`/marketplace/connections/${id}/sync-products`).then((r) => r.data),
+  syncLocations: (id: number) => api.post(`/marketplace/connections/${id}/sync-locations`).then((r) => r.data),
   listListings: (params?: object) => api.get("/marketplace/listings", { params }).then((r) => r.data),
   createListing: (data: object) => api.post("/marketplace/listings", data).then((r) => r.data),
   updateListing: (id: number, data: object) => api.patch(`/marketplace/listings/${id}`, data).then((r) => r.data),

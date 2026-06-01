@@ -1,5 +1,4 @@
-"""
-Async EasyPost REST client (httpx).
+"""Async EasyPost REST client (httpx).
 Docs: https://www.easypost.com/docs/api
 """
 import base64
@@ -20,50 +19,51 @@ class EasyPostClient:
         self._auth = (api_key, "")
 
     async def _post(self, path: str, payload: dict) -> dict:
-        async with httpx.AsyncClient(timeout=30) as http:
-            r = await http.post(f"{EASYPOST_BASE}{path}", json=payload, auth=self._auth)
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                r = await http.post(f"{EASYPOST_BASE}{path}", json=payload, auth=self._auth)
+        except httpx.HTTPError as e:
+            raise EasyPostError(503, f"EasyPost unreachable: {e}")
         if not r.is_success:
-            detail = r.json().get("error", {}).get("message", r.text)
+            try:
+                detail = r.json().get("error", {}).get("message", r.text)
+            except Exception:
+                detail = r.text or f"HTTP {r.status_code}"
             raise EasyPostError(r.status_code, detail)
         return r.json()
 
     async def _get(self, path: str, params: dict | None = None) -> dict:
-        async with httpx.AsyncClient(timeout=30) as http:
-            r = await http.get(f"{EASYPOST_BASE}{path}", params=params, auth=self._auth)
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                r = await http.get(f"{EASYPOST_BASE}{path}", params=params, auth=self._auth)
+        except httpx.HTTPError as e:
+            raise EasyPostError(503, f"EasyPost unreachable: {e}")
         if not r.is_success:
-            detail = r.json().get("error", {}).get("message", r.text)
+            try:
+                detail = r.json().get("error", {}).get("message", r.text)
+            except Exception:
+                detail = r.text or f"HTTP {r.status_code}"
             raise EasyPostError(r.status_code, detail)
         return r.json()
 
     async def fetch_label_pdf_b64(self, shipment: dict) -> str | None:
-        """Convert a bought shipment's label to PDF and download bytes as base64.
+        """Download the EasyPost PNG label and convert it to a 4x6 PDF in-process.
 
-        EasyPost labels default to PNG. We re-request format=PDF, then download
-        the PDF bytes from the resulting URL so we can archive it and serve
-        same-origin (which is what lets the browser auto-trigger print).
+        Using PNG avoids EasyPost's PDF formatting quirks (letter-size wrappers,
+        misaligned content). The PNG is always available immediately after buy.
         """
-        shipment_id = shipment.get("id")
-        if not shipment_id:
-            return None
-        pdf_url = None
-        try:
-            converted = await self._get(
-                f"/shipments/{shipment_id}/label",
-                params={"file_format": "pdf"},
-            )
-            pl = converted.get("postage_label") or {}
-            pdf_url = pl.get("label_pdf_url") or pl.get("label_url")
-        except Exception:
-            pl = shipment.get("postage_label") or {}
-            pdf_url = pl.get("label_pdf_url") or pl.get("label_url")
-        if not pdf_url:
+        pl = shipment.get("postage_label") or {}
+        png_url = pl.get("label_png_url") or pl.get("label_url")
+        if not png_url:
             return None
         try:
             async with httpx.AsyncClient(timeout=30) as http:
-                r = await http.get(pdf_url)
+                r = await http.get(png_url)
                 if not r.is_success:
                     return None
-                return base64.b64encode(r.content).decode()
+            from app.integrations.pdf_labels import image_to_label_pdf
+            pdf_bytes = image_to_label_pdf(r.content)
+            return base64.b64encode(pdf_bytes).decode()
         except Exception:
             return None
 
@@ -79,6 +79,7 @@ class EasyPostClient:
             "to_address": to_address,
             "from_address": from_address,
             "parcel": parcel,
+            "options": {"label_format": "PDF", "label_size": "4x6"},
         }
         if carrier_accounts:
             shipment["carrier_accounts"] = [{"id": ca} for ca in carrier_accounts]
@@ -88,6 +89,34 @@ class EasyPostClient:
     async def buy_shipment(self, shipment_id: str, rate_id: str) -> dict:
         """Purchase a rate. Returns the bought shipment with label URL + tracking."""
         return await self._post(f"/shipments/{shipment_id}/buy", {"rate": {"id": rate_id}})
+
+    async def regenerate_label(
+        self, shipment_id: str, label_size: str = "4x6"
+    ) -> tuple[str | None, str | None]:
+        """Re-fetch the PNG label for a bought shipment and convert to 4x6 PDF.
+
+        Returns (label_data_b64, label_url). Using PNG avoids EasyPost's
+        letter-size PDF wrapper issues.
+        """
+        # Request PNG format so we get the raw label image
+        converted = await self._get(
+            f"/shipments/{shipment_id}/label",
+            params={"file_format": "png", "label_size": label_size},
+        )
+        pl = converted.get("postage_label") or {}
+        png_url = pl.get("label_png_url") or pl.get("label_url")
+        if not png_url:
+            return None, None
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                r = await http.get(png_url)
+                if not r.is_success:
+                    return None, png_url
+            from app.integrations.pdf_labels import image_to_label_pdf
+            pdf_bytes = image_to_label_pdf(r.content)
+            return base64.b64encode(pdf_bytes).decode(), png_url
+        except Exception:
+            return None, png_url
 
     async def create_tracker(self, tracking_code: str, carrier: str = "USPS") -> dict:
         """Create (or look up existing) EasyPost tracker. Returns tracker with .status field.
@@ -99,6 +128,8 @@ class EasyPostClient:
 
 def supplier_to_ep_address(supplier) -> dict:
     """Convert Supplier ORM object to EasyPost address dict."""
+    raw_country = supplier.country or "US"
+    country = "US" if raw_country.lower() in ("united states", "united states of america", "us") else raw_country
     return {
         "name": supplier.name,
         "street1": supplier.street1 or "",
@@ -106,7 +137,7 @@ def supplier_to_ep_address(supplier) -> dict:
         "city": supplier.city or "",
         "state": supplier.state or "",
         "zip": supplier.zipcode or "",
-        "country": supplier.country or "US",
+        "country": country,
         "phone": supplier.phone or "",
         "email": supplier.email or "",
     }

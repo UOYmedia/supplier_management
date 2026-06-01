@@ -75,44 +75,26 @@ def _build_label_overlay(entry: LabelEntry) -> bytes:
 
 
 def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
-    """Overlay item info onto each carrier label page.
+    """Overlay catalog/qty strip onto each carrier label page.
 
-    Each output page is always exactly 4x6 inches. The carrier label is
-    scaled to fit if its dimensions differ from 4x6 (e.g. letter-size PDF).
+    label_pdf is always a clean 4x6 PDF (built from PNG via image_to_label_pdf),
+    so no scaling or mediabox fixup is needed — just merge and overlay.
     """
-    from pypdf import Transformation
-
     writer = PdfWriter()
     for entry in entries:
         overlay_bytes = _build_label_overlay(entry)
         overlay_page = PdfReader(io.BytesIO(overlay_bytes)).pages[0]
 
-        # Always start with a fresh 4x6 output page so the dimensions are guaranteed
         out_page = writer.add_blank_page(width=LABEL_W, height=LABEL_H)
 
         if entry.label_pdf:
             try:
-                reader = PdfReader(io.BytesIO(entry.label_pdf))
-                if reader.pages:
-                    carrier = reader.pages[0]
-                    cw = float(carrier.mediabox.width)
-                    ch = float(carrier.mediabox.height)
-                    # Scale + center carrier onto 4x6 if dimensions differ by more than 2 pt
-                    if cw > 0 and ch > 0 and (abs(cw - LABEL_W) > 2 or abs(ch - LABEL_H) > 2):
-                        scale = min(LABEL_W / cw, LABEL_H / ch)
-                        tx = (LABEL_W - cw * scale) / 2
-                        ty = (LABEL_H - ch * scale) / 2
-                        carrier.add_transformation(
-                            Transformation().scale(scale, scale).translate(tx, ty)
-                        )
-                    out_page.merge_page(carrier)
+                carrier = PdfReader(io.BytesIO(entry.label_pdf)).pages[0]
+                out_page.merge_page(carrier)
             except Exception:
-                pass  # Corrupt label — info strip will appear on the blank page
+                pass
 
-        # Overlay item info strip on top
         out_page.merge_page(overlay_page)
-
-        # merge_page can inherit the carrier's mediabox — force 4x6 every time
         out_page.mediabox.lower_left = (0, 0)
         out_page.mediabox.upper_right = (LABEL_W, LABEL_H)
 

@@ -48,11 +48,11 @@ class EasyPostClient:
         return r.json()
 
     async def fetch_label_pdf_b64(self, shipment: dict) -> str | None:
-        """Convert a bought shipment's label to PDF and download bytes as base64.
+        """Convert a bought shipment's label to 4x6 PDF and download bytes as base64.
 
-        EasyPost labels default to PNG. We re-request format=PDF, then download
-        the PDF bytes from the resulting URL so we can archive it and serve
-        same-origin (which is what lets the browser auto-trigger print).
+        EasyPost labels default to PNG. We re-request format=PDF at 4x6 inches,
+        then download the PDF bytes so we can archive and serve same-origin
+        (which enables the browser to auto-trigger print).
         """
         shipment_id = shipment.get("id")
         if not shipment_id:
@@ -61,7 +61,7 @@ class EasyPostClient:
         try:
             converted = await self._get(
                 f"/shipments/{shipment_id}/label",
-                params={"file_format": "pdf"},
+                params={"file_format": "pdf", "label_size": "4x6"},
             )
             pl = converted.get("postage_label") or {}
             pdf_url = pl.get("label_pdf_url") or pl.get("label_url")
@@ -91,6 +91,7 @@ class EasyPostClient:
             "to_address": to_address,
             "from_address": from_address,
             "parcel": parcel,
+            "options": {"label_format": "PDF", "label_size": "4x6"},
         }
         if carrier_accounts:
             shipment["carrier_accounts"] = [{"id": ca} for ca in carrier_accounts]

@@ -67,8 +67,24 @@ async def _run_migrations():
         # Amazon MFN: base64 PDF label storage + wider label_url
         "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS label_data TEXT",
         "ALTER TABLE shipping_labels ALTER COLUMN label_url TYPE TEXT",
+        # shipping_labels: address JSON + timestamp
+        "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS from_address JSONB",
+        "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS to_address JSONB",
+        "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS purchased_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()",
+        "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS cost NUMERIC(8,2) NOT NULL DEFAULT 0",
+        "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS service VARCHAR(100)",
         # Allow marketplace listings without a linked shop product (for sync + mapping flow)
         "ALTER TABLE marketplace_listings ALTER COLUMN product_id DROP NOT NULL",
+        # orders: new columns added after initial deploy
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS connection_id INTEGER REFERENCES marketplace_connections(id)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_email VARCHAR(255)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()",
+        # order_line_items: columns added after initial deploy
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS listing_id INTEGER REFERENCES marketplace_listings(id)",
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS external_line_item_id VARCHAR(255)",
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS base_cost NUMERIC(10,2) NOT NULL DEFAULT 0",
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS label_id INTEGER REFERENCES shipping_labels(id)",
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS fulfilled_at TIMESTAMP WITH TIME ZONE",
         # Supplier-level toggle: allow self-service EasyPost label purchase from the portal
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS can_buy_labels BOOLEAN NOT NULL DEFAULT FALSE",
         # Per-unit shipping dimensions on supplier catalog items (for parcel auto-estimate)
@@ -97,8 +113,10 @@ async def _run_migrations():
             quantity INTEGER NOT NULL DEFAULT 1,
             fulfill_status VARCHAR(50) NOT NULL DEFAULT 'unfulfilled',
             tracking_number VARCHAR(255),
+            label_id INTEGER REFERENCES shipping_labels(id),
             fulfilled_at TIMESTAMP WITH TIME ZONE
         )""",
+        "ALTER TABLE order_fulfillment_items ADD COLUMN IF NOT EXISTS label_id INTEGER REFERENCES shipping_labels(id)",
     ]
     # ALTER TYPE must run outside a transaction (autocommit)
     try:

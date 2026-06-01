@@ -497,7 +497,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
-              {(([[ "weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
+              {(([["weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
                 <div key={k}>
                   <label className="label">{label} *</label>
                   <input className="input" type="number" step="0.1" min="0.1" value={(parcel as any)[k]} onChange={pf(k)} />

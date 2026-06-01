@@ -420,7 +420,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
         {step === "parcel" && (
           <>
             <div className="mb-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
-              Enter parcel dimensions to get live USPS &amp; UPS rates. Label cost will be recorded against the company.
+              Enter parcel dimensions to get live shipping rates from all available carriers. Label cost will be recorded against the company.
             </div>
             {estimateInfo && (
               <div className={`mb-3 p-2 rounded-lg text-xs ${estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"}`}>
@@ -430,12 +430,12 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
-              {([[ "weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
+              {(([[ "weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
                 <div key={k}>
                   <label className="label">{label} *</label>
                   <input className="input" type="number" step="0.1" min="0.1" value={(parcel as any)[k]} onChange={pf(k)} />
                 </div>
-              ))}
+              )))}
             </div>
             <div className="flex justify-end gap-2 mt-5">
               <button className="btn-secondary" onClick={onClose}>Cancel</button>
@@ -452,20 +452,21 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
             {debug && (
               <div className="mb-3 border border-gray-200 rounded-lg p-3 bg-gray-50 text-xs">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="font-semibold text-gray-600 uppercase tracking-wide">EasyPost Request</span>
+                  <span className="font-semibold text-gray-600 uppercase tracking-wide">EasyPost Request — Verify Before Paying</span>
                   <button className="text-blue-600 hover:underline" onClick={() => setShowRawDebug((v) => !v)}>
                     {showRawDebug ? "Hide raw" : "Show raw JSON"}
                   </button>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-white p-2 rounded border border-gray-200">
-                    <div className="text-gray-500">Ship from</div>
+                    <div className="text-gray-500">Ship from (supplier)</div>
                     <div className="text-gray-700">{debug.from_address.name}</div>
                     <div className="text-gray-700">{[debug.from_address.street1, debug.from_address.street2].filter(Boolean).join(", ")}</div>
                     <div className="text-gray-700">{[debug.from_address.city, debug.from_address.state, debug.from_address.zip].filter(Boolean).join(", ")}</div>
+                    <div className="text-gray-700">{debug.from_address.country}</div>
                   </div>
                   <div className="bg-white p-2 rounded border border-gray-200">
-                    <div className="text-gray-500">Ship to</div>
+                    <div className="text-gray-500">Ship to (buyer)</div>
                     <div className="text-gray-700">{debug.to_address.name}</div>
                     <div className="text-gray-700">{[debug.to_address.street1, debug.to_address.street2].filter(Boolean).join(", ")}</div>
                     <div className="text-gray-700">{[debug.to_address.city, debug.to_address.state, debug.to_address.zip].filter(Boolean).join(", ")}</div>
@@ -474,8 +475,10 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
                 <div className="mt-2 bg-white p-2 rounded border border-gray-200">
                   <span className="text-gray-500">Parcel:</span>{" "}
                   <span className="font-medium">{debug.parcel.weight} oz · {debug.parcel.length}×{debug.parcel.width}×{debug.parcel.height} in</span>
-                  <span className="ml-3 text-gray-500">Rates:</span>{" "}
-                  <span className="font-medium">{debug.filtered_rates} shown / {debug.total_rates} total</span>
+                  <span className="ml-3 text-gray-500">Rates returned:</span>{" "}
+                  <span className="font-medium">{debug.total_rates} total</span>
+                  <span className="ml-2 text-gray-500">Line items:</span>{" "}
+                  <span className="font-medium">{debug.line_item_ids?.join(", ")}</span>
                 </div>
                 {showRawDebug && (
                   <pre className="mt-2 text-[10px] leading-tight p-2 max-h-40 overflow-auto bg-gray-900 text-gray-100 rounded font-mono">{JSON.stringify(debug, null, 2)}</pre>
@@ -491,7 +494,12 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
                     <input type="radio" name="rate" checked={selectedRate === r.id} onChange={() => setSelectedRate(r.id)} className="accent-blue-600" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${r.carrier === "UPS" ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-800"}`}>{r.carrier}</span>
+                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
+                          r.carrier === "UPS" ? "bg-amber-100 text-amber-800" :
+                          r.carrier === "FedEx" ? "bg-purple-100 text-purple-800" :
+                          r.carrier === "USPS" ? "bg-blue-100 text-blue-800" :
+                          "bg-gray-100 text-gray-700"
+                        }`}>{r.carrier}</span>
                         <span className="text-xs text-gray-500">{r.service}</span>
                       </div>
                       {(r.delivery_days || r.est_delivery_days) && (

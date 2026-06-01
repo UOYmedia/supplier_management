@@ -335,7 +335,6 @@ async def portal_easypost_rates(
         raise HTTPException(e.status, str(e))
 
     all_rates = shipment.get("rates", [])
-    shown_rates = filter_supported_rates(all_rates)
     rates_out = sorted(
         [
             RateOut(
@@ -348,7 +347,7 @@ async def portal_easypost_rates(
                 delivery_date=r.get("delivery_date"),
                 est_delivery_days=r.get("est_delivery_days"),
             )
-            for r in shown_rates
+            for r in all_rates
         ],
         key=lambda r: float(r.rate),
     )
@@ -357,7 +356,7 @@ async def portal_easypost_rates(
         to_address=to_addr,
         parcel=parcel,
         total_rates=len(all_rates),
-        filtered_rates=len(shown_rates),
+        filtered_rates=len(all_rates),
         line_item_ids=[li.id for li in items],
     )
     return RatesResponse(shipment_id=shipment["id"], rates=rates_out, debug=debug)

@@ -219,6 +219,29 @@ async def portal_orders(
                         })
                     resolved = True
             if not resolved:
+                # Tertiary fallback: match a SupplierProduct by SKU for this supplier
+                if li.sku:
+                    sp_res = await db.execute(
+                        select(SupplierProduct).where(
+                            SupplierProduct.supplier_id == supplier.id,
+                            SupplierProduct.sku == li.sku,
+                        )
+                    )
+                    sp = sp_res.scalar_one_or_none()
+                    if sp:
+                        out.append({
+                            **base,
+                            "item_key": f"li_{li.id}",
+                            "product_name": sp.name,
+                            "sku": sp.sku,
+                            "image_url": sp.image_url,
+                            "quantity": li.quantity,
+                            "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
+                            "tracking_number": li.tracking_number,
+                            "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                        })
+                        resolved = True
+            if not resolved:
                 out.append({
                     **base,
                     "item_key": f"li_{li.id}",
@@ -242,16 +265,24 @@ def _addr_name(addr: dict | None) -> str | None:
 
 @router.get("/orders/batch-labels.pdf")
 async def portal_batch_labels(
-    label_ids: str | None = Query(None, description="Comma-separated label IDs; default = all printable un-fulfilled labels"),
+    label_ids: str | None = Query(None, description="Comma-separated label IDs; omit = all printable unfulfilled labels"),
     supplier: Supplier = Depends(get_current_supplier),
     db: AsyncSession = Depends(get_db),
 ):
-    """Combine every un-fulfilled label for this supplier into one PDF.
+    """Combine every unfulfilled label for this supplier into one PDF with catalog overlay.
 
-    Each label already has the carrier image and catalog overlay baked in
-    (built at buy time). This endpoint just concatenates them.
+    For labels that already have label_data (overlay baked in at buy time) those
+    pages are used directly. For labels that only have a label_url (e.g. bought before
+    the PNG pipeline was fixed), the PDF/PNG is fetched from EasyPost's CDN and the
+    catalog overlay is applied on-the-fly.
     """
-    from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs
+    import httpx
+    import base64
+    from app.integrations.pdf_labels import (
+        decode_label_data, concat_label_pdfs,
+        LabelEntry, build_label_from_png, build_batch_label_pdf,
+    )
+    from app.api.v1.orders import _catalog_items_for_line_item
 
     wanted_ids: set[int] | None = None
     if label_ids:
@@ -260,7 +291,6 @@ async def portal_batch_labels(
         except ValueError:
             raise HTTPException(400, "Invalid label_ids")
 
-    # All of this supplier's line items that have a label and are not yet shipped
     q = select(OrderLineItem).where(
         OrderLineItem.supplier_id == supplier.id,
         OrderLineItem.label_id.isnot(None),
@@ -268,28 +298,70 @@ async def portal_batch_labels(
     ).order_by(OrderLineItem.order_id)
     lis = (await db.execute(q)).scalars().all()
 
-    # Collect pre-built label PDFs (already have carrier + overlay baked in)
-    seen: set[int] = set()
-    pdf_list: list[bytes] = []
+    # Group line items by label_id so we can resolve catalog items per label
+    from collections import defaultdict
+    label_to_lis: dict[int, list] = defaultdict(list)
     for li in lis:
-        if li.label_id is None or li.label_id in seen:
+        if li.label_id is None:
             continue
         if wanted_ids is not None and li.label_id not in wanted_ids:
             continue
-        seen.add(li.label_id)
-        label = await db.get(ShippingLabel, li.label_id)
+        label_to_lis[li.label_id].append(li)
+
+    pdf_pages: list[bytes] = []
+
+    for label_id, label_lis in label_to_lis.items():
+        label = await db.get(ShippingLabel, label_id)
         if not label or label.supplier_id != supplier.id:
             continue
-        pdf = decode_label_data(label.label_data)
-        if pdf:
-            pdf_list.append(pdf)
 
-    if not pdf_list:
+        # Case 1: label_data already has carrier PNG + catalog overlay baked in
+        if label.label_data:
+            pdf = decode_label_data(label.label_data)
+            if pdf:
+                pdf_pages.append(pdf)
+                continue
+
+        # Case 2: no label_data — fetch from label_url and apply overlay now
+        if not label.label_url:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=20) as http:
+                r = await http.get(label.label_url)
+            if not r.is_success:
+                continue
+            content = r.content
+        except Exception:
+            continue
+
+        # Resolve catalog items for the overlay strip
+        pack_items = []
+        for li in label_lis:
+            pack_items.extend(await _catalog_items_for_line_item(li, db))
+
+        order = await db.get(Order, label_lis[0].order_id)
+        entry = LabelEntry(
+            order_label=(order.external_order_id if order else f"Label #{label_id}"),
+            ship_to=_addr_name(order.shipping_address) if order else None,
+            tracking_number=label.tracking_number,
+            label_pdf=None,
+            items=pack_items,
+        )
+
+        try:
+            if content[:8] == b'\x89PNG\r\n\x1a\n':
+                pdf_pages.append(build_label_from_png(content, entry))
+            else:
+                entry.label_pdf = content
+                pdf_pages.append(build_batch_label_pdf([entry]))
+        except Exception:
+            continue
+
+    if not pdf_pages:
         raise HTTPException(404, "No printable labels found")
 
-    pdf_bytes = concat_label_pdfs(pdf_list)
     return Response(
-        content=pdf_bytes,
+        content=concat_label_pdfs(pdf_pages),
         media_type="application/pdf",
         headers={"Content-Disposition": 'inline; filename="batch_labels.pdf"'},
     )
@@ -501,44 +573,60 @@ async def portal_easypost_buy(
     if not items:
         raise HTTPException(404, "No unshipped items in this order belong to you")
 
+    from app.api.v1.orders import _catalog_items_for_line_item
+    from decimal import InvalidOperation
+    import base64
+
     ep = EasyPostClient(settings.EASYPOST_API_KEY)
     try:
         bought = await ep.buy_shipment(body.shipment_id, body.rate_id)
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 
-    tracking = bought.get("tracking_code") or bought.get("selected_rate", {}).get("tracking_code")
-    label_url = (
-        bought.get("postage_label", {}).get("label_url")
-        or bought.get("postage_label", {}).get("label_pdf_url")
-    )
+    selected_rate = bought.get("selected_rate") or {}
+    postage_label = bought.get("postage_label") or {}
+    tracking = bought.get("tracking_code") or selected_rate.get("tracking_code")
+    label_url = postage_label.get("label_url") or postage_label.get("label_pdf_url")
+    try:
+        cost_val = Decimal(str(selected_rate.get("rate") or "0"))
+    except (InvalidOperation, ValueError):
+        cost_val = Decimal("0")
 
-    # Resolve catalog pack items
-    from app.api.v1.orders import _catalog_items_for_line_item
-    import base64
+    # Resolve catalog pack items for the overlay strip
     pack_items = []
     for li in items:
         pack_items.extend(await _catalog_items_for_line_item(li, db))
 
+    # Fetch PNG — try buy response first, then regenerate explicitly
     carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
-    if carrier_png_b64 and pack_items:
-        from app.integrations.pdf_labels import LabelEntry, build_label_from_png
-        png_bytes = base64.b64decode(carrier_png_b64)
-        entry = LabelEntry(
-            order_label=(order.external_order_id or f"Order #{body.order_id}"),
-            ship_to=_addr_name(order.shipping_address),
-            tracking_number=tracking,
-            label_pdf=None,
-            items=pack_items,
-        )
-        label_data = base64.b64encode(build_label_from_png(png_bytes, entry)).decode()
-    elif carrier_png_b64:
-        from app.integrations.pdf_labels import image_to_label_pdf
-        label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
-    else:
+    try:
+        regen_png, regen_url = await ep.regenerate_label(bought.get("id") or body.shipment_id)
+        if regen_png:
+            carrier_png_b64 = regen_png
+        if regen_url:
+            label_url = regen_url
+    except Exception:
+        pass
+
+    try:
+        if carrier_png_b64 and pack_items:
+            from app.integrations.pdf_labels import LabelEntry, build_label_from_png
+            entry = LabelEntry(
+                order_label=(order.external_order_id or f"Order #{body.order_id}"),
+                ship_to=_addr_name(order.shipping_address),
+                tracking_number=tracking,
+                label_pdf=None,
+                items=pack_items,
+            )
+            label_data = base64.b64encode(build_label_from_png(base64.b64decode(carrier_png_b64), entry)).decode()
+        elif carrier_png_b64:
+            from app.integrations.pdf_labels import image_to_label_pdf
+            label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
+        else:
+            label_data = None
+    except Exception:
         label_data = None
 
-    selected_rate = bought.get("selected_rate", {})
     label = ShippingLabel(
         supplier_id=supplier.id,
         carrier=selected_rate.get("carrier", "USPS"),
@@ -547,7 +635,7 @@ async def portal_easypost_buy(
         shipment_id=bought.get("id") or body.shipment_id,
         label_url=label_url,
         label_data=label_data,
-        cost=Decimal(str(selected_rate.get("rate", "0"))),
+        cost=cost_val,
         from_address=bought.get("from_address"),
         to_address=bought.get("to_address"),
     )

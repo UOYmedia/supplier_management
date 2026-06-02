@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from app.core.database import get_db
 from app.core.config import settings
@@ -284,13 +284,18 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         await db.commit()
         raise HTTPException(500, f"Unexpected error: {e}")
 
-    selected_rate = bought.get("selected_rate", {})
+    # Use `or {}` (not a get default): when recovering a shipment via get_shipment,
+    # EasyPost can return these keys with an explicit null value, and .get(k, {})
+    # only substitutes the default when the key is *absent*, not when it's null.
+    selected_rate = bought.get("selected_rate") or {}
+    postage_label = bought.get("postage_label") or {}
     tracking = bought.get("tracking_code") or selected_rate.get("tracking_code")
-    label_url = (
-        bought.get("postage_label", {}).get("label_url")
-        or bought.get("postage_label", {}).get("label_pdf_url")
-    )
-    cost_str = selected_rate.get("rate", "0")
+    label_url = postage_label.get("label_url") or postage_label.get("label_pdf_url")
+    try:
+        cost_str = selected_rate.get("rate") or "0"
+        cost_val = Decimal(str(cost_str))
+    except (InvalidOperation, ValueError):
+        cost_val = Decimal("0")
 
     pack_items = []
     for li_id in li_ids:
@@ -349,7 +354,7 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         shipment_id=bought.get("id") or body.shipment_id,
         label_url=label_url,
         label_data=label_data,
-        cost=Decimal(str(cost_str)),
+        cost=cost_val,
         from_address=bought.get("from_address"),
         to_address=bought.get("to_address"),
     )
@@ -370,14 +375,14 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     await _recalculate_order_status(order, db)
 
     await _log(db, order_id, "easypost_buy",
-               f"Label purchased -- tracking {tracking}, carrier {selected_rate.get('carrier')}, cost ${cost_str}",
+               f"Label purchased -- tracking {tracking}, carrier {selected_rate.get('carrier')}, cost ${cost_val}",
                payload={
                    "shipment_id": body.shipment_id,
                    "label_id": label.id,
                    "tracking_number": tracking,
                    "carrier": selected_rate.get("carrier"),
                    "service": selected_rate.get("service"),
-                   "cost": cost_str,
+                   "cost": str(cost_val),
                    "line_item_ids": li_ids,
                })
 

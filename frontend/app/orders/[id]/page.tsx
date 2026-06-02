@@ -1064,7 +1064,7 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
               </div>
             )}
             <div className="flex justify-between gap-2 mt-5">
-              <button className="btn-secondary" onClick={() => setStep("parcel")}← Back</button>
+              <button className="btn-secondary" onClick={() => setStep("parcel")}>&#8592; Back</button>
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 <button
@@ -1282,7 +1282,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
               </div>
             )}
             <div className="flex justify-between gap-2 mt-5">
-              <button className="btn-secondary" onClick={() => setStep("parcel")}← Back</button>
+              <button className="btn-secondary" onClick={() => setStep("parcel")}>&#8592; Back</button>
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 <button

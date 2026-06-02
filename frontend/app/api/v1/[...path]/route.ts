@@ -1,5 +1,5 @@
 /**
- * Runtime proxy — forwards all /api/v1/* requests to the backend.
+ * Runtime proxy -- forwards all /api/v1/* requests to the backend.
  * Reads BACKEND_URL at request time (not build time) so Railway env var works.
  * Forwards Authorization header so admin auth passes through.
  */
@@ -34,7 +34,14 @@ async function proxy(req: NextRequest, { params }: { params: { path: string[] } 
     body = await req.text();
   }
 
-  const resp = await fetch(targetUrl, { method: req.method, headers, body });
+  const resp = await fetch(targetUrl, { method: req.method, headers, body, redirect: "manual" });
+
+  // Pass through redirects (e.g. Shopify OAuth) directly to the browser
+  if (resp.status >= 300 && resp.status < 400) {
+    const location = resp.headers.get("location");
+    if (location) return NextResponse.redirect(location, { status: resp.status });
+  }
+
   const data = await resp.json().catch(() => null);
   return NextResponse.json(data, { status: resp.status });
 }

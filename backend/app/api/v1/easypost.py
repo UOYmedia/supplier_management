@@ -1,10 +1,12 @@
 """
 EasyPost shipping endpoints.
 
-POST /orders/{order_id}/easypost/rates  — create shipment, return all carrier rates
-POST /orders/{order_id}/easypost/buy    — buy a rate, save ShippingLabel
+POST /orders/{order_id}/easypost/rates  -- create shipment, return all carrier rates
+POST /orders/{order_id}/easypost/buy    -- buy a rate, save ShippingLabel
+GET  /orders/{order_id}/events          -- order event log (EasyPost debug history)
 """
 import base64
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -13,7 +15,7 @@ from decimal import Decimal
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus
+from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderEvent
 from app.models.supplier import Supplier
 from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
@@ -71,10 +73,45 @@ class BuyRequest(BaseModel):
     line_item_ids: list[int] = []
 
 
+class OrderEventOut(BaseModel):
+    id: int
+    event_type: str
+    level: str
+    message: str
+    payload: dict | None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 def _require_easypost() -> EasyPostClient:
     if not settings.EASYPOST_API_KEY:
         raise HTTPException(503, "EasyPost API key not configured")
     return EasyPostClient(settings.EASYPOST_API_KEY)
+
+
+async def _log(db: AsyncSession, order_id: int, event_type: str, message: str,
+               level: str = "info", payload: dict | None = None):
+    ev = OrderEvent(
+        order_id=order_id,
+        event_type=event_type,
+        level=level,
+        message=message,
+        payload=payload,
+    )
+    db.add(ev)
+
+
+@router.get("/{order_id}/events", response_model=list[OrderEventOut])
+async def list_order_events(order_id: int, db: AsyncSession = Depends(get_db)):
+    """Return order event log (EasyPost requests, errors, status changes)."""
+    result = await db.execute(
+        select(OrderEvent)
+        .where(OrderEvent.order_id == order_id)
+        .order_by(OrderEvent.created_at.desc())
+    )
+    return result.scalars().all()
 
 
 @router.post("/{order_id}/easypost/rates", response_model=RatesResponse)
@@ -94,7 +131,7 @@ async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depend
         raise HTTPException(400, "Order has no shipping address")
 
     if not supplier.street1:
-        raise HTTPException(400, "Supplier address is incomplete — please update the supplier profile")
+        raise HTTPException(400, "Supplier address is incomplete -- please update the supplier profile")
 
     from_addr = supplier_to_ep_address(supplier)
     to_addr = shipping_addr_to_ep(order.shipping_address)
@@ -112,8 +149,14 @@ async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depend
     try:
         shipment = await ep.create_shipment(to_addr, from_addr, parcel, carrier_accounts)
     except EasyPostError as e:
+        await _log(db, order_id, "easypost_rates", str(e), level="error",
+                   payload={"from": from_addr, "to": to_addr, "parcel": parcel, "http_status": e.status})
+        await db.commit()
         raise HTTPException(e.status, str(e))
     except Exception as e:
+        await _log(db, order_id, "easypost_rates", str(e), level="error",
+                   payload={"from": from_addr, "to": to_addr, "parcel": parcel})
+        await db.commit()
         raise HTTPException(500, f"Unexpected error: {e}")
 
     all_rates: list[dict] = shipment.get("rates", [])
@@ -134,6 +177,17 @@ async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depend
     ]
     rates_out.sort(key=lambda r: float(r.rate))
 
+    await _log(db, order_id, "easypost_rates",
+               f"Shipment {shipment['id']} created -- {len(rates_out)} rates returned",
+               payload={
+                   "shipment_id": shipment["id"],
+                   "from": from_addr,
+                   "to": to_addr,
+                   "parcel": parcel,
+                   "rate_count": len(rates_out),
+               })
+    await db.commit()
+
     debug = DebugInfo(
         from_address=from_addr,
         to_address=to_addr,
@@ -147,7 +201,8 @@ async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depend
 
 @router.post("/{order_id}/easypost/buy", response_model=ShippingLabelOut, status_code=201)
 async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(get_db)):
-    """Purchase a rate and save the ShippingLabel. Line items are moved to pending."""
+    """Purchase a rate and save the ShippingLabel. Idempotent: returns existing label if
+    this shipment_id was already purchased (prevents double-charging on retry)."""
     ep = _require_easypost()
 
     order = await db.get(Order, order_id)
@@ -158,6 +213,20 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     if not supplier:
         raise HTTPException(404, "Supplier not found")
 
+    # Idempotency: if this shipment was already purchased, return the existing label
+    existing_label_res = await db.execute(
+        select(ShippingLabel).where(ShippingLabel.shipment_id == body.shipment_id)
+    )
+    existing_label = existing_label_res.scalar_one_or_none()
+    if existing_label:
+        await _log(db, order_id, "easypost_buy",
+                   f"Duplicate buy attempt for shipment {body.shipment_id} -- returning existing label {existing_label.id}",
+                   level="warn", payload={"shipment_id": body.shipment_id, "label_id": existing_label.id})
+        await db.commit()
+        await db.refresh(existing_label)
+        return existing_label
+
+    # Determine which line items to attach
     li_ids = body.line_item_ids
     if not li_ids:
         auto = await db.execute(
@@ -169,14 +238,19 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         )
         li_ids = [li.id for li in auto.scalars().all()]
 
+    # Guard: line items already have a different label
     if li_ids:
-        existing = await db.execute(
+        already_labelled = await db.execute(
             select(OrderLineItem).where(
                 OrderLineItem.id.in_(li_ids),
                 OrderLineItem.label_id.isnot(None),
             )
         )
-        if existing.scalars().first():
+        if already_labelled.scalars().first():
+            await _log(db, order_id, "easypost_buy",
+                       "Buy blocked -- one or more line items already have a label",
+                       level="warn", payload={"shipment_id": body.shipment_id, "li_ids": li_ids})
+            await db.commit()
             raise HTTPException(422, "Label already exists for these items")
 
     try:
@@ -184,8 +258,21 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     except EasyPostError as e:
         msg = str(e)
         if "postage" in msg.lower() and "already" in msg.lower():
+            await _log(db, order_id, "easypost_buy",
+                       f"EasyPost: postage already exists for shipment {body.shipment_id}",
+                       level="warn", payload={"shipment_id": body.shipment_id, "easypost_error": msg})
+            await db.commit()
             raise HTTPException(409, "Label already purchased for this shipment. Please create new rates to buy a different label.")
+        await _log(db, order_id, "easypost_buy", msg, level="error",
+                   payload={"shipment_id": body.shipment_id, "rate_id": body.rate_id,
+                            "http_status": e.status, "easypost_error": msg})
+        await db.commit()
         raise HTTPException(e.status, msg)
+    except Exception as e:
+        await _log(db, order_id, "easypost_buy", str(e), level="error",
+                   payload={"shipment_id": body.shipment_id, "rate_id": body.rate_id})
+        await db.commit()
+        raise HTTPException(500, f"Unexpected error: {e}")
 
     selected_rate = bought.get("selected_rate", {})
     tracking = bought.get("tracking_code") or selected_rate.get("tracking_code")
@@ -252,6 +339,19 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
                 li.fulfill_status = FulfillStatus.pending
 
     await _recalculate_order_status(order, db)
+
+    await _log(db, order_id, "easypost_buy",
+               f"Label purchased -- tracking {tracking}, carrier {selected_rate.get('carrier')}, cost ${cost_str}",
+               payload={
+                   "shipment_id": body.shipment_id,
+                   "label_id": label.id,
+                   "tracking_number": tracking,
+                   "carrier": selected_rate.get("carrier"),
+                   "service": selected_rate.get("service"),
+                   "cost": cost_str,
+                   "line_item_ids": li_ids,
+               })
+
     await db.commit()
     await db.refresh(label)
     return label

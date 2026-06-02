@@ -1,0 +1,130 @@
+# EasyPost Shipping API Tests
+# Use with VS Code REST Client extension
+# Env: railway (production) | local
+#
+# Set active env: View > Command Palette > "Rest Client: Switch Environment"
+
+### Variables - Railway Production
+@baseUrl = https://frontend-production-ecfc.up.railway.app/api/v1
+# NOTE: frontend proxies /api/v1/* -> backend BACKEND_URL
+# To hit backend directly, set baseUrl = https://<backend>.up.railway.app/api/v1
+
+@orderId = 14
+@supplierId = 1
+
+###
+# 1. Login to get token
+# POST {{baseUrl}}/auth/login
+# Content-Type: application/json
+
+# {"username": "admin@example.com", "password": "changeme"}
+
+### Store token from login response into @authToken manually:
+@authToken = Bearer <PASTE_TOKEN_HERE>
+
+
+###
+# 2. Get EasyPost rates for an order
+# Creates a new EasyPost shipment and returns available carrier rates.
+POST {{baseUrl}}/orders/{{orderId}}/easypost/rates
+Content-Type: application/json
+Authorization: {{authToken}}
+
+{
+  "supplier_id": {{supplierId}},
+  "line_item_ids": [],
+  "parcel": {
+    "weight": 16,
+    "length": 10,
+    "width": 8,
+    "height": 4
+  }
+}
+
+### Store shipment_id and rate_id from response above:
+@shipmentId = shp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+@rateId     = rate_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+
+###
+# 3. Buy a rate (purchase label)
+# Uses shipment_id + rate_id from step 2.
+# EasyPost shipments can only be bought ONCE -- call /rates again if you need a new label.
+# If shipment_id was already bought, this returns the existing label (idempotent).
+POST {{baseUrl}}/orders/{{orderId}}/easypost/buy
+Content-Type: application/json
+Authorization: {{authToken}}
+
+{
+  "supplier_id": {{supplierId}},
+  "shipment_id": "{{shipmentId}}",
+  "rate_id": "{{rateId}}",
+  "line_item_ids": []
+}
+
+
+###
+# 4. Get order detail (check label_id on line items)
+GET {{baseUrl}}/orders/{{orderId}}
+Authorization: {{authToken}}
+
+
+###
+# 5. Get order event log (EasyPost debug history)
+GET {{baseUrl}}/orders/{{orderId}}/events
+Authorization: {{authToken}}
+
+
+###
+# -- Error cases -------------------------------------------------------------
+
+###
+# 6a. Buy same shipment twice
+# -> If shipment_id already in DB: 200 OK (returns existing label, idempotent)
+# -> If EasyPost already has postage but not in DB: 409 Conflict
+POST {{baseUrl}}/orders/{{orderId}}/easypost/buy
+Content-Type: application/json
+Authorization: {{authToken}}
+
+{
+  "supplier_id": {{supplierId}},
+  "shipment_id": "{{shipmentId}}",
+  "rate_id": "{{rateId}}",
+  "line_item_ids": []
+}
+
+
+###
+# 6b. Order with no shipping address -> 400
+POST {{baseUrl}}/orders/99999/easypost/rates
+Content-Type: application/json
+Authorization: {{authToken}}
+
+{
+  "supplier_id": {{supplierId}},
+  "line_item_ids": [],
+  "parcel": {
+    "weight": 16,
+    "length": 10,
+    "width": 8,
+    "height": 4
+  }
+}
+
+
+###
+# 6c. Invalid order -> 404
+POST {{baseUrl}}/orders/0/easypost/rates
+Content-Type: application/json
+Authorization: {{authToken}}
+
+{
+  "supplier_id": {{supplierId}},
+  "line_item_ids": [],
+  "parcel": {
+    "weight": 16,
+    "length": 10,
+    "width": 8,
+    "height": 4
+  }
+}

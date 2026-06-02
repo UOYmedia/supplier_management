@@ -91,6 +91,10 @@ class EasyPostClient:
         """Purchase a rate. Returns the bought shipment with label URL + tracking."""
         return await self._post(f"/shipments/{shipment_id}/buy", {"rate": {"id": rate_id}})
 
+    async def get_shipment(self, shipment_id: str) -> dict:
+        """Retrieve an existing shipment (including already-bought ones)."""
+        return await self._get(f"/shipments/{shipment_id}")
+
     async def regenerate_label(
         self, shipment_id: str, label_size: str = "4x6"
     ) -> tuple[str | None, str | None]:

@@ -258,16 +258,26 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     except EasyPostError as e:
         msg = str(e)
         if "postage" in msg.lower() and "already" in msg.lower():
+            # EasyPost already has a label for this shipment (bought outside our system
+            # or in a previous attempt that didn't save to DB). Fetch the shipment so
+            # we can save the label and return it instead of erroring.
             await _log(db, order_id, "easypost_buy",
-                       f"EasyPost: postage already exists for shipment {body.shipment_id}",
+                       f"EasyPost: postage already exists for {body.shipment_id} -- fetching existing shipment",
                        level="warn", payload={"shipment_id": body.shipment_id, "easypost_error": msg})
+            try:
+                bought = await ep.get_shipment(body.shipment_id)
+            except Exception as fetch_err:
+                await _log(db, order_id, "easypost_buy",
+                           f"Failed to fetch existing shipment: {fetch_err}",
+                           level="error", payload={"shipment_id": body.shipment_id})
+                await db.commit()
+                raise HTTPException(409, "Label already purchased for this shipment but could not retrieve it. Refresh rates to start fresh.")
+        else:
+            await _log(db, order_id, "easypost_buy", msg, level="error",
+                       payload={"shipment_id": body.shipment_id, "rate_id": body.rate_id,
+                                "http_status": e.status, "easypost_error": msg})
             await db.commit()
-            raise HTTPException(409, "Label already purchased for this shipment. Please create new rates to buy a different label.")
-        await _log(db, order_id, "easypost_buy", msg, level="error",
-                   payload={"shipment_id": body.shipment_id, "rate_id": body.rate_id,
-                            "http_status": e.status, "easypost_error": msg})
-        await db.commit()
-        raise HTTPException(e.status, msg)
+            raise HTTPException(e.status, msg)
     except Exception as e:
         await _log(db, order_id, "easypost_buy", str(e), level="error",
                    payload={"shipment_id": body.shipment_id, "rate_id": body.rate_id})
@@ -288,15 +298,16 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         if li_obj:
             pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
 
-    # fetch_label_pdf_b64 uses whatever URL the shipment has (may be PDF, not PNG).
-    # If it returns None, or the shipment was created with PDF format so label_png_url
-    # is absent, explicitly regenerate as PNG via the /label endpoint.
+    # fetch_label_pdf_b64 uses label_png_url only. Shipments created with PDF format
+    # won't have label_png_url, so it returns None. Always regenerate as PNG via the
+    # /label endpoint so we get actual PNG bytes and a stable PNG URL. The PNG URL
+    # replaces any PDF URL so the stored label_url is always a downloadable PNG/label.
     carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
-    if not carrier_png_b64:
-        regen_png, regen_url = await ep.regenerate_label(bought.get("id") or body.shipment_id)
+    regen_png, regen_url = await ep.regenerate_label(bought.get("id") or body.shipment_id)
+    if regen_png:
         carrier_png_b64 = regen_png
-        if regen_url and not label_url:
-            label_url = regen_url
+    if regen_url:
+        label_url = regen_url
 
     def _ship_name(addr: dict | None) -> str | None:
         if not addr:

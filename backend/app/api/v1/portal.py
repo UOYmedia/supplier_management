@@ -338,11 +338,33 @@ async def portal_mark_label_printed(
     supplier: Supplier = Depends(get_current_supplier),
     db: AsyncSession = Depends(get_db),
 ):
+    """Supplier prints the label → move linked line items to shipped and recalculate order status."""
     label = await db.get(ShippingLabel, label_id)
     if not label or label.supplier_id != supplier.id:
         raise HTTPException(404, "Label not found")
-    from app.api.v1.orders import mark_label_printed
-    return await mark_label_printed(order_id=order_id, label_id=label_id, db=db)
+
+    now = datetime.now(timezone.utc)
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.label_id == label_id,
+            OrderLineItem.order_id == order_id,
+        )
+    )
+    line_items = li_res.scalars().all()
+    for li in line_items:
+        if li.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+            li.fulfill_status = FulfillStatus.shipped
+            li.fulfilled_at = now
+            if label.tracking_number and not li.tracking_number:
+                li.tracking_number = label.tracking_number
+
+    if line_items:
+        order = await db.get(Order, order_id)
+        if order:
+            await _recalculate_order_status(order, db)
+
+    await db.commit()
+    return {"status": "ok", "label_id": label_id, "items_shipped": len(line_items)}
 
 
 @router.get("/orders/{order_id}/parcel-estimate")

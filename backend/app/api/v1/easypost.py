@@ -299,15 +299,19 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
             pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
 
     # fetch_label_pdf_b64 uses label_png_url only. Shipments created with PDF format
-    # won't have label_png_url, so it returns None. Always regenerate as PNG via the
-    # /label endpoint so we get actual PNG bytes and a stable PNG URL. The PNG URL
-    # replaces any PDF URL so the stored label_url is always a downloadable PNG/label.
+    # won't have label_png_url, so it returns None. Try to regenerate as PNG via the
+    # /label endpoint so we get actual PNG bytes and a stable PNG URL.
     carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
-    regen_png, regen_url = await ep.regenerate_label(bought.get("id") or body.shipment_id)
-    if regen_png:
-        carrier_png_b64 = regen_png
-    if regen_url:
-        label_url = regen_url
+    try:
+        regen_png, regen_url = await ep.regenerate_label(bought.get("id") or body.shipment_id)
+        if regen_png:
+            carrier_png_b64 = regen_png
+        if regen_url:
+            label_url = regen_url
+    except Exception as regen_err:
+        await _log(db, order_id, "easypost_buy",
+                   f"Label PNG regeneration failed (non-fatal): {regen_err}",
+                   level="warn", payload={"shipment_id": body.shipment_id})
 
     def _ship_name(addr: dict | None) -> str | None:
         if not addr:

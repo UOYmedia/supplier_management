@@ -105,7 +105,7 @@ export default function PortalOrdersPage() {
   const printableLabels = (() => {
     const map = new Map<number, number>(); // label_id -> order_id
     for (const i of items) {
-      if (i.label_id && i.label_has_pdf && i.supplier_status === "unfulfilled") {
+      if (i.label_id && (i.label_has_pdf || i.label_url) && i.supplier_status === "unfulfilled") {
         map.set(i.label_id, i.order_id);
       }
     }

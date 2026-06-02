@@ -474,6 +474,104 @@ async def regenerate_label(
     return label
 
 
+@router.post("/{order_id}/sync-tracking")
+async def sync_tracking_to_shopify(
+    order_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Push tracking numbers for shipped/pending line items to Shopify.
+
+    Uses the Fulfillment Orders API: fetches open fulfillment orders for the
+    Shopify order, then creates a fulfillment with the tracking info from the
+    first label found on the order's line items.
+    """
+    order = await _get_or_404(order_id, db)
+    if order.marketplace != "shopify":
+        raise HTTPException(400, "Only Shopify orders support tracking sync")
+    if not order.external_order_id:
+        raise HTTPException(400, "Order has no Shopify order ID")
+    if not order.connection_id:
+        raise HTTPException(400, "Order has no marketplace connection")
+
+    from app.models.marketplace import MarketplaceConnection
+    conn = await db.get(MarketplaceConnection, order.connection_id)
+    if not conn:
+        raise HTTPException(404, "Marketplace connection not found")
+    creds = conn.credentials or {}
+    access_token = creds.get("access_token")
+    shop_url = conn.shop_url or creds.get("shop_url")
+    if not access_token or not shop_url:
+        raise HTTPException(400, "Shopify connection credentials are incomplete")
+
+    # Collect labels linked to this order's line items
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.order_id == order_id,
+            OrderLineItem.label_id.isnot(None),
+        )
+    )
+    lis = li_res.scalars().all()
+    label_ids = list({li.label_id for li in lis if li.label_id})
+    if not label_ids:
+        raise HTTPException(400, "No labels found on this order — buy a label first")
+
+    labels_map: dict[int, ShippingLabel] = {}
+    for lid in label_ids:
+        lbl = await db.get(ShippingLabel, lid)
+        if lbl:
+            labels_map[lid] = lbl
+
+    # Pick the most relevant label (prefer one with tracking)
+    tracking_label: ShippingLabel | None = next(
+        (l for l in labels_map.values() if l.tracking_number), None
+    )
+    if not tracking_label:
+        raise HTTPException(400, "No label with a tracking number found")
+
+    tracking_number = tracking_label.tracking_number
+    carrier = tracking_label.carrier or "USPS"
+
+    from app.integrations.shopify.client import ShopifyClient
+    client = ShopifyClient(shop_url, access_token)
+
+    fulfillment_orders = await client.get_fulfillment_orders(order.external_order_id)
+    open_fos = [fo for fo in fulfillment_orders if fo.get("status") in ("open", "in_progress")]
+    if not open_fos:
+        raise HTTPException(400, "No open fulfillment orders found on Shopify — order may already be fulfilled")
+
+    synced = []
+    errors = []
+    for fo in open_fos:
+        fo_id = fo["id"]
+        try:
+            result = await client.post(
+                "/fulfillments.json",
+                {
+                    "fulfillment": {
+                        "line_items_by_fulfillment_order": [
+                            {"fulfillment_order_id": fo_id}
+                        ],
+                        "tracking_info": {
+                            "number": tracking_number,
+                            "company": carrier,
+                        },
+                        "notify_customer": True,
+                    }
+                },
+            )
+            synced.append({
+                "fulfillment_order_id": fo_id,
+                "fulfillment_id": result.get("fulfillment", {}).get("id"),
+            })
+        except Exception as e:
+            errors.append({"fulfillment_order_id": fo_id, "error": str(e)})
+
+    if not synced and errors:
+        raise HTTPException(502, f"Shopify sync failed: {errors[0]['error']}")
+
+    return {"synced": synced, "errors": errors, "tracking_number": tracking_number}
+
+
 @router.get("/{order_id}/parcel-estimate")
 async def estimate_parcel(
     order_id: int,

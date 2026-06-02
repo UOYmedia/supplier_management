@@ -706,17 +706,15 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   };
 
   const handleSubmit = () => {
-    if (!supplierId) return;
+    if (!supplierId || !selectedSpId) return;
     const payload: any = {
       supplier_id: parseInt(supplierId),
+      supplier_product_id: selectedSpId,
+      units: Math.max(1, parseInt(units) || 1),
       base_cost: parseFloat(baseCost),
       create_product_supplier: createPs,
       is_preferred: isPreferred,
     };
-    if (selectedSpId) {
-      payload.supplier_product_id = selectedSpId;
-      payload.units = Math.max(1, parseInt(units) || 1);
-    }
     onAssign(payload);
   };
 
@@ -749,7 +747,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
 
           {supplierId && (
             <div>
-              <label className="label">Catalog Item {catalog.length > 0 && <span className="text-gray-400 font-normal">({catalog.length} available)</span>}</label>
+              <label className="label">Catalog Item * {catalog.length > 0 && <span className="text-gray-400 font-normal">({catalog.length} available)</span>}</label>
               {selectedSp ? (
                 <div className="flex items-center justify-between gap-2 p-2 rounded-lg border border-blue-200 bg-blue-50">
                   <div className="min-w-0">
@@ -759,7 +757,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
                   <button className="text-xs text-gray-500 hover:text-red-500" onClick={() => setSelectedSpId(null)}>Change</button>
                 </div>
               ) : catalog.length === 0 ? (
-                <p className="text-xs text-gray-400">Supplier has no catalog items. Enter base cost manually below.</p>
+                <p className="text-xs text-amber-600 font-medium">This supplier has no catalog items. You must create catalog items for this supplier first before assigning.</p>
               ) : (
                 <>
                   <input
@@ -783,7 +781,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
                       </button>
                     ))}
                   </div>
-                  <p className="text-xs text-gray-400 mt-1">Picking a catalog item maps this variant for future orders and creates fulfillment items.</p>
+                  <p className="text-xs text-gray-400 mt-1">Required — select a catalog item to assign this order to the supplier.</p>
                 </>
               )}
             </div>
@@ -831,7 +829,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
           <button
             className="btn-primary flex items-center gap-1.5"
             onClick={handleSubmit}
-            disabled={!supplierId || loading}
+            disabled={!supplierId || !selectedSpId || loading}
           >
             <CheckCircle2 className="w-4 h-4" />
             {loading ? "Assigning…" : "Assign Supplier"}
@@ -1066,7 +1064,7 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
               </div>
             )}
             <div className="flex justify-between gap-2 mt-5">
-              <button className="btn-secondary" onClick={() => setStep("parcel")}>← Back</button>
+              <button className="btn-secondary" onClick={() => setStep("parcel")}← Back</button>
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 <button
@@ -1284,7 +1282,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
               </div>
             )}
             <div className="flex justify-between gap-2 mt-5">
-              <button className="btn-secondary" onClick={() => setStep("parcel")}>← Back</button>
+              <button className="btn-secondary" onClick={() => setStep("parcel")}← Back</button>
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 <button

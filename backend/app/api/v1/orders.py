@@ -195,35 +195,75 @@ async def assign_supplier_to_line_item(
     if not supplier:
         raise HTTPException(404, "Supplier not found")
 
-    li.supplier_id = body.supplier_id
-    if body.base_cost is not None:
-        li.base_cost = body.base_cost
+    # Validate supplier_product_id belongs to this supplier
+    sp = await db.get(SupplierProduct, body.supplier_product_id)
+    if not sp or sp.supplier_id != body.supplier_id:
+        raise HTTPException(400, "Catalog item not found for this supplier")
 
-    # Create ProductSupplier relationship for future auto-assignment
-    if li.product_id and body.create_product_supplier:
-        ps_result = await db.execute(
-            select(ProductSupplier).where(
-                ProductSupplier.product_id == li.product_id,
-                ProductSupplier.supplier_id == body.supplier_id,
+    li.supplier_id = body.supplier_id
+    effective_cost = body.base_cost if body.base_cost is not None else (sp.unit_price * body.units)
+    li.base_cost = effective_cost
+
+    # Upsert ProductComponent to map product → supplier catalog item
+    if li.product_id:
+        comp_res = await db.execute(
+            select(ProductComponent).where(
+                ProductComponent.product_id == li.product_id,
+                ProductComponent.supplier_product_id == sp.id,
             )
         )
-        ps = ps_result.scalar_one_or_none()
-        if not ps:
-            ps = ProductSupplier(
+        comp = comp_res.scalar_one_or_none()
+        if not comp:
+            comp = ProductComponent(
                 product_id=li.product_id,
-                supplier_id=body.supplier_id,
-                cost=body.base_cost if body.base_cost is not None else li.base_cost,
-                is_preferred=body.is_preferred,
+                supplier_product_id=sp.id,
+                quantity=body.units,
             )
-            db.add(ps)
-        elif body.is_preferred:
-            # If setting this as preferred, clear others
-            all_ps = await db.execute(
-                select(ProductSupplier).where(ProductSupplier.product_id == li.product_id)
+            db.add(comp)
+        else:
+            comp.quantity = body.units
+
+        # Create/upsert OrderFulfillmentItem
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(
+                OrderFulfillmentItem.order_line_item_id == li.id,
+                OrderFulfillmentItem.supplier_product_id == sp.id,
             )
-            for other in all_ps.scalars().all():
-                other.is_preferred = False
-            ps.is_preferred = True
+        )
+        fi = fi_res.scalar_one_or_none()
+        if not fi:
+            db.add(OrderFulfillmentItem(
+                order_line_item_id=li.id,
+                supplier_product_id=sp.id,
+                quantity=body.units * li.quantity,
+            ))
+        else:
+            fi.quantity = body.units * li.quantity
+
+        # Create ProductSupplier relationship for future auto-assignment
+        if body.create_product_supplier:
+            ps_result = await db.execute(
+                select(ProductSupplier).where(
+                    ProductSupplier.product_id == li.product_id,
+                    ProductSupplier.supplier_id == body.supplier_id,
+                )
+            )
+            ps_link = ps_result.scalar_one_or_none()
+            if not ps_link:
+                ps_link = ProductSupplier(
+                    product_id=li.product_id,
+                    supplier_id=body.supplier_id,
+                    cost=effective_cost,
+                    is_preferred=body.is_preferred,
+                )
+                db.add(ps_link)
+            elif body.is_preferred:
+                all_ps = await db.execute(
+                    select(ProductSupplier).where(ProductSupplier.product_id == li.product_id)
+                )
+                for other in all_ps.scalars().all():
+                    other.is_preferred = False
+                ps_link.is_preferred = True
 
     await db.commit()
     await db.refresh(li)

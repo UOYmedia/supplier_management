@@ -91,10 +91,10 @@ class OrderOut(BaseModel):
 
 class AssignSupplierBody(BaseModel):
     supplier_id: int
+    supplier_product_id: int
     base_cost: Decimal | None = None
     create_product_supplier: bool = True
     is_preferred: bool = False
-    supplier_product_id: int | None = None
     units: int = 1
 
 

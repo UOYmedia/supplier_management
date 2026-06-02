@@ -99,8 +99,9 @@ class ShopifySync(MarketplaceSyncer):
                             price = float(variant.get("price") or 0)
                             weight = float(variant.get("weight") or 0)
                             title = sp.get("title", "")
-                            if len(sp.get("variants", [])) > 1:
-                                title = f"{title} - {variant.get('title', '')}"
+                            variant_title = variant.get("title") or ""
+                            if len(sp.get("variants", [])) > 1 and variant_title and variant_title != "Default Title":
+                                title = f"{title} - {variant_title}"
 
                             if not product:
                                 product = Product(
@@ -249,6 +250,7 @@ class ShopifySync(MarketplaceSyncer):
                 connection_id=self.connection.id,
                 marketplace="shopify",
                 external_order_id=ext_id,
+                order_name=od.get("name"),
                 buyer_name=(
                     (od.get("customer") or {}).get("first_name", "")
                     + " "
@@ -275,21 +277,29 @@ class ShopifySync(MarketplaceSyncer):
             # Build map: shopify line_item_id → OrderLineItem for location assignment
             li_by_shopify_id: dict[str, OrderLineItem] = {}
             for item in od.get("line_items", []):
+                item_sku = item.get("sku") or ""
+                # For variants without a SKU, fall back to the auto-generated SHOPIFY-pid-vid key
+                lookup_sku = item_sku or f"SHOPIFY-{item.get('product_id')}-{item.get('variant_id')}"
                 listing_res = await db.execute(
                     select(MarketplaceListing).where(
-                        MarketplaceListing.marketplace_sku == item.get("sku"),
+                        MarketplaceListing.marketplace_sku == lookup_sku,
                         MarketplaceListing.connection_id == self.connection.id,
                     )
                 )
                 listing_obj = listing_res.scalar_one_or_none()
                 shopify_li_id = str(item.get("id"))
+                # Title: include variant option unless it's the placeholder "Default Title"
+                item_title = item.get("title", "") or ""
+                variant_title = item.get("variant_title") or ""
+                if variant_title and variant_title != "Default Title":
+                    item_title = f"{item_title} - {variant_title}"
                 li = OrderLineItem(
                     order_id=order.id,
                     product_id=listing_obj.product_id if listing_obj else None,
                     listing_id=listing_obj.id if listing_obj else None,
                     external_line_item_id=shopify_li_id,
-                    product_name=item.get("title", ""),
-                    sku=item.get("sku"),
+                    product_name=item_title,
+                    sku=lookup_sku,
                     quantity=item.get("quantity", 1),
                     price=float(item.get("price", 0)),
                 )

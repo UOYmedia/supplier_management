@@ -288,7 +288,15 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         if li_obj:
             pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
 
+    # fetch_label_pdf_b64 uses whatever URL the shipment has (may be PDF, not PNG).
+    # If it returns None, or the shipment was created with PDF format so label_png_url
+    # is absent, explicitly regenerate as PNG via the /label endpoint.
     carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
+    if not carrier_png_b64:
+        regen_png, regen_url = await ep.regenerate_label(bought.get("id") or body.shipment_id)
+        carrier_png_b64 = regen_png
+        if regen_url and not label_url:
+            label_url = regen_url
 
     def _ship_name(addr: dict | None) -> str | None:
         if not addr:

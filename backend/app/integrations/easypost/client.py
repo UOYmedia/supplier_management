@@ -51,9 +51,12 @@ class EasyPostClient:
 
         Using PNG avoids EasyPost's PDF formatting quirks (letter-size wrappers,
         misaligned content). Callers build the final PDF with build_label_from_png.
+        Only uses label_png_url -- if the shipment was created with PDF format,
+        label_png_url won't be present and we return None so callers can call
+        regenerate_label() to explicitly request a PNG conversion.
         """
         pl = shipment.get("postage_label") or {}
-        png_url = pl.get("label_png_url") or pl.get("label_url")
+        png_url = pl.get("label_png_url")
         if not png_url:
             return None
         try:

@@ -132,7 +132,6 @@ async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depend
         )
         for r in shown_rates
     ]
-    # Sort cheapest first
     rates_out.sort(key=lambda r: float(r.rate))
 
     debug = DebugInfo(
@@ -159,20 +158,6 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     if not supplier:
         raise HTTPException(404, "Supplier not found")
 
-    try:
-        bought = await ep.buy_shipment(body.shipment_id, body.rate_id)
-    except EasyPostError as e:
-        raise HTTPException(e.status, str(e))
-
-    selected_rate = bought.get("selected_rate", {})
-    tracking = bought.get("tracking_code") or selected_rate.get("tracking_code")
-    label_url = (
-        bought.get("postage_label", {}).get("label_url")
-        or bought.get("postage_label", {}).get("label_pdf_url")
-    )
-    cost_str = selected_rate.get("rate", "0")
-
-    # Determine which line items to attach (needed for catalog lookup)
     li_ids = body.line_item_ids
     if not li_ids:
         auto = await db.execute(
@@ -184,14 +169,38 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         )
         li_ids = [li.id for li in auto.scalars().all()]
 
-    # Resolve catalog names (ProductComponent → SupplierProduct)
+    if li_ids:
+        existing = await db.execute(
+            select(OrderLineItem).where(
+                OrderLineItem.id.in_(li_ids),
+                OrderLineItem.label_id.isnot(None),
+            )
+        )
+        if existing.scalars().first():
+            raise HTTPException(422, "Label already exists for these items")
+
+    try:
+        bought = await ep.buy_shipment(body.shipment_id, body.rate_id)
+    except EasyPostError as e:
+        msg = str(e)
+        if "postage" in msg.lower() and "already" in msg.lower():
+            raise HTTPException(409, "Label already purchased for this shipment. Please create new rates to buy a different label.")
+        raise HTTPException(e.status, msg)
+
+    selected_rate = bought.get("selected_rate", {})
+    tracking = bought.get("tracking_code") or selected_rate.get("tracking_code")
+    label_url = (
+        bought.get("postage_label", {}).get("label_url")
+        or bought.get("postage_label", {}).get("label_pdf_url")
+    )
+    cost_str = selected_rate.get("rate", "0")
+
     pack_items = []
     for li_id in li_ids:
         li_obj = await db.get(OrderLineItem, li_id)
         if li_obj:
             pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
 
-    # Download carrier PNG and build combined PDF with catalog overlay
     carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
 
     def _ship_name(addr: dict | None) -> str | None:

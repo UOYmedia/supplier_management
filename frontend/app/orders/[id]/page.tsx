@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, suppliersApi, easypostApi, amazonShippingApi } from "@/lib/api";
 import { useParams, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag, ExternalLink, Download, Printer, Pencil, Upload } from "lucide-react";
+import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag, ExternalLink, Download, Printer, Pencil, Upload, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { OrderStatusBadge } from "../order-status-badge";
 
@@ -59,6 +59,15 @@ export default function OrderDetailPage() {
     onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
 
+  const syncTrackingMut = useMutation({
+    mutationFn: () => ordersApi.syncTracking(oid),
+    onSuccess: (res: any) => {
+      const n = res.synced?.length ?? 0;
+      toast.success(n > 0 ? `Synced ${n} fulfillment(s) to Shopify` : "No new fulfillments to sync");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Shopify sync failed"),
+  });
+
   const markGroupShipped = (sid: number | null, items: any[]) => {
     if (items.length === 0) return;
     const tracking = window.prompt(
@@ -97,6 +106,7 @@ export default function OrderDetailPage() {
   const addr = order.shipping_address || {};
   const supplierGroups = groupBySupplier(order.line_items);
   const isAmazonOrder = order.marketplace === "amazon" && !!order.external_order_id;
+  const isShopifyOrder = order.marketplace === "shopify" && !!order.external_order_id;
 
   const unmappedCount = order.line_items.filter((li: any) => !li.supplier_id).length;
   const supplierIds = order.line_items
@@ -157,7 +167,20 @@ export default function OrderDetailPage() {
             )}
           </div>
         </div>
-        <OrderStatusBadge status={order.status} />
+        <div className="flex items-center gap-2">
+          {isShopifyOrder && (
+            <button
+              className="btn-secondary text-xs"
+              onClick={() => syncTrackingMut.mutate()}
+              disabled={syncTrackingMut.isPending}
+              title="Push tracking number to Shopify"
+            >
+              {syncTrackingMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              Sync to Shopify
+            </button>
+          )}
+          <OrderStatusBadge status={order.status} />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">

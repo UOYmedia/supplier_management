@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     SHOPIFY_API_SECRET: str = ""
     BACKEND_URL: str = "http://localhost:8000"
 
+    EASYPOST_API_KEY: str = ""
+    EASYPOST_CARRIER_ACCOUNT_IDS: str = ""
+
     FRONTEND_URL: str = "http://localhost:3000"
 
 

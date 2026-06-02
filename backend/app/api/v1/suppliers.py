@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
 from app.models.supplier import Supplier, Invoice, InvoiceLineItem, SupplierProduct
-from app.models.product import ProductSupplier
+from app.models.product import ProductSupplier, ProductComponent
 from app.models.order import Order, OrderLineItem, OrderFulfillmentItem, FulfillStatus, ShippingLabel
 from app.schemas.supplier import (
     SupplierCreate, SupplierUpdate, SupplierOut, SupplierListOut,
@@ -461,17 +461,44 @@ async def supplier_orders(
                                     else (li.fulfilled_at.isoformat() if li.fulfilled_at else None)),
                 })
         else:
-            out.append({
-                **base,
-                "item_key": f"li_{li.id}",
-                "product_name": li.product_name,
-                "sku": li.sku,
-                "image_url": None,
-                "quantity": li.quantity,
-                "fulfill_status": li.fulfill_status,
-                "tracking_number": li.tracking_number,
-                "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
-            })
+            resolved = False
+            if li.product_id:
+                comp_res = await db.execute(
+                    select(ProductComponent)
+                    .join(SupplierProduct, ProductComponent.supplier_product_id == SupplierProduct.id)
+                    .where(
+                        ProductComponent.product_id == li.product_id,
+                        SupplierProduct.supplier_id == supplier_id,
+                    )
+                )
+                comps = list(comp_res.scalars().all())
+                if comps:
+                    for comp in comps:
+                        sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                        out.append({
+                            **base,
+                            "item_key": f"comp_{comp.id}_{li.id}",
+                            "product_name": sp.name if sp else li.product_name,
+                            "sku": sp.sku if sp else li.sku,
+                            "image_url": sp.image_url if sp else None,
+                            "quantity": comp.quantity * li.quantity,
+                            "fulfill_status": li.fulfill_status,
+                            "tracking_number": li.tracking_number,
+                            "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                        })
+                    resolved = True
+            if not resolved:
+                out.append({
+                    **base,
+                    "item_key": f"li_{li.id}",
+                    "product_name": li.product_name,
+                    "sku": li.sku,
+                    "image_url": None,
+                    "quantity": li.quantity,
+                    "fulfill_status": li.fulfill_status,
+                    "tracking_number": li.tracking_number,
+                    "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                })
     return out
 
 

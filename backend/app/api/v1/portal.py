@@ -115,6 +115,7 @@ async def portal_products(
 # --- Orders to fulfill ---
 
 def _supplier_status(fulfill_status: FulfillStatus, label_id: int | None) -> str:
+    """Map DB fulfill_status + label presence to supplier-facing status string."""
     if fulfill_status in (FulfillStatus.shipped, FulfillStatus.delivered):
         return "shipped"
     if fulfill_status == FulfillStatus.drop_off:
@@ -184,6 +185,7 @@ async def portal_orders(
                     "product_name": sp.name if sp else li.product_name,
                     "sku": sp.sku if sp else li.sku,
                     "image_url": sp.image_url if sp else None,
+                    # fi.quantity already equals order_qty x component_qty
                     "quantity": fi.quantity,
                     "supplier_status": _supplier_status(fi.fulfill_status, li.label_id),
                     "tracking_number": fi.tracking_number or li.tracking_number,
@@ -232,6 +234,7 @@ async def portal_batch_labels(
         except ValueError:
             raise HTTPException(400, "Invalid label_ids")
 
+    # All of this supplier's line items that have a label and are not yet shipped
     q = select(OrderLineItem).where(
         OrderLineItem.supplier_id == supplier.id,
         OrderLineItem.label_id.isnot(None),
@@ -239,6 +242,7 @@ async def portal_batch_labels(
     ).order_by(OrderLineItem.order_id)
     lis = (await db.execute(q)).scalars().all()
 
+    # Collect pre-built label PDFs (already have carrier + overlay baked in)
     seen: set[int] = set()
     pdf_list: list[bytes] = []
     for li in lis:
@@ -347,6 +351,7 @@ async def portal_parcel_estimate(
     supplier: Supplier = Depends(get_current_supplier),
     db: AsyncSession = Depends(get_db),
 ):
+    """Same parcel estimate as the admin endpoint but scoped to the current supplier."""
     from app.api.v1.orders import estimate_parcel
     return await estimate_parcel(
         order_id=order_id,
@@ -395,6 +400,7 @@ async def portal_easypost_rates(
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 
+    # Return all rates from all carriers — no filtering
     all_rates = shipment.get("rates", [])
     print(f"[PORTAL RATES] EasyPost returned {len(all_rates)} rates total", flush=True)
     for r in all_rates:
@@ -459,6 +465,7 @@ async def portal_easypost_buy(
         or bought.get("postage_label", {}).get("label_pdf_url")
     )
 
+    # Resolve catalog pack items
     from app.api.v1.orders import _catalog_items_for_line_item
     import base64
     pack_items = []

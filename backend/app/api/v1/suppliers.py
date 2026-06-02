@@ -172,6 +172,15 @@ def _fmt_dim(v) -> str:
     return "" if v is None else f"{v}"
 
 
+def _csv_bytes(rows: list[list]) -> bytes:
+    """Build CSV bytes with UTF-8 BOM so Excel preserves encoding on save."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    for row in rows:
+        writer.writerow(row)
+    return "﻿".encode("utf-8") + buf.getvalue().encode("utf-8")
+
+
 @router.get("/{supplier_id}/products/export.csv")
 async def export_supplier_catalog(supplier_id: int, db: AsyncSession = Depends(get_db)):
     supplier = await _get_or_404(supplier_id, db)
@@ -180,20 +189,16 @@ async def export_supplier_catalog(supplier_id: int, db: AsyncSession = Depends(g
     )
     products = result.scalars().all()
 
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(CATALOG_CSV_COLUMNS)
-    for sp in products:
-        writer.writerow([
-            sp.name, sp.sku, f"{sp.unit_price:.2f}", sp.stock_quantity,
-            _fmt_dim(sp.weight), _fmt_dim(sp.length), _fmt_dim(sp.width), _fmt_dim(sp.height),
-        ])
-
+    rows = [CATALOG_CSV_COLUMNS] + [
+        [sp.name, sp.sku, f"{sp.unit_price:.2f}", sp.stock_quantity,
+         _fmt_dim(sp.weight), _fmt_dim(sp.length), _fmt_dim(sp.width), _fmt_dim(sp.height)]
+        for sp in products
+    ]
     safe_name = "".join(c if c.isalnum() else "_" for c in supplier.name)[:40] or "supplier"
     filename = f"{safe_name}_catalog_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
     return Response(
-        content=buf.getvalue(),
-        media_type="text/csv",
+        content=_csv_bytes(rows),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -201,13 +206,13 @@ async def export_supplier_catalog(supplier_id: int, db: AsyncSession = Depends(g
 @router.get("/{supplier_id}/products/template.csv")
 async def supplier_catalog_template(supplier_id: int, db: AsyncSession = Depends(get_db)):
     await _get_or_404(supplier_id, db)
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(CATALOG_CSV_COLUMNS)
-    writer.writerow(["Example Product", "SKU-001", "9.99", "100", "8.5", "12", "9", "4"])
+    rows = [
+        CATALOG_CSV_COLUMNS,
+        ["Example Product", "SKU-001", "9.99", "100", "8.5", "12", "9", "4"],
+    ]
     return Response(
-        content=buf.getvalue(),
-        media_type="text/csv",
+        content=_csv_bytes(rows),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="catalog_template.csv"'},
     )
 
@@ -227,13 +232,27 @@ async def import_supplier_catalog(
     # Detect common non-CSV formats
     if raw[:4] in (b"PK\x03\x04", b"PK\x05\x06") or raw[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
         raise HTTPException(400, "Please upload a CSV file, not an Excel file (.xlsx / .xls). "
-                            "In Excel: File → Save As → CSV (Comma delimited).")
+                            "In Excel: File -> Save As -> CSV (Comma delimited).")
+
+    # Pick encoding order based on BOM / null-byte heuristic.
+    # UTF-16 files have a BOM (FF FE or FE FF) or dense null bytes; otherwise
+    # try single-byte codecs *before* UTF-16 so that CP1252/Latin-1 special
+    # chars (e.g. en-dash 0x96) don't cause UTF-8 to fail and then get
+    # mis-decoded as UTF-16 LE pairs, producing garbled CJK column names.
+    if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+        enc_order = ("utf-16", "utf-16-le", "utf-16-be")
+    elif raw[:3] == b'\xef\xbb\xbf':
+        enc_order = ("utf-8-sig",)
+    elif raw[:200].count(b'\x00') / max(len(raw[:200]), 1) > 0.3:
+        enc_order = ("utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1")
+    else:
+        enc_order = ("utf-8-sig", "utf-8", "cp1252", "latin-1", "utf-16", "utf-16-le", "utf-16-be")
 
     text = None
-    for enc in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1"):
+    for enc in enc_order:
         try:
             candidate = raw.decode(enc)
-            # Reject if too many null bytes — UTF-16 decoded as a single-byte codec
+            # Reject if too many null bytes -- UTF-16 decoded as a single-byte codec
             if candidate.count('\x00') > len(candidate) * 0.2:
                 continue
             text = candidate
@@ -241,7 +260,7 @@ async def import_supplier_catalog(
         except (UnicodeDecodeError, LookupError):
             continue
     if text is None:
-        raise HTTPException(400, "Could not decode CSV — please save as UTF-8 or UTF-16")
+        raise HTTPException(400, "Could not decode CSV -- please save as UTF-8 or UTF-16")
 
     # Strip BOM character that may remain after decoding
     text = text.lstrip('﻿')
@@ -277,14 +296,14 @@ async def import_supplier_catalog(
             break
 
     if reader is None:
-        # Still couldn't find required columns — try once more with comma to get field list for error
+        # Still couldn't find required columns -- try once more with comma to get field list for error
         r, norm_fnames, raw_fnames = _try_parse(",")
         found = sorted(raw_fnames) if raw_fnames else []
         detail = "CSV missing required columns: 'name' and 'sku'."
         if found:
             detail += f" Columns found: {found}. Make sure your CSV header row has exactly 'name' and 'sku' columns."
         else:
-            detail += " No columns detected — check that the file is a valid CSV."
+            detail += " No columns detected -- check that the file is a valid CSV."
         raise HTTPException(400, detail)
 
     existing_q = await db.execute(
@@ -309,12 +328,16 @@ async def import_supplier_catalog(
         seen_skus.add(sku)
 
         try:
-            unit_price = Decimal(norm["unit_price"]) if norm.get("unit_price") else Decimal("0")
+            raw_price = norm.get("unit_price") or ""
+            raw_price = raw_price.replace("$", "").replace(",", "").strip()
+            unit_price = Decimal(raw_price) if raw_price else Decimal("0")
         except (InvalidOperation, KeyError):
             errors.append(f"Row {idx} (SKU {sku}): invalid unit_price")
             continue
         try:
-            stock_quantity = int(norm["stock_quantity"]) if norm.get("stock_quantity") else 0
+            raw_qty = norm.get("stock_quantity") or ""
+            raw_qty = raw_qty.replace(",", "").strip()
+            stock_quantity = int(raw_qty) if raw_qty else 0
         except (ValueError, KeyError):
             errors.append(f"Row {idx} (SKU {sku}): invalid stock_quantity")
             continue
@@ -527,13 +550,11 @@ async def preview_invoice_from_orders(supplier_id: int, db: AsyncSession = Depen
     """Return fulfilled order line items for this supplier that have not yet been invoiced."""
     supplier = await _get_or_404(supplier_id, db)
 
-    # Find order_line_item_ids already linked to an invoice
     invoiced_ids_result = await db.execute(
         select(InvoiceLineItem.order_line_item_id).where(InvoiceLineItem.order_line_item_id.isnot(None))
     )
     invoiced_ids = {r for r in invoiced_ids_result.scalars().all()}
 
-    # Fetch fulfilled line items for this supplier
     result = await db.execute(
         select(OrderLineItem)
         .where(
@@ -544,7 +565,6 @@ async def preview_invoice_from_orders(supplier_id: int, db: AsyncSession = Depen
     )
     line_items = result.scalars().all()
 
-    # Load orders to get external_order_id
     order_ids = {li.order_id for li in line_items}
     orders_by_id: dict[int, Order] = {}
     if order_ids:
@@ -589,7 +609,6 @@ async def create_invoice_from_orders(supplier_id: int, body: InvoiceFromOrdersCr
     if not body.items:
         raise HTTPException(400, "No line items provided")
 
-    # Verify none of these line items are already invoiced
     item_ids = [it.order_line_item_id for it in body.items]
     already_result = await db.execute(
         select(InvoiceLineItem.order_line_item_id).where(
@@ -600,7 +619,6 @@ async def create_invoice_from_orders(supplier_id: int, body: InvoiceFromOrdersCr
     if already_invoiced:
         raise HTTPException(400, f"Line items already invoiced: {sorted(already_invoiced)}")
 
-    # Determine invoice period from the fulfilled_at dates of the line items
     li_result = await db.execute(
         select(OrderLineItem).where(OrderLineItem.id.in_(item_ids))
     )

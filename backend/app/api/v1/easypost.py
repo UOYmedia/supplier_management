@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from app.core.database import get_db
 from app.core.config import settings
@@ -258,29 +258,44 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     except EasyPostError as e:
         msg = str(e)
         if "postage" in msg.lower() and "already" in msg.lower():
+            # EasyPost already has a label for this shipment (bought outside our system
+            # or in a previous attempt that didn't save to DB). Fetch the shipment so
+            # we can save the label and return it instead of erroring.
             await _log(db, order_id, "easypost_buy",
-                       f"EasyPost: postage already exists for shipment {body.shipment_id}",
+                       f"EasyPost: postage already exists for {body.shipment_id} -- fetching existing shipment",
                        level="warn", payload={"shipment_id": body.shipment_id, "easypost_error": msg})
+            try:
+                bought = await ep.get_shipment(body.shipment_id)
+            except Exception as fetch_err:
+                await _log(db, order_id, "easypost_buy",
+                           f"Failed to fetch existing shipment: {fetch_err}",
+                           level="error", payload={"shipment_id": body.shipment_id})
+                await db.commit()
+                raise HTTPException(409, "Label already purchased for this shipment but could not retrieve it. Refresh rates to start fresh.")
+        else:
+            await _log(db, order_id, "easypost_buy", msg, level="error",
+                       payload={"shipment_id": body.shipment_id, "rate_id": body.rate_id,
+                                "http_status": e.status, "easypost_error": msg})
             await db.commit()
-            raise HTTPException(409, "Label already purchased for this shipment. Please create new rates to buy a different label.")
-        await _log(db, order_id, "easypost_buy", msg, level="error",
-                   payload={"shipment_id": body.shipment_id, "rate_id": body.rate_id,
-                            "http_status": e.status, "easypost_error": msg})
-        await db.commit()
-        raise HTTPException(e.status, msg)
+            raise HTTPException(e.status, msg)
     except Exception as e:
         await _log(db, order_id, "easypost_buy", str(e), level="error",
                    payload={"shipment_id": body.shipment_id, "rate_id": body.rate_id})
         await db.commit()
         raise HTTPException(500, f"Unexpected error: {e}")
 
-    selected_rate = bought.get("selected_rate", {})
+    # Use `or {}` (not a get default): when recovering a shipment via get_shipment,
+    # EasyPost can return these keys with an explicit null value, and .get(k, {})
+    # only substitutes the default when the key is *absent*, not when it's null.
+    selected_rate = bought.get("selected_rate") or {}
+    postage_label = bought.get("postage_label") or {}
     tracking = bought.get("tracking_code") or selected_rate.get("tracking_code")
-    label_url = (
-        bought.get("postage_label", {}).get("label_url")
-        or bought.get("postage_label", {}).get("label_pdf_url")
-    )
-    cost_str = selected_rate.get("rate", "0")
+    label_url = postage_label.get("label_url") or postage_label.get("label_pdf_url")
+    try:
+        cost_str = selected_rate.get("rate") or "0"
+        cost_val = Decimal(str(cost_str))
+    except (InvalidOperation, ValueError):
+        cost_val = Decimal("0")
 
     pack_items = []
     for li_id in li_ids:
@@ -288,28 +303,47 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         if li_obj:
             pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
 
+    # fetch_label_pdf_b64 uses label_png_url only. Shipments created with PDF format
+    # won't have label_png_url, so it returns None. Try to regenerate as PNG via the
+    # /label endpoint so we get actual PNG bytes and a stable PNG URL.
     carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
+    try:
+        regen_png, regen_url = await ep.regenerate_label(bought.get("id") or body.shipment_id)
+        if regen_png:
+            carrier_png_b64 = regen_png
+        if regen_url:
+            label_url = regen_url
+    except Exception as regen_err:
+        await _log(db, order_id, "easypost_buy",
+                   f"Label PNG regeneration failed (non-fatal): {regen_err}",
+                   level="warn", payload={"shipment_id": body.shipment_id})
 
     def _ship_name(addr: dict | None) -> str | None:
         if not addr:
             return None
         return addr.get("name") or addr.get("Name") or addr.get("buyer_name")
 
-    if carrier_png_b64 and pack_items:
-        from app.integrations.pdf_labels import LabelEntry, build_label_from_png
-        png_bytes = base64.b64decode(carrier_png_b64)
-        entry = LabelEntry(
-            order_label=(order.external_order_id or f"Order #{order_id}"),
-            ship_to=_ship_name(order.shipping_address),
-            tracking_number=tracking,
-            label_pdf=None,
-            items=pack_items,
-        )
-        label_data = base64.b64encode(build_label_from_png(png_bytes, entry)).decode()
-    elif carrier_png_b64:
-        from app.integrations.pdf_labels import image_to_label_pdf
-        label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
-    else:
+    try:
+        if carrier_png_b64 and pack_items:
+            from app.integrations.pdf_labels import LabelEntry, build_label_from_png
+            png_bytes = base64.b64decode(carrier_png_b64)
+            entry = LabelEntry(
+                order_label=(order.external_order_id or f"Order #{order_id}"),
+                ship_to=_ship_name(order.shipping_address),
+                tracking_number=tracking,
+                label_pdf=None,
+                items=pack_items,
+            )
+            label_data = base64.b64encode(build_label_from_png(png_bytes, entry)).decode()
+        elif carrier_png_b64:
+            from app.integrations.pdf_labels import image_to_label_pdf
+            label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
+        else:
+            label_data = None
+    except Exception as pdf_err:
+        await _log(db, order_id, "easypost_buy",
+                   f"Label PDF generation failed (non-fatal): {pdf_err}",
+                   level="warn", payload={"shipment_id": body.shipment_id})
         label_data = None
 
     label = ShippingLabel(
@@ -320,7 +354,7 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         shipment_id=bought.get("id") or body.shipment_id,
         label_url=label_url,
         label_data=label_data,
-        cost=Decimal(str(cost_str)),
+        cost=cost_val,
         from_address=bought.get("from_address"),
         to_address=bought.get("to_address"),
     )
@@ -341,14 +375,14 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     await _recalculate_order_status(order, db)
 
     await _log(db, order_id, "easypost_buy",
-               f"Label purchased -- tracking {tracking}, carrier {selected_rate.get('carrier')}, cost ${cost_str}",
+               f"Label purchased -- tracking {tracking}, carrier {selected_rate.get('carrier')}, cost ${cost_val}",
                payload={
                    "shipment_id": body.shipment_id,
                    "label_id": label.id,
                    "tracking_number": tracking,
                    "carrier": selected_rate.get("carrier"),
                    "service": selected_rate.get("service"),
-                   "cost": cost_str,
+                   "cost": str(cost_val),
                    "line_item_ids": li_ids,
                })
 

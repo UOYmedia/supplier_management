@@ -51,9 +51,12 @@ class EasyPostClient:
 
         Using PNG avoids EasyPost's PDF formatting quirks (letter-size wrappers,
         misaligned content). Callers build the final PDF with build_label_from_png.
+        Only uses label_png_url -- if the shipment was created with PDF format,
+        label_png_url won't be present and we return None so callers can call
+        regenerate_label() to explicitly request a PNG conversion.
         """
         pl = shipment.get("postage_label") or {}
-        png_url = pl.get("label_png_url") or pl.get("label_url")
+        png_url = pl.get("label_png_url")
         if not png_url:
             return None
         try:
@@ -88,6 +91,10 @@ class EasyPostClient:
         """Purchase a rate. Returns the bought shipment with label URL + tracking."""
         return await self._post(f"/shipments/{shipment_id}/buy", {"rate": {"id": rate_id}})
 
+    async def get_shipment(self, shipment_id: str) -> dict:
+        """Retrieve an existing shipment (including already-bought ones)."""
+        return await self._get(f"/shipments/{shipment_id}")
+
     async def regenerate_label(
         self, shipment_id: str, label_size: str = "4x6"
     ) -> tuple[str | None, str | None]:
@@ -101,17 +108,36 @@ class EasyPostClient:
             params={"file_format": "png", "label_size": label_size},
         )
         pl = converted.get("postage_label") or {}
-        png_url = pl.get("label_png_url") or pl.get("label_url")
+        # Only use the explicit PNG URL — label_url may still point to a PDF even
+        # when file_format=png is requested (EasyPost doesn't always regenerate).
+        png_url = pl.get("label_png_url")
+        # label_url (PDF or otherwise) is still useful for the ShippingLabel.label_url field.
+        any_url = pl.get("label_url") or png_url
         if not png_url:
-            return None, None
+            return None, any_url
         try:
             async with httpx.AsyncClient(timeout=30) as http:
                 r = await http.get(png_url)
                 if not r.is_success:
-                    return None, png_url
+                    return None, any_url
+            # Validate PNG magic bytes so we never pass PDF bytes to ImageReader
+            if r.content[:8] != b'\x89PNG\r\n\x1a\n':
+                return None, any_url
             return base64.b64encode(r.content).decode(), png_url
         except Exception:
-            return None, png_url
+            return None, any_url
+
+    async def list_webhooks(self) -> list[dict]:
+        """Return all registered EasyPost webhooks for this account."""
+        data = await self._get("/webhooks")
+        return data.get("webhooks", [])
+
+    async def create_webhook(self, url: str, webhook_secret: str = "") -> dict:
+        """Register a webhook URL with EasyPost. Returns the created webhook object."""
+        payload: dict = {"webhook": {"url": url}}
+        if webhook_secret:
+            payload["webhook"]["webhook_secret"] = webhook_secret
+        return await self._post("/webhooks", payload)
 
     async def create_tracker(self, tracking_code: str, carrier: str = "USPS") -> dict:
         """Create (or look up existing) EasyPost tracker. Returns tracker with .status field.

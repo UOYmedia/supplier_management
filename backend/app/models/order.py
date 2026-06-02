@@ -18,6 +18,7 @@ class OrderStatus(str, enum.Enum):
 class FulfillStatus(str, enum.Enum):
     unfulfilled = "unfulfilled"
     pending = "pending"
+    drop_off = "drop_off"
     shipped = "shipped"
     delivered = "delivered"
     cancelled = "cancelled"
@@ -31,6 +32,7 @@ class Order(Base):
     connection_id: Mapped[int | None] = mapped_column(ForeignKey("marketplace_connections.id"))
     marketplace: Mapped[str] = mapped_column(String(50))  # amazon, shopify, manual
     external_order_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    order_name: Mapped[str | None] = mapped_column(String(255))
     buyer_name: Mapped[str | None] = mapped_column(String(255))
     buyer_email: Mapped[str | None] = mapped_column(String(255))
     shipping_address: Mapped[dict | None] = mapped_column(JSON)
@@ -70,6 +72,25 @@ class OrderLineItem(Base):
     supplier: Mapped["Supplier | None"] = relationship(back_populates="order_line_items")
     listing: Mapped["MarketplaceListing | None"] = relationship()
     label: Mapped["ShippingLabel | None"] = relationship(foreign_keys=[label_id])
+    fulfillment_items: Mapped[list["OrderFulfillmentItem"]] = relationship(back_populates="order_line_item", cascade="all, delete-orphan")
+
+
+class OrderFulfillmentItem(Base):
+    """Per-supplier-catalog-item fulfillment record expanded from a line item."""
+    __tablename__ = "order_fulfillment_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_line_item_id: Mapped[int] = mapped_column(ForeignKey("order_line_items.id", ondelete="CASCADE"))
+    supplier_product_id: Mapped[int] = mapped_column(ForeignKey("supplier_products.id"))
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    fulfill_status: Mapped[str] = mapped_column(String(50), default="unfulfilled")
+    tracking_number: Mapped[str | None] = mapped_column(String(255))
+    label_id: Mapped[int | None] = mapped_column(ForeignKey("shipping_labels.id"))
+    fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    order_line_item: Mapped["OrderLineItem"] = relationship(back_populates="fulfillment_items")
+    supplier_product: Mapped["SupplierProduct"] = relationship()
+    label: Mapped["ShippingLabel | None"] = relationship(foreign_keys=[label_id])
 
 
 class ShippingLabel(Base):
@@ -80,7 +101,9 @@ class ShippingLabel(Base):
     carrier: Mapped[str] = mapped_column(String(50))
     service: Mapped[str | None] = mapped_column(String(100))
     tracking_number: Mapped[str | None] = mapped_column(String(255))
-    label_url: Mapped[str | None] = mapped_column(String(500))
+    label_url: Mapped[str | None] = mapped_column(Text)
+    label_data: Mapped[str | None] = mapped_column(Text)
+    shipment_id: Mapped[str | None] = mapped_column(String(100))
     cost: Mapped[Decimal] = mapped_column(Numeric(8, 2), default=0)
     from_address: Mapped[dict | None] = mapped_column(JSON)
     to_address: Mapped[dict | None] = mapped_column(JSON)

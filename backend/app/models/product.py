@@ -5,6 +5,20 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 
+class ProductComponent(Base):
+    """Links a shop product to supplier catalog items (for combo/set products)."""
+    __tablename__ = "product_components"
+    __table_args__ = (UniqueConstraint("product_id", "supplier_product_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    supplier_product_id: Mapped[int] = mapped_column(ForeignKey("supplier_products.id", ondelete="CASCADE"))
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+
+    product: Mapped["Product"] = relationship(back_populates="components")
+    supplier_product: Mapped["SupplierProduct"] = relationship(back_populates="components")
+
+
 class Product(Base):
     __tablename__ = "products"
 
@@ -23,6 +37,7 @@ class Product(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     product_suppliers: Mapped[list["ProductSupplier"]] = relationship(back_populates="product", cascade="all, delete-orphan")
+    components: Mapped[list["ProductComponent"]] = relationship(back_populates="product", cascade="all, delete-orphan")
     listings: Mapped[list["MarketplaceListing"]] = relationship(back_populates="product")
     order_line_items: Mapped[list["OrderLineItem"]] = relationship(back_populates="product")
 

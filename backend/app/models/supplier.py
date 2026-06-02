@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, Numeric, ForeignKey, DateTime, Text, Enum as SAEnum
+from sqlalchemy import String, Numeric, ForeignKey, DateTime, Text, Enum as SAEnum, Integer, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 import enum
@@ -30,12 +30,37 @@ class Supplier(Base):
     is_active: Mapped[bool] = mapped_column(default=True)
     username: Mapped[str | None] = mapped_column(String(100), unique=True, index=True)
     hashed_password: Mapped[str | None] = mapped_column(String(255))
+    shopify_location_id: Mapped[str | None] = mapped_column(String(100))
+    can_buy_labels: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     product_suppliers: Mapped[list["ProductSupplier"]] = relationship(back_populates="supplier")
+    supplier_products: Mapped[list["SupplierProduct"]] = relationship(back_populates="supplier", cascade="all, delete-orphan")
     order_line_items: Mapped[list["OrderLineItem"]] = relationship(back_populates="supplier")
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="supplier", cascade="all, delete-orphan")
     shipping_labels: Mapped[list["ShippingLabel"]] = relationship(back_populates="supplier")
+
+
+class SupplierProduct(Base):
+    """Supplier catalog item — a physical SKU that a supplier stocks and ships."""
+    __tablename__ = "supplier_products"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(255))
+    sku: Mapped[str] = mapped_column(String(100))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
+    stock_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    weight: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
+    length: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    width: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    height: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    image_url: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    supplier: Mapped["Supplier"] = relationship(back_populates="supplier_products")
+    components: Mapped[list["ProductComponent"]] = relationship(back_populates="supplier_product")
 
 
 class Invoice(Base):

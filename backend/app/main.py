@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -8,18 +9,22 @@ from app.api.v1.router import api_router
 import app.models  # ensure all models are imported before create_all
 
 
+async def _init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    print("Database tables created/verified.", flush=True)
+    await _run_migrations()
+    await _seed_admin()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        print("Database tables created/verified.", flush=True)
-        # Column migrations for existing tables (idempotent)
-        await _run_migrations()
-        # Seed default admin user
-        await _seed_admin()
+        await asyncio.wait_for(_init_db(), timeout=20)
+    except asyncio.TimeoutError:
+        print("WARNING: DB init timed out after 20s -- app will start without DB init.", flush=True)
     except Exception as e:
-        print(f"WARNING: DB init failed (will retry on first request): {e}", flush=True)
+        print(f"WARNING: DB init failed: {e}", flush=True)
     yield
 
 

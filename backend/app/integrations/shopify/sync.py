@@ -88,7 +88,6 @@ class ShopifySync(MarketplaceSyncer):
                             sku=sku,
                             description=sp.get("body_html", "") or "",
                             weight=weight,
-                            marketplace="shopify",
                         )
                         db.add(product)
                         await db.flush()
@@ -142,7 +141,10 @@ class ShopifySync(MarketplaceSyncer):
         for od in data.get("orders", []):
             ext_id = str(od["id"])
             existing = await db.execute(select(Order).where(Order.external_order_id == ext_id))
-            if existing.scalar_one_or_none():
+            existing_order = existing.scalar_one_or_none()
+            if existing_order:
+                # Re-link any line items that still have product_id=None
+                await self._relink_orphaned_items(existing_order.id, od.get("line_items", []), db)
                 continue
 
             sa = od.get("shipping_address") or {}
@@ -150,6 +152,7 @@ class ShopifySync(MarketplaceSyncer):
                 connection_id=self.connection.id,
                 marketplace="shopify",
                 external_order_id=ext_id,
+                order_name=od.get("name"),
                 buyer_name=od.get("customer", {}).get("first_name", "") + " " + od.get("customer", {}).get("last_name", ""),
                 buyer_email=od.get("email"),
                 shipping_address={
@@ -170,23 +173,71 @@ class ShopifySync(MarketplaceSyncer):
             await db.flush()
 
             for item in od.get("line_items", []):
-                listing = await db.execute(
-                    select(MarketplaceListing).where(
-                        MarketplaceListing.marketplace_sku == item.get("sku"),
-                        MarketplaceListing.connection_id == self.connection.id,
-                    )
-                )
-                listing_obj = listing.scalar_one_or_none()
+                item_sku = item.get("sku")
+                product_id, listing_id = await self._resolve_product(item_sku, db)
                 db.add(OrderLineItem(
                     order_id=order.id,
-                    product_id=listing_obj.product_id if listing_obj else None,
-                    listing_id=listing_obj.id if listing_obj else None,
+                    product_id=product_id,
+                    listing_id=listing_id,
                     external_line_item_id=str(item.get("id")),
                     product_name=item.get("title", ""),
-                    sku=item.get("sku"),
+                    sku=item_sku,
                     quantity=item.get("quantity", 1),
                     price=float(item.get("price", 0)),
                 ))
             count += 1
 
+        await db.commit()
         return count
+
+    async def _resolve_product(self, sku: str | None, db: AsyncSession) -> tuple[int | None, int | None]:
+        """Try to find product_id and listing_id for a given SKU.
+
+        1. Match by MarketplaceListing.marketplace_sku (exact, this connection)
+        2. Fallback: match by Product.sku directly
+        """
+        if not sku:
+            return None, None
+
+        listing_res = await db.execute(
+            select(MarketplaceListing).where(
+                MarketplaceListing.marketplace_sku == sku,
+                MarketplaceListing.connection_id == self.connection.id,
+            )
+        )
+        listing_obj = listing_res.scalar_one_or_none()
+        if listing_obj:
+            return listing_obj.product_id, listing_obj.id
+
+        # Fallback: try matching directly on Product.sku
+        prod_res = await db.execute(select(Product).where(Product.sku == sku))
+        product = prod_res.scalar_one_or_none()
+        if product:
+            return product.id, None
+
+        return None, None
+
+    async def _relink_orphaned_items(self, order_id: int, line_items: list, db: AsyncSession) -> None:
+        """For an already-synced order, try to fill in product_id for any line items still missing it."""
+        li_res = await db.execute(
+            select(OrderLineItem).where(
+                OrderLineItem.order_id == order_id,
+                OrderLineItem.product_id.is_(None),
+                OrderLineItem.sku.isnot(None),
+            )
+        )
+        orphans = li_res.scalars().all()
+        if not orphans:
+            return
+
+        # Build a map of sku -> Shopify line item data for quick lookup
+        sku_map = {item.get("sku"): item for item in line_items if item.get("sku")}
+
+        for li in orphans:
+            if li.sku not in sku_map:
+                continue
+            product_id, listing_id = await self._resolve_product(li.sku, db)
+            if product_id:
+                li.product_id = product_id
+            if listing_id:
+                li.listing_id = listing_id

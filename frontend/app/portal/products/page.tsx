@@ -1,94 +1,46 @@
 "use client";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { Package } from "lucide-react";
 
 export default function PortalProductsPage() {
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
 
   useEffect(() => {
     const token = localStorage.getItem("supplier_token");
     fetch("/api/v1/portal/products", { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
       .then(setProducts)
-      .catch(() => toast.error("Failed to load catalog"))
+      .catch(() => toast.error("Failed to load products"))
       .finally(() => setLoading(false));
   }, []);
 
-  const filtered = products.filter((p) =>
-    p.name.toLowerCase().includes(search.toLowerCase()) ||
-    p.sku.toLowerCase().includes(search.toLowerCase())
-  );
-
-  if (loading) return <div className="text-gray-400 p-6">Loading…</div>;
+  if (loading) return <div className="text-gray-400">Loading…</div>;
 
   return (
     <div>
-      <div className="page-header">
-        <h1 className="page-title">My Catalog</h1>
-        <span className="text-sm text-gray-400">{products.length} products</span>
-      </div>
-
-      <input
-        className="input w-64 mb-4"
-        placeholder="Search by name or SKU…"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
-
-      {filtered.length === 0 ? (
-        <div className="card p-12 text-center text-gray-400">
-          <Package className="w-10 h-10 mx-auto mb-3 opacity-30" />
-          {products.length === 0 ? "No products in your catalog yet." : "No results found."}
-        </div>
+      <h1 className="page-title mb-6">My Products</h1>
+      {products.length === 0 ? (
+        <div className="card p-12 text-center text-gray-400">No products assigned yet.</div>
       ) : (
-        <div className="card table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th className="w-14"></th>
-                <th>Product</th>
-                <th>SKU</th>
-                <th>Unit Price</th>
-                <th>Stock</th>
-                <th>Dimensions (L×W×H in)</th>
-                <th>Weight (oz)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((p) => (
-                <tr key={p.id}>
-                  <td>
-                    {p.image_url ? (
-                      <img src={p.image_url} alt={p.name} className="w-10 h-10 rounded-lg object-cover border border-gray-200" />
-                    ) : (
-                      <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center">
-                        <Package className="w-5 h-5 text-gray-300" />
-                      </div>
-                    )}
-                  </td>
-                  <td className="font-medium">{p.name}</td>
-                  <td className="font-mono text-xs text-gray-500">{p.sku}</td>
-                  <td className="font-semibold">${p.unit_price.toFixed(2)}</td>
-                  <td>
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                      p.stock_quantity > 0 ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"
-                    }`}>
-                      {p.stock_quantity > 0 ? `${p.stock_quantity} in stock` : "Out of stock"}
-                    </span>
-                  </td>
-                  <td className="text-sm text-gray-500">
-                    {p.length && p.width && p.height
-                      ? `${p.length} × ${p.width} × ${p.height}`
-                      : "—"}
-                  </td>
-                  <td className="text-sm text-gray-500">{p.weight ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {products.map((p) => (
+            <div key={p.product_supplier_id} className="card p-4">
+              {p.mockup_url ? (
+                <img src={p.mockup_url} alt={p.name} className="w-full h-36 object-contain rounded-lg bg-gray-50 mb-3" />
+              ) : (
+                <div className="w-full h-36 rounded-lg bg-gray-100 mb-3 flex items-center justify-center text-gray-300 text-xs">No image</div>
+              )}
+              <div className="font-medium text-sm text-gray-900 line-clamp-2 mb-2">{p.name}</div>
+              <div className="text-xs text-gray-500 font-mono mb-2">{p.sku}</div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-gray-900">${p.cost.toFixed(2)}</span>
+                <span className={`text-xs px-2 py-0.5 rounded-full ${p.stock > 0 ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}>
+                  {p.stock > 0 ? `${p.stock} in stock` : "Out of stock"}
+                </span>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

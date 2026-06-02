@@ -102,36 +102,3 @@ class InvoiceOut(BaseModel):
     paid_at: datetime | None
     created_at: datetime
     line_items: list[InvoiceLineItemOut] = []
-
-
-class InvoicePreviewItem(BaseModel):
-    order_line_item_id: int
-    order_id: int
-    order_external_id: str | None
-    product_name: str
-    sku: str | None
-    quantity: int
-    unit_cost: Decimal
-    total_cost: Decimal
-    fulfill_status: str
-    fulfilled_at: datetime | None
-
-
-class InvoicePreviewResponse(BaseModel):
-    supplier_id: int
-    supplier_name: str
-    items: list[InvoicePreviewItem]
-    total_amount: Decimal
-
-
-class InvoiceFromOrdersItem(BaseModel):
-    order_line_item_id: int
-    description: str
-    quantity: int
-    unit_amount: Decimal
-    total_amount: Decimal
-
-
-class InvoiceFromOrdersCreate(BaseModel):
-    notes: str | None = None
-    items: list[InvoiceFromOrdersItem]

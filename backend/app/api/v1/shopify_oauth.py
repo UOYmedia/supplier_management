@@ -1,25 +1,24 @@
 """
-Shopify OAuth 2.0 — per-connection Partner App credentials
+Shopify OAuth 2.0 — supports both flows:
 
-Flow:
-  1. Frontend saves connection with client_id + client_secret via PATCH/POST
-  2. Frontend calls GET /shopify/auth?connection_id=<id>  → JSON {"oauth_url": "..."}
-  3. Frontend does window.location.href = oauth_url  → Shopify consent page
-  4. User approves → Shopify redirects to BACKEND_URL/api/v1/shopify/callback
-  5. Backend exchanges code → stores access_token in connection.credentials
-  6. Backend redirects browser to FRONTEND_URL/marketplace?connected=shopify&id=<id>
+  Standard (non-embedded):
+    GET /api/v1/shopify/auth?shop=...  → Shopify consent → callback?code=...
+    Callback exchanges code for offline access token.
+
+  Embedded app (token exchange):
+    Shopify sends callback?embedded=1&id_token=...&shop=...
+    Callback exchanges id_token for offline access token.
 """
 
 import hashlib
 import hmac as hmac_lib
 import secrets
-from urllib.parse import quote as _urlencode
-
 import httpx
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -35,54 +34,41 @@ SCOPES = (
     "read_shipping,write_shipping"
 )
 
-# state token → connection_id  (in-memory; survives until backend restarts)
-_pending: dict[str, int] = {}
+_pending_nonces: set[str] = set()
 
 
 def _callback_url() -> str:
-    return settings.BACKEND_URL.rstrip("/") + "/api/v1/shopify/callback"
+    base = settings.BACKEND_URL.rstrip("/")
+    return f"{base}/api/v1/shopify/callback"
 
 
 # ---------------------------------------------------------------------------
-# Step 1 — return OAuth URL (frontend navigates there)
+# Step 1 – initiate OAuth
 # ---------------------------------------------------------------------------
 
 @router.get("/auth")
 async def shopify_auth(
-    connection_id: int = Query(...),
-    db: AsyncSession = Depends(get_db),
+    shop: str = Query(..., description="e.g. gingerglow.myshopify.com"),
 ):
-    conn = await db.get(MarketplaceConnection, connection_id)
-    if not conn or conn.marketplace != MarketplaceType.shopify:
-        return JSONResponse({"error": "Shopify connection not found"}, status_code=404)
-
-    creds = conn.credentials or {}
-    client_id = creds.get("client_id") or settings.SHOPIFY_API_KEY
-    if not client_id:
-        return JSONResponse(
-            {"error": "No Client ID configured. Add it in the connection settings."},
-            status_code=400,
-        )
-
-    shop = (conn.shop_url or "").replace("https://", "").replace("http://", "").rstrip("/")
-    if not shop:
-        return JSONResponse({"error": "No shop URL configured on this connection"}, status_code=400)
+    shop = shop.strip().lower()
+    if not shop.endswith(".myshopify.com"):
+        return JSONResponse({"error": "shop must end with .myshopify.com"}, status_code=400)
 
     state = secrets.token_hex(16)
-    _pending[state] = connection_id
+    _pending_nonces.add(state)
 
-    oauth_url = (
+    url = (
         f"https://{shop}/admin/oauth/authorize"
-        f"?client_id={client_id}"
+        f"?client_id={settings.SHOPIFY_API_KEY}"
         f"&scope={SCOPES}"
         f"&redirect_uri={_callback_url()}"
         f"&state={state}"
     )
-    return {"oauth_url": oauth_url}
+    return RedirectResponse(url)
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — Shopify redirects back here after user approves
+# Step 2 – OAuth callback (standard code flow OR embedded id_token flow)
 # ---------------------------------------------------------------------------
 
 @router.get("/callback")
@@ -93,57 +79,94 @@ async def shopify_callback(
     params = dict(request.query_params)
     shop = params.get("shop", "").strip()
     hmac_received = params.get("hmac", "")
-    code = params.get("code", "")
-    state = params.get("state", "")
+    code = params.get("code")
+    id_token = params.get("id_token")
+    state = params.get("state")
+    embedded = params.get("embedded") == "1"
 
-    frontend = settings.FRONTEND_URL.rstrip("/")
+    if not shop:
+        return JSONResponse({"error": "Missing shop parameter"}, status_code=400)
 
-    if not shop or not code:
-        return RedirectResponse(f"{frontend}/marketplace?error={_urlencode('Missing shop or code')}")
-
-    # Validate state
-    connection_id = _pending.pop(state, None)
-    if not connection_id:
-        return RedirectResponse(f"{frontend}/marketplace?error={_urlencode('Invalid or expired OAuth state')}")
-
-    conn = await db.get(MarketplaceConnection, connection_id)
-    if not conn:
-        return RedirectResponse(f"{frontend}/marketplace?error={_urlencode('Connection not found')}")
-
-    creds = conn.credentials or {}
-    client_id = creds.get("client_id") or settings.SHOPIFY_API_KEY
-    client_secret = creds.get("client_secret") or settings.SHOPIFY_API_SECRET
-
-    # HMAC verification
-    if hmac_received and client_secret:
+    # --- HMAC verification (skip for embedded token-exchange flow) ---
+    if not embedded and hmac_received:
         verify_params = {k: v for k, v in params.items() if k != "hmac"}
         message = "&".join(f"{k}={v}" for k, v in sorted(verify_params.items()))
-        digest = hmac_lib.new(client_secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+        digest = hmac_lib.new(
+            settings.SHOPIFY_API_SECRET.encode(),
+            message.encode(),
+            hashlib.sha256,
+        ).hexdigest()
         if not hmac_lib.compare_digest(digest, hmac_received):
-            return RedirectResponse(f"{frontend}/marketplace?error={_urlencode('HMAC verification failed')}")
+            return JSONResponse({"error": "HMAC verification failed"}, status_code=403)
 
-    # Exchange code for offline access token
+    # --- State / nonce check (standard flow only) ---
+    if state and not embedded:
+        if state not in _pending_nonces:
+            return JSONResponse({"error": "Invalid state/nonce"}, status_code=400)
+        _pending_nonces.discard(state)
+
+    # --- Exchange for access token ---
     access_token = None
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient() as client:
+        if code:
+            # Standard OAuth code exchange
             resp = await client.post(
                 f"https://{shop}/admin/oauth/access_token",
-                json={"client_id": client_id, "client_secret": client_secret, "code": code},
+                json={
+                    "client_id": settings.SHOPIFY_API_KEY,
+                    "client_secret": settings.SHOPIFY_API_SECRET,
+                    "code": code,
+                },
             )
             if resp.status_code == 200:
                 access_token = resp.json().get("access_token")
-    except Exception as e:
-        return RedirectResponse(f"{frontend}/marketplace?error={_urlencode(str(e))}")
+
+        elif id_token:
+            # Embedded app token exchange (offline token)
+            resp = await client.post(
+                f"https://{shop}/admin/oauth/access_token",
+                json={
+                    "client_id": settings.SHOPIFY_API_KEY,
+                    "client_secret": settings.SHOPIFY_API_SECRET,
+                    "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                    "subject_token": id_token,
+                    "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
+                    "requested_token_type": "urn:shopify:params:oauth:token-type:offline-access-token",
+                },
+            )
+            if resp.status_code == 200:
+                access_token = resp.json().get("access_token")
 
     if not access_token:
-        return RedirectResponse(
-            f"{frontend}/marketplace?error={_urlencode('Could not obtain access token from Shopify')}"
+        return JSONResponse({"error": "Could not obtain access token from Shopify"}, status_code=502)
+
+    # --- Upsert MarketplaceConnection ---
+    shop_url = f"https://{shop}"
+    result = await db.execute(
+        select(MarketplaceConnection).where(
+            MarketplaceConnection.shop_url == shop_url,
+            MarketplaceConnection.marketplace == MarketplaceType.shopify,
         )
+    )
+    conn = result.scalar_one_or_none()
 
-    # Merge access_token into credentials (preserves client_id + client_secret)
-    conn.credentials = {**creds, "access_token": access_token}
-    conn.status = ConnectionStatus.active
-    conn.error_message = None
+    if conn:
+        conn.credentials = {"access_token": access_token}
+        conn.status = ConnectionStatus.active
+        conn.error_message = None
+    else:
+        shop_name = shop.replace(".myshopify.com", "").capitalize()
+        conn = MarketplaceConnection(
+            name=shop_name,
+            marketplace=MarketplaceType.shopify,
+            shop_url=shop_url,
+            credentials={"access_token": access_token},
+            status=ConnectionStatus.active,
+        )
+        db.add(conn)
+
     await db.commit()
+    await db.refresh(conn)
 
+    frontend = settings.FRONTEND_URL.rstrip("/")
     return RedirectResponse(f"{frontend}/marketplace?connected=shopify&id={conn.id}")

@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, Numeric, ForeignKey, Integer, DateTime, Text, Enum as SAEnum
-from sqlalchemy.dialects.postgresql import JSONB as JSON
+from sqlalchemy import String, Numeric, ForeignKey, Integer, DateTime, Text, Enum as SAEnum, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 import enum
@@ -19,7 +18,6 @@ class OrderStatus(str, enum.Enum):
 class FulfillStatus(str, enum.Enum):
     unfulfilled = "unfulfilled"
     pending = "pending"
-    drop_off = "drop_off"
     shipped = "shipped"
     delivered = "delivered"
     cancelled = "cancelled"
@@ -33,7 +31,6 @@ class Order(Base):
     connection_id: Mapped[int | None] = mapped_column(ForeignKey("marketplace_connections.id"))
     marketplace: Mapped[str] = mapped_column(String(50))  # amazon, shopify, manual
     external_order_id: Mapped[str | None] = mapped_column(String(255), index=True)
-    order_name: Mapped[str | None] = mapped_column(String(255))  # Shopify #1001-style name
     buyer_name: Mapped[str | None] = mapped_column(String(255))
     buyer_email: Mapped[str | None] = mapped_column(String(255))
     shipping_address: Mapped[dict | None] = mapped_column(JSON)
@@ -73,25 +70,6 @@ class OrderLineItem(Base):
     supplier: Mapped["Supplier | None"] = relationship(back_populates="order_line_items")
     listing: Mapped["MarketplaceListing | None"] = relationship()
     label: Mapped["ShippingLabel | None"] = relationship(foreign_keys=[label_id])
-    fulfillment_items: Mapped[list["OrderFulfillmentItem"]] = relationship(back_populates="order_line_item", cascade="all, delete-orphan")
-
-
-class OrderFulfillmentItem(Base):
-    """Supplier-side allocation created when an order line item has product components."""
-    __tablename__ = "order_fulfillment_items"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    order_line_item_id: Mapped[int] = mapped_column(ForeignKey("order_line_items.id", ondelete="CASCADE"))
-    supplier_product_id: Mapped[int] = mapped_column(ForeignKey("supplier_products.id"))
-    quantity: Mapped[int] = mapped_column(Integer, default=1)
-    fulfill_status: Mapped[FulfillStatus] = mapped_column(SAEnum(FulfillStatus), default=FulfillStatus.unfulfilled)
-    tracking_number: Mapped[str | None] = mapped_column(String(255))
-    label_id: Mapped[int | None] = mapped_column(ForeignKey("shipping_labels.id"))
-    fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    order_line_item: Mapped["OrderLineItem"] = relationship(back_populates="fulfillment_items")
-    supplier_product: Mapped["SupplierProduct"] = relationship(back_populates="fulfillment_items")
-    label: Mapped["ShippingLabel | None"] = relationship(foreign_keys=[label_id])
 
 
 class ShippingLabel(Base):
@@ -102,16 +80,10 @@ class ShippingLabel(Base):
     carrier: Mapped[str] = mapped_column(String(50))
     service: Mapped[str | None] = mapped_column(String(100))
     tracking_number: Mapped[str | None] = mapped_column(String(255))
-    shipment_id: Mapped[str | None] = mapped_column(String(100))  # EasyPost shipment id (enables PDF re-gen)
-    label_url: Mapped[str | None] = mapped_column(Text)          # EasyPost URL or data-URL
-    label_data: Mapped[str | None] = mapped_column(Text)         # base64 PDF from Amazon MFN
+    label_url: Mapped[str | None] = mapped_column(String(500))
     cost: Mapped[Decimal] = mapped_column(Numeric(8, 2), default=0)
     from_address: Mapped[dict | None] = mapped_column(JSON)
     to_address: Mapped[dict | None] = mapped_column(JSON)
     purchased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     supplier: Mapped["Supplier"] = relationship(back_populates="shipping_labels")
-
-    @property
-    def has_label_data(self) -> bool:
-        return self.label_data is not None

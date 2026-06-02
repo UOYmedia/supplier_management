@@ -76,8 +76,3 @@ class SyncResult(BaseModel):
     success: int = 0
     failed: int = 0
     errors: list[str] = []
-
-
-class AutoMapResult(BaseModel):
-    mapped: int
-    unmatched: list[str] = []

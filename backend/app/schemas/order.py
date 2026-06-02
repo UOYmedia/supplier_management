@@ -35,36 +35,6 @@ class OrderLineItemUpdate(BaseModel):
     fulfilled_at: datetime | None = None
 
 
-class MarkShippedBody(BaseModel):
-    """Bulk mark line items as shipped (admin override — skips the buy-label flow)."""
-    line_item_ids: list[int] = []
-    supplier_id: int | None = None
-    tracking_number: str | None = None
-
-
-class OrderFulfillmentItemOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
-    order_line_item_id: int
-    supplier_product_id: int
-    quantity: int
-    fulfill_status: FulfillStatus
-    tracking_number: str | None
-    label_id: int | None
-    fulfilled_at: datetime | None
-    supplier_product_name: str | None = None
-    supplier_product_sku: str | None = None
-    supplier_id: int | None = None
-    supplier_name: str | None = None
-
-
-class OrderFulfillmentItemUpdate(BaseModel):
-    fulfill_status: FulfillStatus | None = None
-    tracking_number: str | None = None
-    label_id: int | None = None
-    fulfilled_at: datetime | None = None
-
-
 class OrderLineItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -81,7 +51,6 @@ class OrderLineItemOut(BaseModel):
     label_id: int | None
     fulfilled_at: datetime | None
     supplier_name: str | None = None
-    fulfillment_items: list[OrderFulfillmentItemOut] = []
 
 
 class OrderCreate(BaseModel):
@@ -107,7 +76,6 @@ class OrderOut(BaseModel):
     id: int
     marketplace: str
     external_order_id: str | None
-    order_name: str | None
     buyer_name: str | None
     buyer_email: str | None
     shipping_address: dict | None
@@ -125,8 +93,6 @@ class AssignSupplierBody(BaseModel):
     base_cost: Decimal | None = None
     create_product_supplier: bool = True
     is_preferred: bool = False
-    supplier_product_id: int | None = None
-    units: int = 1
 
 
 class ShippingLabelCreate(BaseModel):
@@ -146,18 +112,8 @@ class ShippingLabelOut(BaseModel):
     id: int
     supplier_id: int
     carrier: str
-    service: str | None = None
-    tracking_number: str | None = None
-    label_url: str | None = None
-    has_label_data: bool = False
-    cost: Decimal = Decimal("0")
+    service: str | None
+    tracking_number: str | None
+    label_url: str | None
+    cost: Decimal
     purchased_at: datetime
-
-
-class ShippingLabelUpdate(BaseModel):
-    """Edit an existing label (manual override / replay)."""
-    carrier: str | None = None
-    service: str | None = None
-    tracking_number: str | None = None
-    cost: Decimal | None = None
-    label_url: str | None = None

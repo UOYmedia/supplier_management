@@ -127,6 +127,18 @@ class EasyPostClient:
         except Exception:
             return None, any_url
 
+    async def list_webhooks(self) -> list[dict]:
+        """Return all registered EasyPost webhooks for this account."""
+        data = await self._get("/webhooks")
+        return data.get("webhooks", [])
+
+    async def create_webhook(self, url: str, webhook_secret: str = "") -> dict:
+        """Register a webhook URL with EasyPost. Returns the created webhook object."""
+        payload: dict = {"webhook": {"url": url}}
+        if webhook_secret:
+            payload["webhook"]["webhook_secret"] = webhook_secret
+        return await self._post("/webhooks", payload)
+
     async def create_tracker(self, tracking_code: str, carrier: str = "USPS") -> dict:
         """Create (or look up existing) EasyPost tracker. Returns tracker with .status field.
         Statuses: unknown, pre_transit, in_transit, out_for_delivery, delivered, etc."""

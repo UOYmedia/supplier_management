@@ -2,6 +2,13 @@ import httpx
 from datetime import datetime, timezone
 
 
+class AmazonAPIError(Exception):
+    def __init__(self, status: int, message: str):
+        self.status = status
+        self.message = message
+        super().__init__(message)
+
+
 class AmazonSPClient:
     """Amazon Selling Partner API client (LWA + SP-API)."""
 

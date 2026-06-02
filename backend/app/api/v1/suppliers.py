@@ -234,8 +234,22 @@ async def import_supplier_catalog(
         raise HTTPException(400, "Please upload a CSV file, not an Excel file (.xlsx / .xls). "
                             "In Excel: File -> Save As -> CSV (Comma delimited).")
 
+    # Pick encoding order based on BOM / null-byte heuristic.
+    # UTF-16 files have a BOM (FF FE or FE FF) or dense null bytes; otherwise
+    # try single-byte codecs *before* UTF-16 so that CP1252/Latin-1 special
+    # chars (e.g. en-dash 0x96) don't cause UTF-8 to fail and then get
+    # mis-decoded as UTF-16 LE pairs, producing garbled CJK column names.
+    if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+        enc_order = ("utf-16", "utf-16-le", "utf-16-be")
+    elif raw[:3] == b'\xef\xbb\xbf':
+        enc_order = ("utf-8-sig",)
+    elif raw[:200].count(b'\x00') / max(len(raw[:200]), 1) > 0.3:
+        enc_order = ("utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1")
+    else:
+        enc_order = ("utf-8-sig", "utf-8", "cp1252", "latin-1", "utf-16", "utf-16-le", "utf-16-be")
+
     text = None
-    for enc in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1"):
+    for enc in enc_order:
         try:
             candidate = raw.decode(enc)
             # Reject if too many null bytes -- UTF-16 decoded as a single-byte codec

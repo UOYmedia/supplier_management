@@ -42,6 +42,20 @@ async function proxy(req: NextRequest, { params }: { params: { path: string[] } 
     if (location) return NextResponse.redirect(location, { status: resp.status });
   }
 
+  const contentType = resp.headers.get("content-type") || "";
+
+  // Pass through non-JSON responses (CSV, PDF, binary) as raw bytes
+  if (!contentType.includes("application/json")) {
+    const blob = await resp.arrayBuffer();
+    return new NextResponse(blob, {
+      status: resp.status,
+      headers: {
+        "Content-Type": contentType,
+        "Content-Disposition": resp.headers.get("content-disposition") || "",
+      },
+    });
+  }
+
   const data = await resp.json().catch(() => null);
   return NextResponse.json(data, { status: resp.status });
 }

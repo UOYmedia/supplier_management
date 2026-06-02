@@ -1,12 +1,15 @@
 """
 One-shot DB initializer: create all tables + seed admin user.
 
-Usage:
-  python -m scripts.init_db
-  # or via Railway:
-  railway run python -m scripts.init_db
+Usage (from /app inside Railway shell):
+  python scripts/init_db.py
 """
 import asyncio
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from sqlalchemy import text
 from app.core.database import engine, Base
 from app.core.config import settings

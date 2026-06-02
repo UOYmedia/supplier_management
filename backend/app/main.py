@@ -24,18 +24,20 @@ async def lifespan(app: FastAPI):
 
 
 async def _seed_admin():
-    """Create default admin user if no users exist."""
+    """Create default admin user if not exists. Credentials from ADMIN_USERNAME / ADMIN_PASSWORD env vars."""
     from sqlalchemy import select
     from app.core.database import AsyncSessionLocal
     from app.core.security import hash_password
     from app.models.user import User, UserRole
+    username = settings.ADMIN_USERNAME
+    password = settings.ADMIN_PASSWORD
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(select(User).where(User.username == "admin"))
+            result = await db.execute(select(User).where(User.username == username))
             if not result.scalar_one_or_none():
-                db.add(User(username="admin", hashed_password=hash_password("admin"), role=UserRole.admin))
+                db.add(User(username=username, hashed_password=hash_password(password), role=UserRole.admin))
                 await db.commit()
-                print("Default admin user created (admin/admin).", flush=True)
+                print(f"Default admin user created ({username}/****).", flush=True)
     except Exception as e:
         print(f"WARNING: seed admin failed: {e}", flush=True)
 
@@ -50,7 +52,7 @@ async def _run_migrations():
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS zipcode VARCHAR(20)",
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS username VARCHAR(100)",
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS hashed_password VARCHAR(255)",
-        # unique index on username (partial — ignores NULLs)
+        # unique index on username (partial -- ignores NULLs)
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_suppliers_username ON suppliers(username) WHERE username IS NOT NULL",
     ]
     try:
@@ -63,7 +65,7 @@ async def _run_migrations():
 
 
 app = FastAPI(
-    title="Maga — Supplier Fulfillment Platform",
+    title="Maga -- Supplier Fulfillment Platform",
     version="1.0.0",
     lifespan=lifespan,
 )

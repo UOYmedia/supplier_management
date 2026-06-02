@@ -124,6 +124,8 @@ export const ordersApi = {
   labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,
   parcelEstimate: (orderId: number, params?: object) =>
     api.get(`/orders/${orderId}/parcel-estimate`, { params }).then((r) => r.data),
+  syncTracking: (orderId: number) =>
+    api.post(`/orders/${orderId}/sync-tracking`).then((r) => r.data),
 };
 
 // EasyPost shipping
@@ -132,51 +134,4 @@ export const easypostApi = {
     api.post(`/orders/${orderId}/easypost/rates`, data).then((r) => r.data),
   buyLabel: (orderId: number, data: object) =>
     api.post(`/orders/${orderId}/easypost/buy`, data).then((r) => r.data),
-};
-
-// Amazon shipping
-export const amazonShippingApi = {
-  getRates: (orderId: number, data: object) =>
-    api.post(`/orders/${orderId}/amazon/rates`, data).then((r) => r.data),
-  buyLabel: (orderId: number, data: object) =>
-    api.post(`/orders/${orderId}/amazon/buy`, data).then((r) => r.data),
-};
-
-// Marketplace
-export const marketplaceApi = {
-  listConnections: () => api.get("/marketplace/connections").then((r) => r.data),
-  createConnection: (data: object) => api.post("/marketplace/connections", data).then((r) => r.data),
-  updateConnection: (id: number, data: object) => api.patch(`/marketplace/connections/${id}`, data).then((r) => r.data),
-  deleteConnection: (id: number) => api.delete(`/marketplace/connections/${id}`),
-  testConnection: (id: number) => api.post(`/marketplace/connections/${id}/test`).then((r) => r.data),
-  syncOrders: (id: number) => api.post(`/marketplace/connections/${id}/sync-orders`).then((r) => r.data),
-  syncProducts: (id: number) => api.post(`/marketplace/connections/${id}/sync-products`).then((r) => r.data),
-  syncLocations: (id: number) => api.post(`/marketplace/connections/${id}/sync-locations`).then((r) => r.data),
-  syncListings: (id: number) => api.post(`/marketplace/connections/${id}/sync-listings`).then((r) => r.data),
-  listListings: (params?: object) => api.get("/marketplace/listings", { params }).then((r) => r.data),
-  createListing: (data: object) => api.post("/marketplace/listings", data).then((r) => r.data),
-  updateListing: (id: number, data: object) => api.patch(`/marketplace/listings/${id}`, data).then((r) => r.data),
-  push: (data: object) => api.post("/marketplace/push", data).then((r) => r.data),
-  autoMap: () => api.post("/marketplace/auto-map").then((r) => r.data),
-};
-
-// Auth & Users
-export const authApi = {
-  login: (data: object) => api.post("/auth/login", data).then((r) => r.data),
-  me: () => api.get("/auth/me").then((r) => r.data),
-};
-
-export const usersApi = {
-  list: () => api.get("/users").then((r) => r.data),
-  create: (data: object) => api.post("/users", data).then((r) => r.data),
-  update: (id: number, data: object) => api.patch(`/users/${id}`, data).then((r) => r.data),
-  delete: (id: number) => api.delete(`/users/${id}`),
-};
-
-// Reports
-export const reportsApi = {
-  summary: (params?: object) => api.get("/reports/summary", { params }).then((r) => r.data),
-  byMarketplace: () => api.get("/reports/by-marketplace").then((r) => r.data),
-  bySupplier: () => api.get("/reports/by-supplier").then((r) => r.data),
-  inventoryAlert: (threshold?: number) => api.get("/reports/inventory-alert", { params: { threshold } }).then((r) => r.data),
 };

@@ -123,6 +123,34 @@ async def update_listing(listing_id: int, body: ListingUpdate, db: AsyncSession 
     return ListingOut(**data)
 
 
+# --- Auto-map listings to products by SKU ---
+
+@router.post("/listings/auto-map")
+async def auto_map_listings(db: AsyncSession = Depends(get_db)):
+    """Match unlinked listings to Products by marketplace_sku == Product.sku."""
+    result = await db.execute(
+        select(MarketplaceListing).where(MarketplaceListing.product_id.is_(None))
+    )
+    unlinked = result.scalars().all()
+    mapped = 0
+    unmatched = []
+    for listing in unlinked:
+        if not listing.marketplace_sku:
+            unmatched.append(listing.title or str(listing.id))
+            continue
+        prod_res = await db.execute(
+            select(Product).where(Product.sku == listing.marketplace_sku)
+        )
+        product = prod_res.scalar_one_or_none()
+        if product:
+            listing.product_id = product.id
+            mapped += 1
+        else:
+            unmatched.append(listing.marketplace_sku)
+    await db.commit()
+    return {"mapped": mapped, "unmatched": unmatched}
+
+
 # --- Push to marketplace ---
 
 @router.post("/push", response_model=SyncResult)

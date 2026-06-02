@@ -220,14 +220,17 @@ async def portal_orders(
                     resolved = True
             if not resolved:
                 # Tertiary fallback: match a SupplierProduct by SKU for this supplier
+                # (case-insensitive + trimmed, since marketplace SKUs vary in casing/whitespace)
                 if li.sku:
+                    from sqlalchemy import func
+                    norm_sku = li.sku.strip().lower()
                     sp_res = await db.execute(
                         select(SupplierProduct).where(
                             SupplierProduct.supplier_id == supplier.id,
-                            SupplierProduct.sku == li.sku,
+                            func.lower(func.trim(SupplierProduct.sku)) == norm_sku,
                         )
                     )
-                    sp = sp_res.scalar_one_or_none()
+                    sp = sp_res.scalars().first()
                     if sp:
                         out.append({
                             **base,

@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import verify_password, create_access_token, decode_token
 from app.models.supplier import Supplier, Invoice, SupplierProduct
-from app.models.product import Product, ProductSupplier
+from app.models.product import Product, ProductSupplier, ProductComponent
 from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderFulfillmentItem
 from app.api.v1.orders import _recalculate_order_status
 from app.api.v1.easypost import ParcelIn, RateOut, RatesResponse, DebugInfo
@@ -185,7 +185,6 @@ async def portal_orders(
                     "product_name": sp.name if sp else li.product_name,
                     "sku": sp.sku if sp else li.sku,
                     "image_url": sp.image_url if sp else None,
-                    # fi.quantity already equals order_qty x component_qty
                     "quantity": fi.quantity,
                     "supplier_status": _supplier_status(fi.fulfill_status, li.label_id),
                     "tracking_number": fi.tracking_number or li.tracking_number,
@@ -193,17 +192,44 @@ async def portal_orders(
                                      else (li.fulfilled_at.isoformat() if li.fulfilled_at else None)),
                 })
         else:
-            out.append({
-                **base,
-                "item_key": f"li_{li.id}",
-                "product_name": li.product_name,
-                "sku": li.sku,
-                "image_url": None,
-                "quantity": li.quantity,
-                "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
-                "tracking_number": li.tracking_number,
-                "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
-            })
+            resolved = False
+            if li.product_id:
+                comp_res = await db.execute(
+                    select(ProductComponent)
+                    .join(SupplierProduct, ProductComponent.supplier_product_id == SupplierProduct.id)
+                    .where(
+                        ProductComponent.product_id == li.product_id,
+                        SupplierProduct.supplier_id == supplier.id,
+                    )
+                )
+                comps = list(comp_res.scalars().all())
+                if comps:
+                    for comp in comps:
+                        sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                        out.append({
+                            **base,
+                            "item_key": f"comp_{comp.id}_{li.id}",
+                            "product_name": sp.name if sp else li.product_name,
+                            "sku": sp.sku if sp else li.sku,
+                            "image_url": sp.image_url if sp else None,
+                            "quantity": comp.quantity * li.quantity,
+                            "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
+                            "tracking_number": li.tracking_number,
+                            "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                        })
+                    resolved = True
+            if not resolved:
+                out.append({
+                    **base,
+                    "item_key": f"li_{li.id}",
+                    "product_name": li.product_name,
+                    "sku": li.sku,
+                    "image_url": None,
+                    "quantity": li.quantity,
+                    "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
+                    "tracking_number": li.tracking_number,
+                    "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                })
     return out
 
 

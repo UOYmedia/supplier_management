@@ -101,7 +101,7 @@ export default function PortalOrdersPage() {
 
   const [batchPrinting, setBatchPrinting] = useState(false);
 
-  // All labels with a label (PDF or URL) that are not yet shipped/printed
+  // Distinct labels that are bought but not yet shipped/printed in the current view
   const printableLabels = (() => {
     const map = new Map<number, number>(); // label_id -> order_id
     for (const i of items) {
@@ -497,12 +497,12 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
-              {(([[["weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
+              {(([["weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
                 <div key={k}>
                   <label className="label">{label} *</label>
                   <input className="input" type="number" step="0.1" min="0.1" value={(parcel as any)[k]} onChange={pf(k)} />
                 </div>
-              ))}
+              )))}
             </div>
             <div className="flex justify-end gap-2 mt-5">
               <button className="btn-secondary" onClick={onClose}>Cancel</button>

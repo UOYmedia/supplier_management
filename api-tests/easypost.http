@@ -50,6 +50,7 @@ Authorization: {{authToken}}
 # 3. Buy a rate (purchase label)
 # Uses shipment_id + rate_id from step 2.
 # EasyPost shipments can only be bought ONCE -- call /rates again if you need a new label.
+# If shipment_id was already bought, this returns the existing label (idempotent).
 POST {{baseUrl}}/orders/{{orderId}}/easypost/buy
 Content-Type: application/json
 Authorization: {{authToken}}
@@ -69,11 +70,18 @@ Authorization: {{authToken}}
 
 
 ###
+# 5. Get order event log (EasyPost debug history)
+GET {{baseUrl}}/orders/{{orderId}}/events
+Authorization: {{authToken}}
+
+
+###
 # -- Error cases -------------------------------------------------------------
 
 ###
-# 4a. Buy same shipment twice -> 409 Conflict
-# "Label already purchased for this shipment. Please create new rates to buy a different label."
+# 6a. Buy same shipment twice
+# -> If shipment_id already in DB: 200 OK (returns existing label, idempotent)
+# -> If EasyPost already has postage but not in DB: 409 Conflict
 POST {{baseUrl}}/orders/{{orderId}}/easypost/buy
 Content-Type: application/json
 Authorization: {{authToken}}
@@ -87,7 +95,7 @@ Authorization: {{authToken}}
 
 
 ###
-# 4b. Order with no shipping address -> 400
+# 6b. Order with no shipping address -> 400
 POST {{baseUrl}}/orders/99999/easypost/rates
 Content-Type: application/json
 Authorization: {{authToken}}
@@ -105,7 +113,7 @@ Authorization: {{authToken}}
 
 
 ###
-# 4c. Invalid order -> 404
+# 6c. Invalid order -> 404
 POST {{baseUrl}}/orders/0/easypost/rates
 Content-Type: application/json
 Authorization: {{authToken}}

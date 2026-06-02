@@ -110,3 +110,18 @@ class ShippingLabel(Base):
     purchased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     supplier: Mapped["Supplier"] = relationship(back_populates="shipping_labels")
+
+
+class OrderEvent(Base):
+    """Audit log for order activity -- EasyPost requests, errors, status changes."""
+    __tablename__ = "order_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(50))   # easypost_rates, easypost_buy, easypost_error, ...
+    level: Mapped[str] = mapped_column(String(10), default="info")  # info | warn | error
+    message: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict | None] = mapped_column(JSON)    # request/response data for debugging
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    order: Mapped["Order"] = relationship()

@@ -50,15 +50,6 @@ export default function OrderDetailPage() {
     },
   });
 
-  const markShippedMut = useMutation({
-    mutationFn: (data: object) => ordersApi.markShipped(oid, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["order", oid] });
-      toast.success("Marked as shipped");
-    },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
-  });
-
   const syncTrackingMut = useMutation({
     mutationFn: () => ordersApi.syncTracking(oid),
     onSuccess: (res: any) => {
@@ -67,20 +58,6 @@ export default function OrderDetailPage() {
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Shopify sync failed"),
   });
-
-  const markGroupShipped = (sid: number | null, items: any[]) => {
-    if (items.length === 0) return;
-    const tracking = window.prompt(
-      `Mark ${items.length} item(s) as shipped without buying a label?\n\nOptional — enter a tracking number (leave blank to skip):`,
-      ""
-    );
-    if (tracking === null) return; // cancelled
-    markShippedMut.mutate({
-      line_item_ids: items.map((li: any) => li.id),
-      supplier_id: sid,
-      tracking_number: tracking.trim() || undefined,
-    });
-  };
 
   // Auto-open Buy Label modal when navigated from supplier orders tab
   useEffect(() => {
@@ -159,10 +136,10 @@ export default function OrderDetailPage() {
       <div className="flex items-center gap-3 mb-6">
         <Link href="/orders" className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"><ArrowLeft className="w-4 h-4" /></Link>
         <div className="flex-1">
-          <h1 className="page-title">Order #{order.id}</h1>
+          <h1 className="page-title">{order.order_name || `Order #${order.id}`}</h1>
           <div className="flex items-center gap-2 mt-0.5">
             <p className="text-sm text-gray-500 capitalize">{order.marketplace} · {new Date(order.ordered_at).toLocaleString()}</p>
-            {order.external_order_id && (
+            {order.external_order_id && !order.order_name && (
               <span className="text-xs font-mono text-gray-400">{order.external_order_id}</span>
             )}
           </div>
@@ -292,16 +269,6 @@ export default function OrderDetailPage() {
                     title="Provide a label manually (tracking + optional PDF) without buying through a carrier"
                   >
                     <Tag className="w-3 h-3" /> Manual Label
-                  </button>
-                )}
-                {unshipped.length > 0 && (
-                  <button
-                    className="btn-secondary text-xs py-1"
-                    onClick={() => markGroupShipped(sid, unshipped)}
-                    disabled={markShippedMut.isPending}
-                    title="Mark these items shipped without buying a label (e.g. shipped outside the system)"
-                  >
-                    <CheckCircle2 className="w-3 h-3" /> Mark Shipped ({unshipped.length})
                   </button>
                 )}
               </div>

@@ -328,12 +328,16 @@ async def import_supplier_catalog(
         seen_skus.add(sku)
 
         try:
-            unit_price = Decimal(norm["unit_price"]) if norm.get("unit_price") else Decimal("0")
+            raw_price = norm.get("unit_price") or ""
+            raw_price = raw_price.replace("$", "").replace(",", "").strip()
+            unit_price = Decimal(raw_price) if raw_price else Decimal("0")
         except (InvalidOperation, KeyError):
             errors.append(f"Row {idx} (SKU {sku}): invalid unit_price")
             continue
         try:
-            stock_quantity = int(norm["stock_quantity"]) if norm.get("stock_quantity") else 0
+            raw_qty = norm.get("stock_quantity") or ""
+            raw_qty = raw_qty.replace(",", "").strip()
+            stock_quantity = int(raw_qty) if raw_qty else 0
         except (ValueError, KeyError):
             errors.append(f"Row {idx} (SKU {sku}): invalid stock_quantity")
             continue

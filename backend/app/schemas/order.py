@@ -107,6 +107,7 @@ class OrderOut(BaseModel):
     id: int
     marketplace: str
     external_order_id: str | None
+    order_name: str | None
     buyer_name: str | None
     buyer_email: str | None
     shipping_address: dict | None

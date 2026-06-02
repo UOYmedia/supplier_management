@@ -33,6 +33,7 @@ class Order(Base):
     connection_id: Mapped[int | None] = mapped_column(ForeignKey("marketplace_connections.id"))
     marketplace: Mapped[str] = mapped_column(String(50))  # amazon, shopify, manual
     external_order_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    order_name: Mapped[str | None] = mapped_column(String(255))  # Shopify #1001-style name
     buyer_name: Mapped[str | None] = mapped_column(String(255))
     buyer_email: Mapped[str | None] = mapped_column(String(255))
     shipping_address: Mapped[dict | None] = mapped_column(JSON)

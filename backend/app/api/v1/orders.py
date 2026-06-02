@@ -131,7 +131,13 @@ async def update_line_item(order_id: int, li_id: int, body: OrderLineItemUpdate,
 
 @router.post("/{order_id}/mark-shipped", response_model=OrderOut)
 async def mark_shipped(order_id: int, body: MarkShippedBody, db: AsyncSession = Depends(get_db)):
-    """Admin override: mark unshipped line items as shipped without buying a label."""
+    """Admin override: mark unshipped line items as shipped without buying a label.
+
+    Use for orders already shipped outside the system. Targets the explicitly
+    provided line_item_ids, or all unshipped items for a given supplier_id, or
+    every unshipped item in the order when neither is supplied. Cascades the
+    shipped status (and optional tracking number) to any fulfillment items.
+    """
     order = await _get_or_404(order_id, db)
 
     q = select(OrderLineItem).where(
@@ -193,6 +199,7 @@ async def assign_supplier_to_line_item(
     if body.base_cost is not None:
         li.base_cost = body.base_cost
 
+    # Create ProductSupplier relationship for future auto-assignment
     if li.product_id and body.create_product_supplier:
         ps_result = await db.execute(
             select(ProductSupplier).where(
@@ -210,6 +217,7 @@ async def assign_supplier_to_line_item(
             )
             db.add(ps)
         elif body.is_preferred:
+            # If setting this as preferred, clear others
             all_ps = await db.execute(
                 select(ProductSupplier).where(ProductSupplier.product_id == li.product_id)
             )
@@ -240,6 +248,8 @@ async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSessio
     db.add(label)
     await db.flush()
 
+    # Determine which line items to link:
+    # Use explicitly provided IDs, or auto-select all unshipped items for this supplier
     li_ids = body.line_item_ids
     if not li_ids:
         auto_result = await db.execute(
@@ -260,6 +270,7 @@ async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSessio
             li.label_id = label.id
             if body.tracking_number:
                 li.tracking_number = body.tracking_number
+            # Label bought → move to pending (awaiting shipment by supplier)
             if li.fulfill_status == FulfillStatus.unfulfilled:
                 li.fulfill_status = FulfillStatus.pending
 
@@ -292,6 +303,12 @@ async def mark_label_printed(order_id: int, label_id: int, db: AsyncSession = De
 async def update_label(
     order_id: int, label_id: int, body: ShippingLabelUpdate, db: AsyncSession = Depends(get_db)
 ):
+    """Edit an existing label (manual override / replay).
+
+    Lets an admin fix the carrier/service/cost, swap in a new tracking number,
+    or point label_url at a manually-provided label. The new tracking number
+    cascades to every line item (and fulfillment item) linked to this label.
+    """
     order = await _get_or_404(order_id, db)
     label = await db.get(ShippingLabel, label_id)
     if not label:
@@ -301,6 +318,7 @@ async def update_label(
     for k, v in data.items():
         setattr(label, k, v)
 
+    # Cascade a changed tracking number to the linked line/fulfillment items
     if "tracking_number" in data:
         li_res = await db.execute(
             select(OrderLineItem).where(
@@ -325,6 +343,12 @@ async def update_label(
 async def upload_label_pdf(
     order_id: int, label_id: int, file: UploadFile = File(...), db: AsyncSession = Depends(get_db)
 ):
+    """Attach a manually-provided PDF label to an existing label record.
+
+    Useful when a label was bought outside the system, or when the archived
+    PDF is missing and needs to be re-supplied (\"replay\"). The PDF is stored
+    base64-encoded so it can be served same-origin for printing.
+    """
     await _get_or_404(order_id, db)
     label = await db.get(ShippingLabel, label_id)
     if not label:
@@ -349,7 +373,8 @@ async def regenerate_label(
     size: str = Query("4x6", description="EasyPost label size, e.g. 4x6 or 7x3"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Regenerate the label PDF on demand.
+    """Regenerate the label PDF on demand (e.g. to repair a missing archive or
+    change the printed size).
 
     Preferred path: re-request the label PNG from EasyPost and build a combined
     PDF with the catalog overlay strip. Fallback: re-fetch the stored label_url.
@@ -366,6 +391,7 @@ async def regenerate_label(
     raw_png_bytes: bytes | None = None
     raw_pdf_bytes: bytes | None = None
 
+    # Preferred: regenerate PNG from EasyPost
     if label.shipment_id and settings.EASYPOST_API_KEY:
         from app.integrations.easypost.client import EasyPostClient, EasyPostError
         ep = EasyPostClient(settings.EASYPOST_API_KEY)
@@ -378,6 +404,7 @@ async def regenerate_label(
             if png_url:
                 label.label_url = png_url
 
+    # Fallback: re-fetch the stored label URL
     if raw_png_bytes is None and label.label_url:
         import httpx
         try:
@@ -396,6 +423,7 @@ async def regenerate_label(
     if raw_png_bytes is None and raw_pdf_bytes is None:
         raise HTTPException(400, "This label has no EasyPost shipment or stored URL to regenerate from — upload a PDF manually instead.")
 
+    # Build pack items using catalog lookup
     order = await _get_or_404(order_id, db)
     lis_result = await db.execute(
         select(OrderLineItem).where(
@@ -542,6 +570,7 @@ async def estimate_parcel(
 # --- Helpers ---
 
 async def _recalculate_order_status(order: Order, db: AsyncSession):
+    """Update order.status based on aggregate of line item fulfill_status values."""
     result = await db.execute(select(OrderLineItem).where(OrderLineItem.order_id == order.id))
     items = result.scalars().all()
     if not items:

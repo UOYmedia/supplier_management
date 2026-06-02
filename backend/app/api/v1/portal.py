@@ -115,7 +115,6 @@ async def portal_products(
 # --- Orders to fulfill ---
 
 def _supplier_status(fulfill_status: FulfillStatus, label_id: int | None) -> str:
-    """Map DB fulfill_status + label presence to supplier-facing status string."""
     if fulfill_status in (FulfillStatus.shipped, FulfillStatus.delivered):
         return "shipped"
     if fulfill_status == FulfillStatus.drop_off:
@@ -185,7 +184,6 @@ async def portal_orders(
                     "product_name": sp.name if sp else li.product_name,
                     "sku": sp.sku if sp else li.sku,
                     "image_url": sp.image_url if sp else None,
-                    # fi.quantity already equals order_qty x component_qty
                     "quantity": fi.quantity,
                     "supplier_status": _supplier_status(fi.fulfill_status, li.label_id),
                     "tracking_number": fi.tracking_number or li.tracking_number,
@@ -222,12 +220,10 @@ async def portal_batch_labels(
 ):
     """Combine every un-fulfilled label for this supplier into one PDF.
 
-    Each label is followed by a 4x6 pack-list page (name / SKU / qty + ship-to)
-    so the supplier can print the whole batch at once and pack from the slip.
+    Each label already has the carrier image and catalog overlay baked in
+    (built at buy time). This endpoint just concatenates them.
     """
-    from app.integrations.pdf_labels import (
-        LabelEntry, PackItem, build_batch_label_pdf, decode_label_data,
-    )
+    from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs
 
     wanted_ids: set[int] | None = None
     if label_ids:
@@ -236,7 +232,6 @@ async def portal_batch_labels(
         except ValueError:
             raise HTTPException(400, "Invalid label_ids")
 
-    # All of this supplier's line items that have a label and are not yet shipped
     q = select(OrderLineItem).where(
         OrderLineItem.supplier_id == supplier.id,
         OrderLineItem.label_id.isnot(None),
@@ -244,53 +239,25 @@ async def portal_batch_labels(
     ).order_by(OrderLineItem.order_id)
     lis = (await db.execute(q)).scalars().all()
 
-    # Group line items by label_id
-    by_label: dict[int, list[OrderLineItem]] = {}
+    seen: set[int] = set()
+    pdf_list: list[bytes] = []
     for li in lis:
+        if li.label_id is None or li.label_id in seen:
+            continue
         if wanted_ids is not None and li.label_id not in wanted_ids:
             continue
-        by_label.setdefault(li.label_id, []).append(li)
-
-    if not by_label:
-        raise HTTPException(404, "No printable labels found")
-
-    entries: list[LabelEntry] = []
-    for label_id, label_lis in by_label.items():
-        label = await db.get(ShippingLabel, label_id)
+        seen.add(li.label_id)
+        label = await db.get(ShippingLabel, li.label_id)
         if not label or label.supplier_id != supplier.id:
             continue
-        first_li = label_lis[0]
-        order = await db.get(Order, first_li.order_id)
+        pdf = decode_label_data(label.label_data)
+        if pdf:
+            pdf_list.append(pdf)
 
-        # Build pack items (prefer fulfillment items / supplier products)
-        pack_items: list[PackItem] = []
-        for li in label_lis:
-            fis = (await db.execute(
-                select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
-            )).scalars().all()
-            if fis:
-                for fi in fis:
-                    sp = await db.get(SupplierProduct, fi.supplier_product_id)
-                    pack_items.append(PackItem(
-                        name=sp.name if sp else li.product_name,
-                        sku=sp.sku if sp else li.sku,
-                        quantity=fi.quantity,
-                    ))
-            else:
-                pack_items.append(PackItem(name=li.product_name, sku=li.sku, quantity=li.quantity))
-
-        entries.append(LabelEntry(
-            order_label=(order.external_order_id if order and order.external_order_id else f"Order #{first_li.order_id}"),
-            ship_to=_addr_name(order.shipping_address if order else None),
-            tracking_number=label.tracking_number,
-            label_pdf=decode_label_data(label.label_data),
-            items=pack_items,
-        ))
-
-    if not entries:
+    if not pdf_list:
         raise HTTPException(404, "No printable labels found")
 
-    pdf_bytes = build_batch_label_pdf(entries)
+    pdf_bytes = concat_label_pdfs(pdf_list)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -380,7 +347,6 @@ async def portal_parcel_estimate(
     supplier: Supplier = Depends(get_current_supplier),
     db: AsyncSession = Depends(get_db),
 ):
-    """Same parcel estimate as the admin endpoint but scoped to the current supplier."""
     from app.api.v1.orders import estimate_parcel
     return await estimate_parcel(
         order_id=order_id,
@@ -429,7 +395,6 @@ async def portal_easypost_rates(
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 
-    # Return all rates from all carriers — no filtering
     all_rates = shipment.get("rates", [])
     print(f"[PORTAL RATES] EasyPost returned {len(all_rates)} rates total", flush=True)
     for r in all_rates:
@@ -493,7 +458,30 @@ async def portal_easypost_buy(
         bought.get("postage_label", {}).get("label_url")
         or bought.get("postage_label", {}).get("label_pdf_url")
     )
-    label_data = await ep.fetch_label_pdf_b64(bought)
+
+    from app.api.v1.orders import _catalog_items_for_line_item
+    import base64
+    pack_items = []
+    for li in items:
+        pack_items.extend(await _catalog_items_for_line_item(li, db))
+
+    carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
+    if carrier_png_b64 and pack_items:
+        from app.integrations.pdf_labels import LabelEntry, build_label_from_png
+        png_bytes = base64.b64decode(carrier_png_b64)
+        entry = LabelEntry(
+            order_label=(order.external_order_id or f"Order #{body.order_id}"),
+            ship_to=_addr_name(order.shipping_address),
+            tracking_number=tracking,
+            label_pdf=None,
+            items=pack_items,
+        )
+        label_data = base64.b64encode(build_label_from_png(png_bytes, entry)).decode()
+    elif carrier_png_b64:
+        from app.integrations.pdf_labels import image_to_label_pdf
+        label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
+    else:
+        label_data = None
 
     selected_rate = bought.get("selected_rate", {})
     label = ShippingLabel(

@@ -1,5 +1,4 @@
-"""
-Async EasyPost REST client (httpx).
+"""Async EasyPost REST client (httpx).
 Docs: https://www.easypost.com/docs/api
 """
 import base64
@@ -48,10 +47,10 @@ class EasyPostClient:
         return r.json()
 
     async def fetch_label_pdf_b64(self, shipment: dict) -> str | None:
-        """Download EasyPost PNG label and return base64-encoded PNG bytes.
+        """Download the EasyPost PNG label and return raw PNG bytes as base64.
 
-        Returns raw PNG (not a PDF) so callers can combine with catalog overlay
-        in a single reportlab canvas pass via build_label_from_png.
+        Using PNG avoids EasyPost's PDF formatting quirks (letter-size wrappers,
+        misaligned content). Callers build the final PDF with build_label_from_png.
         """
         pl = shipment.get("postage_label") or {}
         png_url = pl.get("label_png_url") or pl.get("label_url")
@@ -92,7 +91,11 @@ class EasyPostClient:
     async def regenerate_label(
         self, shipment_id: str, label_size: str = "4x6"
     ) -> tuple[str | None, str | None]:
-        """Re-fetch label PNG for a bought shipment. Returns (png_b64, label_url)."""
+        """Re-fetch the PNG label for a bought shipment. Returns (png_b64, label_url).
+
+        Raw PNG bytes are returned as base64; callers build the final PDF with
+        build_label_from_png so the catalog overlay is applied correctly.
+        """
         converted = await self._get(
             f"/shipments/{shipment_id}/label",
             params={"file_format": "png", "label_size": label_size},

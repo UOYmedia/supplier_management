@@ -132,6 +132,7 @@ async def get_rates(order_id: int, body: RatesRequest, db: AsyncSession = Depend
         )
         for r in shown_rates
     ]
+    # Sort cheapest first
     rates_out.sort(key=lambda r: float(r.rate))
 
     debug = DebugInfo(
@@ -190,14 +191,16 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         if li_obj:
             pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
 
-    # Download carrier PNG and build combined PDF (single reportlab canvas pass)
+    # Download carrier PNG and build combined PDF with catalog overlay
     carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
+
+    def _ship_name(addr: dict | None) -> str | None:
+        if not addr:
+            return None
+        return addr.get("name") or addr.get("Name") or addr.get("buyer_name")
+
     if carrier_png_b64 and pack_items:
         from app.integrations.pdf_labels import LabelEntry, build_label_from_png
-        def _ship_name(addr: dict | None) -> str | None:
-            if not addr:
-                return None
-            return addr.get("name") or addr.get("Name") or addr.get("buyer_name")
         png_bytes = base64.b64decode(carrier_png_b64)
         entry = LabelEntry(
             order_label=(order.external_order_id or f"Order #{order_id}"),
@@ -209,9 +212,7 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         label_data = base64.b64encode(build_label_from_png(png_bytes, entry)).decode()
     elif carrier_png_b64:
         from app.integrations.pdf_labels import image_to_label_pdf
-        label_data = base64.b64encode(
-            image_to_label_pdf(base64.b64decode(carrier_png_b64))
-        ).decode()
+        label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
     else:
         label_data = None
 

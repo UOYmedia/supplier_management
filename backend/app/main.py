@@ -85,6 +85,7 @@ async def _run_migrations():
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS connection_id INTEGER REFERENCES marketplace_connections(id)",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_email VARCHAR(255)",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_name VARCHAR(255)",
         # order_line_items: columns added after initial deploy
         "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS listing_id INTEGER REFERENCES marketplace_listings(id)",
         "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS external_line_item_id VARCHAR(255)",

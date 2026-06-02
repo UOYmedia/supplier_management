@@ -108,17 +108,24 @@ class EasyPostClient:
             params={"file_format": "png", "label_size": label_size},
         )
         pl = converted.get("postage_label") or {}
-        png_url = pl.get("label_png_url") or pl.get("label_url")
+        # Only use the explicit PNG URL — label_url may still point to a PDF even
+        # when file_format=png is requested (EasyPost doesn't always regenerate).
+        png_url = pl.get("label_png_url")
+        # label_url (PDF or otherwise) is still useful for the ShippingLabel.label_url field.
+        any_url = pl.get("label_url") or png_url
         if not png_url:
-            return None, None
+            return None, any_url
         try:
             async with httpx.AsyncClient(timeout=30) as http:
                 r = await http.get(png_url)
                 if not r.is_success:
-                    return None, png_url
+                    return None, any_url
+            # Validate PNG magic bytes so we never pass PDF bytes to ImageReader
+            if r.content[:8] != b'\x89PNG\r\n\x1a\n':
+                return None, any_url
             return base64.b64encode(r.content).decode(), png_url
         except Exception:
-            return None, png_url
+            return None, any_url
 
     async def create_tracker(self, tracking_code: str, carrier: str = "USPS") -> dict:
         """Create (or look up existing) EasyPost tracker. Returns tracker with .status field.

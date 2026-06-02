@@ -318,21 +318,27 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
             return None
         return addr.get("name") or addr.get("Name") or addr.get("buyer_name")
 
-    if carrier_png_b64 and pack_items:
-        from app.integrations.pdf_labels import LabelEntry, build_label_from_png
-        png_bytes = base64.b64decode(carrier_png_b64)
-        entry = LabelEntry(
-            order_label=(order.external_order_id or f"Order #{order_id}"),
-            ship_to=_ship_name(order.shipping_address),
-            tracking_number=tracking,
-            label_pdf=None,
-            items=pack_items,
-        )
-        label_data = base64.b64encode(build_label_from_png(png_bytes, entry)).decode()
-    elif carrier_png_b64:
-        from app.integrations.pdf_labels import image_to_label_pdf
-        label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
-    else:
+    try:
+        if carrier_png_b64 and pack_items:
+            from app.integrations.pdf_labels import LabelEntry, build_label_from_png
+            png_bytes = base64.b64decode(carrier_png_b64)
+            entry = LabelEntry(
+                order_label=(order.external_order_id or f"Order #{order_id}"),
+                ship_to=_ship_name(order.shipping_address),
+                tracking_number=tracking,
+                label_pdf=None,
+                items=pack_items,
+            )
+            label_data = base64.b64encode(build_label_from_png(png_bytes, entry)).decode()
+        elif carrier_png_b64:
+            from app.integrations.pdf_labels import image_to_label_pdf
+            label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
+        else:
+            label_data = None
+    except Exception as pdf_err:
+        await _log(db, order_id, "easypost_buy",
+                   f"Label PDF generation failed (non-fatal): {pdf_err}",
+                   level="warn", payload={"shipment_id": body.shipment_id})
         label_data = None
 
     label = ShippingLabel(

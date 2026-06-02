@@ -3,7 +3,7 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, productsApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, ChevronRight, RefreshCw, X, Trash2, Search, Tag, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, ChevronRight, RefreshCw, X, Trash2, Search, Tag, ChevronDown, ChevronUp, Upload } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { OrderStatusBadge } from "./order-status-badge";
@@ -26,6 +26,7 @@ interface LabelDraft {
   service: string;
   tracking: string;
   cost: string;
+  file: File | null;
 }
 
 const emptyLineItem = (): LineItemDraft => ({
@@ -42,6 +43,7 @@ const emptyLabel = (): LabelDraft => ({
   service: "",
   tracking: "",
   cost: "0",
+  file: null,
 });
 
 export default function OrdersPage() {
@@ -251,13 +253,16 @@ function CreateOrderModal({ onClose, onCreated }: { onClose: () => void; onCreat
 
       if (label.enabled && label.carrier.trim()) {
         const allLiIds = (order.line_items ?? []).map((li: any) => li.id);
-        await ordersApi.createLabel(order.id, {
+        const createdLabel = await ordersApi.createLabel(order.id, {
           carrier: label.carrier.trim(),
           service: label.service.trim() || undefined,
           tracking_number: label.tracking.trim() || undefined,
           cost: parseFloat(label.cost) || 0,
           line_item_ids: allLiIds,
         });
+        if (label.file) {
+          await ordersApi.uploadLabel(order.id, createdLabel.id, label.file);
+        }
       }
 
       toast.success(`Order #${order.id} created`);
@@ -432,6 +437,24 @@ function CreateOrderModal({ onClose, onCreated }: { onClose: () => void; onCreat
                 <div>
                   <label className="label">Label Cost ($)</label>
                   <input className="input" type="number" step="0.01" min={0} value={label.cost} onChange={(e) => setLabel((l) => ({ ...l, cost: e.target.value }))} />
+                </div>
+                <div className="col-span-2">
+                  <label className="label">Label File (PDF / image) — for supplier printing</label>
+                  <label className="btn-secondary cursor-pointer inline-flex gap-2">
+                    <Upload className="w-4 h-4" />
+                    {label.file ? label.file.name : "Choose file…"}
+                    <input
+                      type="file"
+                      accept="application/pdf,.pdf,image/*"
+                      className="hidden"
+                      onChange={(e) => setLabel((l) => ({ ...l, file: e.target.files?.[0] ?? null }))}
+                    />
+                  </label>
+                  {label.file && (
+                    <button className="ml-2 text-xs text-red-400 hover:text-red-600" onClick={() => setLabel((l) => ({ ...l, file: null }))}>
+                      Remove
+                    </button>
+                  )}
                 </div>
               </div>
             )}

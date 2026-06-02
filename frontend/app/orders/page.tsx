@@ -89,8 +89,8 @@ export default function OrdersPage() {
             ) : orders.map((o: any) => (
               <tr key={o.id}>
                 <td>
-                  <div className="font-medium">#{o.id}</div>
-                  {o.external_order_id && <div className="text-xs text-gray-400 font-mono">{o.external_order_id}</div>}
+                  <div className="font-medium">{o.order_name || `#${o.id}`}</div>
+                  {o.external_order_id && !o.order_name && <div className="text-xs text-gray-400 font-mono">{o.external_order_id}</div>}
                 </td>
                 <td><span className="capitalize badge-gray">{o.marketplace}</span></td>
                 <td>
@@ -120,33 +120,25 @@ export default function OrdersPage() {
 }
 
 /**
- * Single input that doubles as catalog search + free-text entry.
- * - onSelect: user picked from suggestions (catalog product)
- * - onChange: user is typing freely (manual name)
- * - selectedProductId: when set, shows a small "catalog" badge
+ * Product search field with server-side search (debounced API call).
+ * Searches across the full catalog regardless of size.
  */
 function ProductSearchField({
   value,
   selectedProductId,
-  products,
   onSelect,
   onChange,
 }: {
   value: string;
   selectedProductId?: number;
-  products: any[];
   onSelect: (p: any) => void;
   onChange: (name: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [results, setResults] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  const filtered = value.trim()
-    ? products.filter((p) =>
-        p.name.toLowerCase().includes(value.toLowerCase()) ||
-        p.sku.toLowerCase().includes(value.toLowerCase())
-      ).slice(0, 20)
-    : products.slice(0, 20);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -156,30 +148,48 @@ function ProductSearchField({
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  const search = (q: string) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (!q.trim()) { setResults([]); return; }
+    timerRef.current = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const data = await productsApi.list({ search: q.trim(), limit: 20 });
+        setResults(data);
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 250);
+  };
+
   return (
     <div className="relative" ref={ref}>
       <div className="relative">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
         <input
           className="input pl-8"
-          placeholder="Search catalog or type name…"
+          placeholder="Search by name or SKU…"
           value={value}
-          onChange={(e) => { onChange(e.target.value); setOpen(true); }}
-          onFocus={() => setOpen(true)}
+          onChange={(e) => { onChange(e.target.value); search(e.target.value); setOpen(true); }}
+          onFocus={() => { if (value.trim()) setOpen(true); }}
         />
         {selectedProductId && (
           <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium pointer-events-none">catalog</span>
         )}
       </div>
-      {open && filtered.length > 0 && (
+      {open && (results.length > 0 || loading) && (
         <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-          {filtered.map((p) => (
+          {loading ? (
+            <div className="px-3 py-2 text-xs text-gray-400">Searching…</div>
+          ) : results.map((p) => (
             <button
               key={p.id}
               type="button"
               className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-gray-100 last:border-0"
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => { onSelect(p); setOpen(false); }}
+              onClick={() => { onSelect(p); setOpen(false); setResults([]); }}
             >
               <div className="text-sm font-medium truncate">{p.name}</div>
               <div className="text-xs text-gray-500 font-mono">{p.sku} · cost ${parseFloat(p.base_cost).toFixed(2)}</div>
@@ -202,12 +212,6 @@ function CreateOrderModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [label, setLabel] = useState<LabelDraft>(emptyLabel());
   const [addrOpen, setAddrOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-
-  const { data: products = [] } = useQuery({
-    queryKey: ["products-list"],
-    queryFn: () => productsApi.list({ limit: 500 }),
-    staleTime: 60_000,
-  });
 
   const updateItem = (i: number, patch: Partial<LineItemDraft>) => {
     setLineItems((prev) => prev.map((it, idx) => idx === i ? { ...it, ...patch } : it));
@@ -379,7 +383,6 @@ function CreateOrderModal({ onClose, onCreated }: { onClose: () => void; onCreat
                       <ProductSearchField
                         value={it.product_name}
                         selectedProductId={it.product_id}
-                        products={products}
                         onSelect={(p) => selectProduct(i, p)}
                         onChange={(name) => updateItem(i, { product_name: name, product_id: undefined })}
                       />

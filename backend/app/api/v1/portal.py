@@ -157,6 +157,7 @@ async def portal_orders(
     result = await db.execute(q.order_by(OrderLineItem.id.desc()))
     lis = result.scalars().all()
     out = []
+    created_ofi = False  # backfill flag: persist resolved catalog links so they survive
     for li in lis:
         order = await db.get(Order, li.order_id)
         label = await db.get(ShippingLabel, li.label_id) if li.label_id else None
@@ -206,6 +207,18 @@ async def portal_orders(
                 if comps:
                     for comp in comps:
                         sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                        # Backfill: persist the catalog link so future loads/parcel
+                        # estimates/label overlays resolve via OrderFulfillmentItem.
+                        db.add(OrderFulfillmentItem(
+                            order_line_item_id=li.id,
+                            supplier_product_id=comp.supplier_product_id,
+                            quantity=comp.quantity * li.quantity,
+                            fulfill_status=li.fulfill_status.value,
+                            tracking_number=li.tracking_number,
+                            label_id=li.label_id,
+                            fulfilled_at=li.fulfilled_at,
+                        ))
+                        created_ofi = True
                         out.append({
                             **base,
                             "item_key": f"comp_{comp.id}_{li.id}",
@@ -232,6 +245,17 @@ async def portal_orders(
                     )
                     sp = sp_res.scalars().first()
                     if sp:
+                        # Backfill: persist the catalog link via OrderFulfillmentItem.
+                        db.add(OrderFulfillmentItem(
+                            order_line_item_id=li.id,
+                            supplier_product_id=sp.id,
+                            quantity=li.quantity,
+                            fulfill_status=li.fulfill_status.value,
+                            tracking_number=li.tracking_number,
+                            label_id=li.label_id,
+                            fulfilled_at=li.fulfilled_at,
+                        ))
+                        created_ofi = True
                         out.append({
                             **base,
                             "item_key": f"li_{li.id}",
@@ -256,6 +280,8 @@ async def portal_orders(
                     "tracking_number": li.tracking_number,
                     "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
                 })
+    if created_ofi:
+        await db.commit()
     return out
 
 

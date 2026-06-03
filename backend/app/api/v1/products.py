@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -12,6 +13,7 @@ from app.schemas.product import (
 from app.schemas.supplier_product import (
     ProductComponentCreate, ProductComponentUpdate, ProductComponentOut
 )
+import csv
 import pandas as pd
 import io
 
@@ -208,6 +210,170 @@ async def delete_mapping(component_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Mapping not found")
     await db.delete(comp)
     await db.commit()
+
+
+@router.get("/mappings/template.csv")
+async def mappings_template_csv():
+    """Download a blank CSV template for bulk mapping import."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["marketplace_sku", "supplier_sku", "units"])
+    writer.writerow(["B0GX5Z686V", "SUP-SKU-001", "1"])
+    content = "﻿".encode("utf-8") + buf.getvalue().encode("utf-8")
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="mappings_template.csv"'},
+    )
+
+
+@router.post("/mappings/import/csv", status_code=201)
+async def import_mappings_csv(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk-import SKU mappings from CSV.
+    Required columns: marketplace_sku, supplier_sku
+    Optional: units (default 1)
+    Rows are upserted: existing mappings are updated, new ones created.
+    supplier_sku is matched against SupplierProduct.sku (case-insensitive).
+    If a supplier_sku exists in multiple suppliers the row is flagged as ambiguous.
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Uploaded file is empty")
+
+    if raw[:4] in (b"PK\x03\x04", b"PK\x05\x06") or raw[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        raise HTTPException(400, "Please upload a CSV file, not an Excel file. In Excel: File → Save As → CSV.")
+
+    # Encoding detection
+    if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+        enc_order = ("utf-16", "utf-16-le", "utf-16-be")
+    elif raw[:3] == b'\xef\xbb\xbf':
+        enc_order = ("utf-8-sig",)
+    else:
+        enc_order = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
+
+    text = None
+    for enc in enc_order:
+        try:
+            candidate = raw.decode(enc)
+            if candidate.count('\x00') <= len(candidate) * 0.2:
+                text = candidate
+                break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    if text is None:
+        raise HTTPException(400, "Could not decode CSV — please save as UTF-8")
+
+    text = text.lstrip('﻿')
+
+    # Delimiter detection
+    detected = None
+    try:
+        detected = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+    except csv.Error:
+        pass
+
+    reader = None
+    for candidate in ([detected] if detected else []) + [",", ";", "\t"]:
+        if candidate is None:
+            continue
+        kw = {"dialect": candidate} if not isinstance(candidate, str) else {"delimiter": candidate}
+        r = csv.DictReader(io.StringIO(text), **kw)
+        norm = {(f or "").strip().lstrip('﻿').lower() for f in (r.fieldnames or [])}
+        if {"marketplace_sku", "supplier_sku"} <= norm:
+            reader = r
+            break
+
+    if reader is None:
+        raise HTTPException(
+            400,
+            "CSV must contain columns 'marketplace_sku' and 'supplier_sku'. "
+            "Download the template for the correct format."
+        )
+
+    # Pre-load all SupplierProducts indexed by lower-cased SKU
+    all_sp_res = await db.execute(select(SupplierProduct))
+    sp_by_sku: dict[str, list[SupplierProduct]] = {}
+    for sp in all_sp_res.scalars().all():
+        key = sp.sku.strip().lower()
+        sp_by_sku.setdefault(key, []).append(sp)
+
+    created = updated = 0
+    errors: list[str] = []
+
+    for idx, row in enumerate(reader, start=2):
+        norm_row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+        marketplace_sku = norm_row.get("marketplace_sku", "").strip()
+        supplier_sku = norm_row.get("supplier_sku", "").strip()
+        try:
+            units = max(1, int(norm_row.get("units") or "1"))
+        except ValueError:
+            errors.append(f"Row {idx}: invalid units value '{norm_row.get('units')}'")
+            continue
+
+        if not marketplace_sku or not supplier_sku:
+            errors.append(f"Row {idx}: marketplace_sku and supplier_sku are required")
+            continue
+
+        matches = sp_by_sku.get(supplier_sku.lower(), [])
+        if not matches:
+            errors.append(f"Row {idx} ({marketplace_sku}): supplier_sku '{supplier_sku}' not found in any catalog")
+            continue
+        if len(matches) > 1:
+            names = ", ".join(f"{sp.sku} (supplier {sp.supplier_id})" for sp in matches)
+            errors.append(f"Row {idx} ({marketplace_sku}): supplier_sku '{supplier_sku}' is ambiguous — found in multiple suppliers: {names}")
+            continue
+
+        sp = matches[0]
+
+        # Find or create Product for this marketplace SKU
+        prod_res = await db.execute(
+            select(Product).where(func.lower(func.trim(Product.sku)) == marketplace_sku.lower())
+        )
+        product = prod_res.scalar_one_or_none()
+        if not product:
+            product = Product(name=marketplace_sku, sku=marketplace_sku, base_cost=sp.unit_price)
+            db.add(product)
+            await db.flush()
+
+        # Upsert ProductComponent
+        comp_res = await db.execute(
+            select(ProductComponent).where(
+                ProductComponent.product_id == product.id,
+                ProductComponent.supplier_product_id == sp.id,
+            )
+        )
+        comp = comp_res.scalar_one_or_none()
+        if comp:
+            comp.quantity = units
+            updated += 1
+        else:
+            db.add(ProductComponent(
+                product_id=product.id,
+                supplier_product_id=sp.id,
+                quantity=units,
+            ))
+            created += 1
+
+        # Ensure ProductSupplier link exists
+        ps_res = await db.execute(
+            select(ProductSupplier).where(
+                ProductSupplier.product_id == product.id,
+                ProductSupplier.supplier_id == sp.supplier_id,
+            )
+        )
+        if not ps_res.scalar_one_or_none():
+            db.add(ProductSupplier(
+                product_id=product.id,
+                supplier_id=sp.supplier_id,
+                cost=sp.unit_price * units,
+                is_preferred=True,
+            ))
+
+    await db.commit()
+    return {"created": created, "updated": updated, "errors": errors}
 
 
 @router.get("/{product_id}", response_model=ProductOut)

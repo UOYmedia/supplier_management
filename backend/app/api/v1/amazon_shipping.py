@@ -69,7 +69,6 @@ def _get_amazon_client(conn: MarketplaceConnection) -> AmazonSPClient:
         client_secret=creds.get("client_secret", ""),
         refresh_token=creds.get("refresh_token", ""),
         marketplace_id=conn.marketplace_id or "ATVPDKIKX0DER",
-        sandbox=creds.get("sandbox", False),
     )
 
 

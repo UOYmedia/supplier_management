@@ -220,6 +220,20 @@ async def debug_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
                 add("shop_api", False, error=f"{type(e).__name__}: {str(e)[:500]}",
                     hint="Check access_token scope (read_orders / read_products) and shop_url.")
 
+            # What scopes does this token actually have? Unversioned endpoint.
+            try:
+                import httpx as _httpx
+                async with _httpx.AsyncClient() as _c:
+                    _r = await _c.get(
+                        f"{conn.shop_url.rstrip('/')}/admin/oauth/access_scopes.json",
+                        headers={"X-Shopify-Access-Token": creds["access_token"]},
+                    )
+                    _r.raise_for_status()
+                    handles = sorted(s.get("handle", "") for s in _r.json().get("access_scopes", []))
+                    add("token_scopes", True, scopes=handles)
+            except Exception as e:
+                add("token_scopes", False, error=f"{type(e).__name__}: {str(e)[:300]}")
+
         else:
             add("marketplace_type", False, error=f"Unknown marketplace: {marketplace!r}")
 

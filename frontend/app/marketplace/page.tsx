@@ -79,7 +79,8 @@ export default function MarketplacePage() {
   );
 }
 
-function ConnectionCard({ conn, onTest, onDebug, onSyncOrders, onSyncProducts, onDelete }: any) {
+function ConnectionCard(props: any) {
+  const { conn } = props;
   const statusIcon = conn.status === "active" ? (
     <CheckCircle className="w-4 h-4 text-green-500" />
   ) : conn.status === "error" ? (
@@ -110,19 +111,19 @@ function ConnectionCard({ conn, onTest, onDebug, onSyncOrders, onSyncProducts, o
         Last synced: {conn.last_synced_at ? new Date(conn.last_synced_at).toLocaleString() : "Never"}
       </div>
       <div className="flex flex-wrap gap-2">
-        <button className="btn-secondary text-xs py-1 flex-1" onClick={onTest}>
+        <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onTest}>
           <Zap className="w-3 h-3" /> Test
         </button>
-        <button className="btn-secondary text-xs py-1 flex-1" onClick={onDebug}>
+        <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onDebug}>
           <Bug className="w-3 h-3" /> Debug
         </button>
-        <button className="btn-secondary text-xs py-1 flex-1" onClick={onSyncOrders}>
+        <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onSyncOrders}>
           <RefreshCw className="w-3 h-3" /> Sync Orders
         </button>
-        <button className="btn-secondary text-xs py-1 flex-1" onClick={onSyncProducts}>
+        <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onSyncProducts}>
           <Package className="w-3 h-3" /> Sync Products
         </button>
-        <button className="p-1.5 hover:text-red-500 text-gray-400" onClick={onDelete}>
+        <button className="p-1.5 hover:text-red-500 text-gray-400" onClick={props.onDelete}>
           <Trash2 className="w-4 h-4" />
         </button>
       </div>

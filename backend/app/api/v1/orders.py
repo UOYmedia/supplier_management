@@ -170,9 +170,13 @@ async def mark_shipped(order_id: int, body: MarkShippedBody, db: AsyncSession = 
                 fi.fulfilled_at = now
                 if body.tracking_number:
                     fi.tracking_number = body.tracking_number
+                sp_stock = await db.get(SupplierProduct, fi.supplier_product_id)
+                if sp_stock:
+                    sp_stock.stock_quantity = max(0, sp_stock.stock_quantity - fi.quantity)
 
     await _recalculate_order_status(order, db)
     await db.commit()
+    await _try_push_marketplace_tracking(order, db)
     return await _order_out(order, db)
 
 
@@ -195,35 +199,97 @@ async def assign_supplier_to_line_item(
     if not supplier:
         raise HTTPException(404, "Supplier not found")
 
-    li.supplier_id = body.supplier_id
-    if body.base_cost is not None:
-        li.base_cost = body.base_cost
+    # Validate supplier_product_id belongs to this supplier
+    sp = await db.get(SupplierProduct, body.supplier_product_id)
+    if not sp or sp.supplier_id != body.supplier_id:
+        raise HTTPException(400, "Catalog item not found for this supplier")
 
-    # Create ProductSupplier relationship for future auto-assignment
-    if li.product_id and body.create_product_supplier:
-        ps_result = await db.execute(
-            select(ProductSupplier).where(
-                ProductSupplier.product_id == li.product_id,
-                ProductSupplier.supplier_id == body.supplier_id,
+    # Remove stale OFIs when re-assigning to a different catalog item
+    old_fi_res = await db.execute(
+        select(OrderFulfillmentItem).where(
+            OrderFulfillmentItem.order_line_item_id == li.id,
+            OrderFulfillmentItem.supplier_product_id != sp.id,
+        )
+    )
+    for old_fi in old_fi_res.scalars().all():
+        await db.delete(old_fi)
+
+    li.supplier_id = body.supplier_id
+    effective_cost = body.base_cost if body.base_cost is not None else (sp.unit_price * body.units)
+    li.base_cost = effective_cost
+
+    # If line item has no product_id, try to resolve it from SKU now so the
+    # ProductComponent link can be stored for future orders with the same product.
+    if not li.product_id and li.sku:
+        from sqlalchemy import func as sqlfunc
+        prod_res = await db.execute(
+            select(Product).where(sqlfunc.lower(sqlfunc.trim(Product.sku)) == li.sku.strip().lower())
+        )
+        product = prod_res.scalar_one_or_none()
+        if product:
+            li.product_id = product.id
+
+    # Upsert ProductComponent (product → supplier catalog item) — reusable for all
+    # future orders that carry the same product_id.
+    if li.product_id:
+        comp_res = await db.execute(
+            select(ProductComponent).where(
+                ProductComponent.product_id == li.product_id,
+                ProductComponent.supplier_product_id == sp.id,
             )
         )
-        ps = ps_result.scalar_one_or_none()
-        if not ps:
-            ps = ProductSupplier(
+        comp = comp_res.scalar_one_or_none()
+        if not comp:
+            db.add(ProductComponent(
                 product_id=li.product_id,
-                supplier_id=body.supplier_id,
-                cost=body.base_cost if body.base_cost is not None else li.base_cost,
-                is_preferred=body.is_preferred,
+                supplier_product_id=sp.id,
+                quantity=body.units,
+            ))
+        else:
+            comp.quantity = body.units
+
+        # Create ProductSupplier relationship for future auto-assignment
+        if body.create_product_supplier:
+            ps_result = await db.execute(
+                select(ProductSupplier).where(
+                    ProductSupplier.product_id == li.product_id,
+                    ProductSupplier.supplier_id == body.supplier_id,
+                )
             )
-            db.add(ps)
-        elif body.is_preferred:
-            # If setting this as preferred, clear others
-            all_ps = await db.execute(
-                select(ProductSupplier).where(ProductSupplier.product_id == li.product_id)
-            )
-            for other in all_ps.scalars().all():
-                other.is_preferred = False
-            ps.is_preferred = True
+            ps_link = ps_result.scalar_one_or_none()
+            if not ps_link:
+                ps_link = ProductSupplier(
+                    product_id=li.product_id,
+                    supplier_id=body.supplier_id,
+                    cost=effective_cost,
+                    is_preferred=body.is_preferred,
+                )
+                db.add(ps_link)
+            elif body.is_preferred:
+                all_ps = await db.execute(
+                    select(ProductSupplier).where(ProductSupplier.product_id == li.product_id)
+                )
+                for other in all_ps.scalars().all():
+                    other.is_preferred = False
+                ps_link.is_preferred = True
+
+    # Always create/upsert OrderFulfillmentItem for this specific line item,
+    # whether or not product_id exists — this is what the supplier sees immediately.
+    fi_res = await db.execute(
+        select(OrderFulfillmentItem).where(
+            OrderFulfillmentItem.order_line_item_id == li.id,
+            OrderFulfillmentItem.supplier_product_id == sp.id,
+        )
+    )
+    fi = fi_res.scalar_one_or_none()
+    if not fi:
+        db.add(OrderFulfillmentItem(
+            order_line_item_id=li.id,
+            supplier_product_id=sp.id,
+            quantity=body.units * li.quantity,
+        ))
+    else:
+        fi.quantity = body.units * li.quantity
 
     await db.commit()
     await db.refresh(li)
@@ -277,6 +343,8 @@ async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSessio
     await _recalculate_order_status(order, db)
     await db.commit()
     await db.refresh(label)
+    if body.tracking_number:
+        await _try_push_marketplace_tracking(order, db)
     return label
 
 
@@ -293,10 +361,48 @@ async def list_labels(order_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{order_id}/labels/{label_id}/mark-printed")
 async def mark_label_printed(order_id: int, label_id: int, db: AsyncSession = Depends(get_db)):
+    """After the supplier prints the label we treat the items as shipped
+    (label is committed at the carrier the moment it's purchased). Flip all
+    line items + fulfillment items attached to this label, decrement supplier
+    stock, then best-effort push tracking back to the marketplace (Shopify)."""
     label = await db.get(ShippingLabel, label_id)
     if not label:
         raise HTTPException(404, "Label not found")
-    return {"status": "ok", "label_id": label_id}
+    order = await _get_or_404(order_id, db)
+
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.order_id == order_id,
+            OrderLineItem.label_id == label_id,
+        )
+    )
+    lis = list(li_res.scalars().all())
+    now = datetime.now(timezone.utc)
+    flipped = 0
+    for li in lis:
+        if li.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+            li.fulfill_status = FulfillStatus.shipped
+            if not li.fulfilled_at:
+                li.fulfilled_at = now
+            flipped += 1
+        if label.tracking_number and not li.tracking_number:
+            li.tracking_number = label.tracking_number
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        for fi in fi_res.scalars().all():
+            if fi.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+                fi.fulfill_status = FulfillStatus.shipped
+                if not fi.fulfilled_at:
+                    fi.fulfilled_at = now
+                sp_stock = await db.get(SupplierProduct, fi.supplier_product_id)
+                if sp_stock:
+                    sp_stock.stock_quantity = max(0, sp_stock.stock_quantity - fi.quantity)
+
+    await _recalculate_order_status(order, db)
+    await db.commit()
+    await _try_push_marketplace_tracking(order, db)
+    return {"status": "ok", "label_id": label_id, "marked_shipped": flipped}
 
 
 @router.patch("/{order_id}/labels/{label_id}", response_model=ShippingLabelOut)
@@ -336,6 +442,8 @@ async def update_label(
 
     await db.commit()
     await db.refresh(label)
+    if "tracking_number" in data and data["tracking_number"]:
+        await _try_push_marketplace_tracking(order, db)
     return label
 
 
@@ -474,6 +582,125 @@ async def regenerate_label(
     return label
 
 
+async def _push_shopify_tracking(order: Order, db: AsyncSession) -> dict:
+    """Internal helper — push tracking back to Shopify via FulfillmentOrders API.
+    Returns dict with synced/errors/tracking_number. Caller decides whether to
+    raise HTTPException or just log."""
+    if order.marketplace != "shopify":
+        return {"skipped": "not a shopify order"}
+    if not order.external_order_id:
+        return {"skipped": "no external order id"}
+    if not order.connection_id:
+        return {"skipped": "no connection"}
+
+    from app.models.marketplace import MarketplaceConnection
+    conn = await db.get(MarketplaceConnection, order.connection_id)
+    if not conn:
+        return {"error": "connection not found"}
+    creds = conn.credentials or {}
+    access_token = creds.get("access_token")
+    shop_url = conn.shop_url or creds.get("shop_url")
+    if not access_token or not shop_url:
+        return {"error": "shopify credentials incomplete"}
+
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.order_id == order.id,
+            OrderLineItem.label_id.isnot(None),
+        )
+    )
+    lis = li_res.scalars().all()
+    label_ids = list({li.label_id for li in lis if li.label_id})
+    if not label_ids:
+        return {"skipped": "no labels yet"}
+
+    labels_map: dict[int, ShippingLabel] = {}
+    for lid in label_ids:
+        lbl = await db.get(ShippingLabel, lid)
+        if lbl:
+            labels_map[lid] = lbl
+    tracking_label = next((l for l in labels_map.values() if l.tracking_number), None)
+    if not tracking_label:
+        return {"skipped": "no label has tracking yet"}
+
+    from app.integrations.shopify.client import ShopifyClient
+    client = ShopifyClient(shop_url, access_token)
+
+    try:
+        fulfillment_orders = await client.get_fulfillment_orders(order.external_order_id)
+    except Exception as e:
+        err_str = str(e)
+        if "403" in err_str:
+            return {"error": "Shopify connection needs re-authorization: the current token is missing fulfillment scopes (read_fulfillments / write_fulfillments). Go to Marketplace → your Shopify connection → Re-authorize to fix this."}
+        return {"error": f"get_fulfillment_orders failed: {e}"}
+
+    open_fos = [fo for fo in fulfillment_orders if fo.get("status") in ("open", "in_progress")]
+    if not open_fos:
+        return {"skipped": "no open fulfillment orders on Shopify (already fulfilled?)"}
+
+    synced, errors = [], []
+    for fo in open_fos:
+        fo_id = fo["id"]
+        try:
+            result = await client.post("/fulfillments.json", {
+                "fulfillment": {
+                    "line_items_by_fulfillment_order": [{"fulfillment_order_id": fo_id}],
+                    "tracking_info": {
+                        "number": tracking_label.tracking_number,
+                        "company": tracking_label.carrier or "USPS",
+                    },
+                    "notify_customer": True,
+                }
+            })
+            synced.append({
+                "fulfillment_order_id": fo_id,
+                "fulfillment_id": result.get("fulfillment", {}).get("id"),
+            })
+        except Exception as e:
+            errors.append({"fulfillment_order_id": fo_id, "error": str(e)[:300]})
+
+    return {"synced": synced, "errors": errors, "tracking_number": tracking_label.tracking_number}
+
+
+async def _try_push_marketplace_tracking(order: Order, db: AsyncSession) -> None:
+    """Best-effort marketplace tracking sync, called after a line item flips to
+    shipped. Never raises — just logs the outcome."""
+    try:
+        if order.marketplace == "shopify":
+            result = await _push_shopify_tracking(order, db)
+            if result.get("error"):
+                print(f"Shopify tracking push order={order.id}: {result['error']}", flush=True)
+            elif result.get("skipped"):
+                print(f"Shopify tracking push order={order.id}: skipped — {result['skipped']}", flush=True)
+            elif result.get("synced"):
+                print(f"Shopify tracking push order={order.id}: synced {len(result['synced'])} fulfillment order(s), tracking={result.get('tracking_number')}", flush=True)
+    except Exception as e:
+        print(f"Marketplace tracking push order={order.id} crashed: {e}", flush=True)
+
+
+@router.post("/{order_id}/sync-tracking")
+async def sync_tracking_to_shopify(
+    order_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manual: push tracking to Shopify. Raises on hard error so the UI can show
+    a meaningful message. Auto-sync after mark-shipped/print-label uses the
+    silent helper."""
+    order = await _get_or_404(order_id, db)
+    if order.marketplace != "shopify":
+        raise HTTPException(400, "Only Shopify orders support tracking sync")
+    result = await _push_shopify_tracking(order, db)
+    if result.get("error"):
+        err = result["error"]
+        status = 403 if "re-authorization" in err else 502
+        raise HTTPException(status, err)
+    if result.get("skipped"):
+        raise HTTPException(400, result["skipped"])
+    if not result.get("synced") and result.get("errors"):
+        raise HTTPException(502, f"Shopify sync failed: {result['errors'][0]['error']}")
+    return result
+
+
 @router.get("/{order_id}/parcel-estimate")
 async def estimate_parcel(
     order_id: int,
@@ -599,8 +826,21 @@ async def _get_or_404(order_id: int, db: AsyncSession) -> Order:
 
 
 async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> list:
-    """Resolve catalog name+qty for a line item via ProductComponent → SupplierProduct."""
+    """Resolve catalog name+qty for a line item via OFI → ProductComponent → SupplierProduct."""
     from app.integrations.pdf_labels import PackItem
+    # Prefer OFI (already resolved and persisted)
+    fi_res = await db.execute(
+        select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+    )
+    fis = fi_res.scalars().all()
+    if fis:
+        items = []
+        for fi in fis:
+            sp = await db.get(SupplierProduct, fi.supplier_product_id)
+            if sp:
+                items.append(PackItem(name=sp.short_name or sp.name, sku=sp.sku, quantity=fi.quantity))
+        if items:
+            return items
     if li.product_id:
         comps = (await db.execute(
             select(ProductComponent).where(ProductComponent.product_id == li.product_id)
@@ -610,7 +850,7 @@ async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> l
             for comp in comps:
                 sp = await db.get(SupplierProduct, comp.supplier_product_id)
                 if sp:
-                    items.append(PackItem(name=sp.name, sku=sp.sku,
+                    items.append(PackItem(name=sp.short_name or sp.name, sku=sp.sku,
                                           quantity=li.quantity * comp.quantity))
             if items:
                 return items
@@ -621,6 +861,36 @@ async def _line_item_out(li: OrderLineItem, db: AsyncSession) -> OrderLineItemOu
     sup = await db.get(Supplier, li.supplier_id) if li.supplier_id else None
     data = {c.name: getattr(li, c.name) for c in li.__table__.columns}
     data["supplier_name"] = sup.name if sup else None
+
+    mapping_suggestion = None
+    if not li.supplier_id:
+        from sqlalchemy import func as sqlfunc
+        product_id = li.product_id
+        if not product_id and li.sku:
+            prod_res = await db.execute(
+                select(Product).where(sqlfunc.lower(sqlfunc.trim(Product.sku)) == li.sku.strip().lower())
+            )
+            prod = prod_res.scalar_one_or_none()
+            if prod:
+                product_id = prod.id
+        if product_id:
+            comp_res = await db.execute(
+                select(ProductComponent).where(ProductComponent.product_id == product_id)
+            )
+            comp = comp_res.scalars().first()
+            if comp:
+                sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                if sp:
+                    sp_sup = await db.get(Supplier, sp.supplier_id)
+                    mapping_suggestion = {
+                        "supplier_id": sp.supplier_id,
+                        "supplier_name": sp_sup.name if sp_sup else None,
+                        "supplier_product_id": sp.id,
+                        "catalog_name": sp.short_name or sp.name,
+                        "catalog_sku": sp.sku,
+                        "units": comp.quantity,
+                    }
+    data["mapping_suggestion"] = mapping_suggestion
     return OrderLineItemOut(**data)
 
 

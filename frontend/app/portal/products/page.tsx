@@ -6,6 +6,7 @@ import { Package } from "lucide-react";
 interface CatalogItem {
   id: number;
   name: string;
+  short_name: string | null;
   sku: string;
   unit_price: number;
   stock_quantity: number;
@@ -43,7 +44,8 @@ export default function PortalProductsPage() {
                   <Package className="w-8 h-8" />
                 </div>
               )}
-              <div className="font-medium text-sm text-gray-900 line-clamp-2 mb-2">{p.name}</div>
+              <div className="font-medium text-sm text-gray-900 line-clamp-2 mb-1">{p.name}</div>
+              {p.short_name && <div className="text-xs font-semibold text-blue-600 mb-1">"{p.short_name}"</div>}
               <div className="text-xs text-gray-500 font-mono mb-2">{p.sku}</div>
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold text-gray-900">${(p.unit_price ?? 0).toFixed(2)}</span>

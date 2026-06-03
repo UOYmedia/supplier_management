@@ -49,6 +49,9 @@ export const productsApi = {
   addComponent: (id: number, data: object) => api.post(`/products/${id}/components`, data).then((r) => r.data),
   updateComponent: (id: number, compId: number, data: object) => api.patch(`/products/${id}/components/${compId}`, data).then((r) => r.data),
   removeComponent: (id: number, compId: number) => api.delete(`/products/${id}/components/${compId}`),
+  listMappings: (params?: object) => api.get("/products/mappings", { params }).then((r) => r.data),
+  createMapping: (data: object) => api.post("/products/mappings", data).then((r) => r.data),
+  deleteMapping: (componentId: number) => api.delete(`/products/mappings/${componentId}`),
 };
 
 // Suppliers

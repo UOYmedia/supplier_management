@@ -72,6 +72,11 @@ async def _run_migrations():
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS height NUMERIC(10, 2)",
         # order_line_items: Amazon ASIN identifier
         "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS asin VARCHAR(20)",
+        # convert native PostgreSQL ENUM columns to VARCHAR so asyncpg ::VARCHAR binding works
+        # (older DBs had native ENUM types; models now use String(50))
+        "ALTER TABLE order_fulfillment_items ALTER COLUMN fulfill_status TYPE VARCHAR(50) USING fulfill_status::text",
+        "ALTER TABLE order_line_items ALTER COLUMN fulfill_status TYPE VARCHAR(50) USING fulfill_status::text",
+        "ALTER TABLE orders ALTER COLUMN status TYPE VARCHAR(50) USING status::text",
     ]
     ok, failed = 0, 0
     for sql in migrations:

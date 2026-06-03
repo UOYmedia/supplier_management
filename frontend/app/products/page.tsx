@@ -1,15 +1,16 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { productsApi, suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, Search, Trash2, X, ChevronRight } from "lucide-react";
+import { Plus, Search, Trash2, X, ChevronRight, Upload, Download } from "lucide-react";
 import Link from "next/link";
 
 export default function ProductsPage() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   const { data: mappings = [], isLoading } = useQuery({
     queryKey: ["mappings", search],
@@ -37,9 +38,14 @@ export default function ProductsPage() {
           <h1 className="page-title">SKU Mappings</h1>
           <p className="text-sm text-gray-500 mt-0.5">Map marketplace SKUs to supplier catalog items</p>
         </div>
-        <button className="btn-primary" onClick={() => setShowAdd(true)}>
-          <Plus className="w-4 h-4" /> Add Mapping
-        </button>
+        <div className="flex gap-2">
+          <button className="btn-secondary" onClick={() => setShowImport(true)}>
+            <Upload className="w-4 h-4" /> Import CSV
+          </button>
+          <button className="btn-primary" onClick={() => setShowAdd(true)}>
+            <Plus className="w-4 h-4" /> Add Mapping
+          </button>
+        </div>
       </div>
 
       <div className="card mb-4 px-3 py-2 flex items-center gap-2">
@@ -113,6 +119,106 @@ export default function ProductsPage() {
       </div>
 
       {showAdd && <AddMappingModal onClose={() => setShowAdd(false)} />}
+      {showImport && <ImportMappingsModal onClose={() => setShowImport(false)} />}
+    </div>
+  );
+}
+
+function ImportMappingsModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [result, setResult] = useState<{ created: number; updated: number; errors: string[] } | null>(null);
+
+  const mut = useMutation({
+    mutationFn: (f: File) => productsApi.importMappingsCsv(f),
+    onSuccess: (data) => {
+      setResult(data);
+      qc.invalidateQueries({ queryKey: ["mappings"] });
+      if (data.errors.length === 0) {
+        toast.success(`Imported: ${data.created} created, ${data.updated} updated`);
+      } else {
+        toast(`${data.created} created, ${data.updated} updated, ${data.errors.length} errors`, { icon: "⚠️" });
+      }
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Import failed"),
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="card w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Import SKU Mappings from CSV</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        <div className="text-sm text-gray-600 space-y-1 mb-4">
+          <p>CSV must have columns: <code className="bg-gray-100 px-1 rounded">marketplace_sku</code>, <code className="bg-gray-100 px-1 rounded">supplier_sku</code>, and optionally <code className="bg-gray-100 px-1 rounded">units</code> (default 1).</p>
+          <p>The <code className="bg-gray-100 px-1 rounded">supplier_sku</code> must match an existing catalog item SKU exactly.</p>
+        </div>
+
+        <a
+          href="/api/v1/products/mappings/template.csv"
+          download
+          className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline mb-4"
+        >
+          <Download className="w-4 h-4" /> Download template
+        </a>
+
+        {!result ? (
+          <>
+            <div
+              className="border-2 border-dashed border-gray-200 rounded-lg p-6 text-center cursor-pointer hover:border-blue-300 transition-colors"
+              onClick={() => fileRef.current?.click()}
+            >
+              <Upload className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+              {file ? (
+                <p className="text-sm font-medium text-gray-700">{file.name}</p>
+              ) : (
+                <p className="text-sm text-gray-400">Click to select a CSV file</p>
+              )}
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button className="btn-secondary" onClick={onClose}>Cancel</button>
+              <button
+                className="btn-primary"
+                disabled={!file || mut.isPending}
+                onClick={() => file && mut.mutate(file)}
+              >
+                {mut.isPending ? "Importing…" : "Import"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="rounded-lg bg-gray-50 border border-gray-200 p-4 text-sm space-y-1 mb-4">
+              <div className="text-green-700 font-medium">Created: {result.created}</div>
+              <div className="text-blue-700 font-medium">Updated: {result.updated}</div>
+              {result.errors.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-red-600 font-medium mb-1">Errors ({result.errors.length}):</div>
+                  <ul className="space-y-0.5 max-h-40 overflow-y-auto">
+                    {result.errors.map((e, i) => (
+                      <li key={i} className="text-red-600 text-xs font-mono">{e}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary" onClick={() => { setFile(null); setResult(null); }}>Import Another</button>
+              <button className="btn-primary" onClick={onClose}>Done</button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

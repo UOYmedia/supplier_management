@@ -52,6 +52,11 @@ export const productsApi = {
   listMappings: (params?: object) => api.get("/products/mappings", { params }).then((r) => r.data),
   createMapping: (data: object) => api.post("/products/mappings", data).then((r) => r.data),
   deleteMapping: (componentId: number) => api.delete(`/products/mappings/${componentId}`),
+  importMappingsCsv: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return api.post("/products/mappings/import/csv", fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+  },
 };
 
 // Suppliers

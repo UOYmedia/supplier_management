@@ -151,6 +151,30 @@ async def add_product_supplier(product_id: int, body: ProductSupplierCreate, db:
                 quantity=units,
             ))
 
+        # Backfill OrderFulfillmentItem for existing unshipped orders that have
+        # this product_id but no OFI yet — so they immediately reflect the mapping.
+        from app.models.order import OrderLineItem, OrderFulfillmentItem, FulfillStatus
+        li_res = await db.execute(
+            select(OrderLineItem).where(
+                OrderLineItem.product_id == product_id,
+                OrderLineItem.supplier_id == body.supplier_id,
+                OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+            )
+        )
+        for li in li_res.scalars().all():
+            fi_res = await db.execute(
+                select(OrderFulfillmentItem).where(
+                    OrderFulfillmentItem.order_line_item_id == li.id,
+                    OrderFulfillmentItem.supplier_product_id == supplier_product_id,
+                )
+            )
+            if not fi_res.scalar_one_or_none():
+                db.add(OrderFulfillmentItem(
+                    order_line_item_id=li.id,
+                    supplier_product_id=supplier_product_id,
+                    quantity=units * li.quantity,
+                ))
+
     await db.commit()
     await db.refresh(ps)
     sup = await db.get(Supplier, ps.supplier_id)
@@ -174,7 +198,7 @@ async def update_product_supplier(product_id: int, ps_id: int, body: ProductSupp
 @router.delete("/{product_id}/suppliers/{ps_id}", status_code=204)
 async def remove_product_supplier(product_id: int, ps_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(ProductSupplier).where(ProductSupplier.id == ps_id, ProductSupplier.product_id == product_id))
-    ps = result.scalar_one_or_none()
+    ps = result.scalar_one_or_none()  
     if not ps:
         raise HTTPException(404, "Not found")
     await db.delete(ps)
@@ -202,10 +226,36 @@ async def add_component(product_id: int, body: ProductComponentCreate, db: Async
     comp = ProductComponent(product_id=product_id, **body.model_dump())
     db.add(comp)
     try:
-        await db.commit()
+        await db.flush()
     except Exception:
         await db.rollback()
         raise HTTPException(400, "This supplier product is already linked to this product")
+
+    # Backfill OrderFulfillmentItem for existing unshipped orders with this product
+    # that belong to the same supplier, so they immediately reflect the new mapping.
+    from app.models.order import OrderLineItem, OrderFulfillmentItem, FulfillStatus
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.product_id == product_id,
+            OrderLineItem.supplier_id == sp.supplier_id,
+            OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+        )
+    )
+    for li in li_res.scalars().all():
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(
+                OrderFulfillmentItem.order_line_item_id == li.id,
+                OrderFulfillmentItem.supplier_product_id == body.supplier_product_id,
+            )
+        )
+        if not fi_res.scalar_one_or_none():
+            db.add(OrderFulfillmentItem(
+                order_line_item_id=li.id,
+                supplier_product_id=body.supplier_product_id,
+                quantity=body.quantity * li.quantity,
+            ))
+
+    await db.commit()
     await db.refresh(comp)
     return await _component_out(comp, db)
 

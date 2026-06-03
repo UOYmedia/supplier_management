@@ -204,7 +204,19 @@ async def assign_supplier_to_line_item(
     effective_cost = body.base_cost if body.base_cost is not None else (sp.unit_price * body.units)
     li.base_cost = effective_cost
 
-    # Upsert ProductComponent to map product → supplier catalog item
+    # If line item has no product_id, try to resolve it from SKU now so the
+    # ProductComponent link can be stored for future orders with the same product.
+    if not li.product_id and li.sku:
+        from sqlalchemy import func as sqlfunc
+        prod_res = await db.execute(
+            select(Product).where(sqlfunc.lower(sqlfunc.trim(Product.sku)) == li.sku.strip().lower())
+        )
+        product = prod_res.scalar_one_or_none()
+        if product:
+            li.product_id = product.id
+
+    # Upsert ProductComponent (product → supplier catalog item) — reusable for all
+    # future orders that carry the same product_id.
     if li.product_id:
         comp_res = await db.execute(
             select(ProductComponent).where(
@@ -214,31 +226,13 @@ async def assign_supplier_to_line_item(
         )
         comp = comp_res.scalar_one_or_none()
         if not comp:
-            comp = ProductComponent(
+            db.add(ProductComponent(
                 product_id=li.product_id,
                 supplier_product_id=sp.id,
                 quantity=body.units,
-            )
-            db.add(comp)
-        else:
-            comp.quantity = body.units
-
-        # Create/upsert OrderFulfillmentItem
-        fi_res = await db.execute(
-            select(OrderFulfillmentItem).where(
-                OrderFulfillmentItem.order_line_item_id == li.id,
-                OrderFulfillmentItem.supplier_product_id == sp.id,
-            )
-        )
-        fi = fi_res.scalar_one_or_none()
-        if not fi:
-            db.add(OrderFulfillmentItem(
-                order_line_item_id=li.id,
-                supplier_product_id=sp.id,
-                quantity=body.units * li.quantity,
             ))
         else:
-            fi.quantity = body.units * li.quantity
+            comp.quantity = body.units
 
         # Create ProductSupplier relationship for future auto-assignment
         if body.create_product_supplier:
@@ -264,6 +258,24 @@ async def assign_supplier_to_line_item(
                 for other in all_ps.scalars().all():
                     other.is_preferred = False
                 ps_link.is_preferred = True
+
+    # Always create/upsert OrderFulfillmentItem for this specific line item,
+    # whether or not product_id exists — this is what the supplier sees immediately.
+    fi_res = await db.execute(
+        select(OrderFulfillmentItem).where(
+            OrderFulfillmentItem.order_line_item_id == li.id,
+            OrderFulfillmentItem.supplier_product_id == sp.id,
+        )
+    )
+    fi = fi_res.scalar_one_or_none()
+    if not fi:
+        db.add(OrderFulfillmentItem(
+            order_line_item_id=li.id,
+            supplier_product_id=sp.id,
+            quantity=body.units * li.quantity,
+        ))
+    else:
+        fi.quantity = body.units * li.quantity
 
     await db.commit()
     await db.refresh(li)

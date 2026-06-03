@@ -46,31 +46,69 @@ class AmazonSync(MarketplaceSyncer):
         )
         return result.get("sku", product.sku)
 
-    async def sync_orders(self, db: AsyncSession) -> int:
-        """Fetch unshipped orders from SP-API and upsert into local DB."""
-        try:
-            data = await self.client.get("/orders/v0/orders", params={
-                "MarketplaceIds": self.client.marketplace_id,
-                "OrderStatuses": "Unshipped,PartiallyShipped",
-            })
-        except Exception:
-            return 0
+    async def sync_orders(self, db: AsyncSession, created_after: str | None = None) -> int:
+        """Fetch unshipped orders from SP-API and upsert into local DB.
 
-        orders_data = data.get("payload", {}).get("Orders", [])
+        SP-API /orders/v0/orders REQUIRES one of CreatedAfter / CreatedBefore /
+        LastUpdatedAfter / LastUpdatedBefore / NextToken — otherwise it
+        responds 400 'InvalidInput'. We default CreatedAfter to 30 days back
+        when the caller doesn't pass one. Exceptions propagate so the
+        background task records the real error on the connection instead of
+        silently returning 0.
+        """
+        from datetime import timedelta
+        if not created_after:
+            created_after = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        params: dict = {
+            "MarketplaceIds": self.client.marketplace_id,
+            "OrderStatuses": "Unshipped,PartiallyShipped",
+            "CreatedAfter": created_after,
+        }
+
+        data = await self.client.get("/orders/v0/orders", params=params)
+        orders_data = data.get("payload", {}).get("Orders", []) or []
+        next_token = data.get("payload", {}).get("NextToken")
+
+        # Paginate
+        all_orders = list(orders_data)
+        while next_token:
+            try:
+                page = await self.client.get("/orders/v0/orders", params={
+                    "MarketplaceIds": self.client.marketplace_id,
+                    "NextToken": next_token,
+                })
+            except Exception as e:
+                print(f"Amazon sync_orders: pagination stopped — {e}", flush=True)
+                break
+            all_orders.extend(page.get("payload", {}).get("Orders", []) or [])
+            next_token = page.get("payload", {}).get("NextToken")
+
+        print(f"Amazon sync_orders: fetched {len(all_orders)} orders (CreatedAfter={created_after})", flush=True)
+
         count = 0
-        for od in orders_data:
+        for od in all_orders:
             ext_id = od.get("AmazonOrderId")
+            if not ext_id:
+                continue
             existing = await db.execute(select(Order).where(Order.external_order_id == ext_id))
             if existing.scalar_one_or_none():
                 continue
 
-            addr = od.get("ShippingAddress", {})
+            addr = od.get("ShippingAddress") or {}
+            buyer_info = od.get("BuyerInfo") or {}
+            order_total = od.get("OrderTotal") or {}
+            try:
+                ordered_at = datetime.fromisoformat(od.get("PurchaseDate", "").replace("Z", "+00:00"))
+            except Exception:
+                ordered_at = datetime.now(timezone.utc)
+
             order = Order(
                 connection_id=self.connection.id,
                 marketplace="amazon",
                 external_order_id=ext_id,
-                buyer_name=od.get("BuyerInfo", {}).get("BuyerName"),
-                buyer_email=od.get("BuyerInfo", {}).get("BuyerEmail"),
+                buyer_name=buyer_info.get("BuyerName"),
+                buyer_email=buyer_info.get("BuyerEmail"),
                 shipping_address={
                     "name": addr.get("Name"),
                     "line1": addr.get("AddressLine1"),
@@ -79,15 +117,17 @@ class AmazonSync(MarketplaceSyncer):
                     "state": addr.get("StateOrRegion"),
                     "zip": addr.get("PostalCode"),
                     "country": addr.get("CountryCode"),
+                    "phone": addr.get("Phone"),
                 },
-                total=float(od.get("OrderTotal", {}).get("Amount", 0)),
-                currency=od.get("OrderTotal", {}).get("CurrencyCode", "USD"),
-                ordered_at=datetime.fromisoformat(od.get("PurchaseDate", datetime.now(timezone.utc).isoformat())),
+                total=float(order_total.get("Amount", 0)),
+                currency=order_total.get("CurrencyCode", "USD"),
+                ordered_at=ordered_at,
             )
             db.add(order)
             await db.flush()
 
-            # fetch line items
+            # fetch line items — error per order shouldn't kill the batch
+            line_items: list[OrderLineItem] = []
             try:
                 items_data = await self.client.get(f"/orders/v0/orders/{ext_id}/orderItems")
                 for item in items_data.get("payload", {}).get("OrderItems", []):
@@ -98,18 +138,32 @@ class AmazonSync(MarketplaceSyncer):
                         )
                     )
                     listing_obj = listing.scalar_one_or_none()
-                    db.add(OrderLineItem(
+                    li = OrderLineItem(
                         order_id=order.id,
                         product_id=listing_obj.product_id if listing_obj else None,
                         listing_id=listing_obj.id if listing_obj else None,
+                        external_line_item_id=item.get("OrderItemId"),
                         product_name=item.get("Title", ""),
                         sku=item.get("SellerSKU"),
                         quantity=int(item.get("QuantityOrdered", 1)),
-                        price=float(item.get("ItemPrice", {}).get("Amount", 0)),
-                    ))
-            except Exception:
-                pass
+                        price=float((item.get("ItemPrice") or {}).get("Amount", 0)),
+                    )
+                    db.add(li)
+                    line_items.append(li)
+                await db.flush()
+            except Exception as e:
+                print(f"Amazon sync_orders: line items fetch failed for {ext_id} — {e}", flush=True)
 
+            # Auto-expand ProductComponents into OrderFulfillmentItems for combos
+            try:
+                from app.integrations.fulfillment_helper import create_fulfillment_items_for_line_item
+                for li in line_items:
+                    await create_fulfillment_items_for_line_item(db, li)
+            except Exception as e:
+                print(f"Amazon sync_orders: fulfillment expansion failed for {ext_id} — {e}", flush=True)
+
+            await db.commit()  # commit per order so a later failure doesn't lose progress
             count += 1
 
+        print(f"Amazon sync_orders: imported {count} new orders", flush=True)
         return count

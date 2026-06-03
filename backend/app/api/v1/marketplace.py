@@ -367,9 +367,16 @@ async def push_to_marketplace(
 # --- Sync orders from marketplace ---
 
 @router.post("/connections/{conn_id}/sync-orders")
-async def sync_orders(conn_id: int, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def sync_orders(
+    conn_id: int,
+    background_tasks: BackgroundTasks,
+    created_after: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger order sync. Pass ?created_after=YYYY-MM-DDTHH:MM:SSZ to override
+    the default 30-day window (Amazon SP-API requires this filter)."""
     conn = await _get_conn_or_404(conn_id, db)
-    background_tasks.add_task(_do_sync_orders, conn_id)
+    background_tasks.add_task(_do_sync_orders, conn_id, created_after)
     return {"message": "Order sync started in background"}
 
 
@@ -380,15 +387,30 @@ async def sync_products(conn_id: int, background_tasks: BackgroundTasks, db: Asy
     return {"message": "Product sync started in background"}
 
 
-async def _do_sync_orders(conn_id: int):
+async def _do_sync_orders(conn_id: int, created_after: str | None = None):
+    """Background task. Catches errors and records them on the connection so the
+    user gets feedback instead of a silent no-op."""
+    import traceback
     from app.core.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         conn = await db.get(MarketplaceConnection, conn_id)
         if not conn:
             return
-        syncer = _get_syncer(conn)
-        await syncer.sync_orders(db)
-        conn.last_synced_at = datetime.now(timezone.utc)
+        try:
+            syncer = _get_syncer(conn)
+            if isinstance(syncer, AmazonSync):
+                await syncer.sync_orders(db, created_after=created_after)
+            else:
+                await syncer.sync_orders(db)
+            conn.last_synced_at = datetime.now(timezone.utc)
+            conn.error_message = None
+            conn.status = ConnectionStatus.active
+        except Exception as e:
+            tb = traceback.format_exc()
+            msg = f"{type(e).__name__}: {e}"
+            print(f"sync_orders failed for conn={conn_id}: {msg}\n{tb}", flush=True)
+            conn.error_message = msg[:500]
+            conn.status = ConnectionStatus.error
         await db.commit()
 
 

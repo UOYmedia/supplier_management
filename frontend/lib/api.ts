@@ -1,16 +1,5 @@
 import axios from "axios";
 
-function downloadBlob(data: Blob, filename: string) {
-  const url = URL.createObjectURL(data);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
 export const api = axios.create({
   baseURL: "/api/v1",
   headers: { "Content-Type": "application/json" },
@@ -56,12 +45,13 @@ export const productsApi = {
   addSupplier: (id: number, data: object) => api.post(`/products/${id}/suppliers`, data).then((r) => r.data),
   updateSupplier: (id: number, psId: number, data: object) => api.patch(`/products/${id}/suppliers/${psId}`, data).then((r) => r.data),
   removeSupplier: (id: number, psId: number) => api.delete(`/products/${id}/suppliers/${psId}`),
-  // Product components
   listComponents: (id: number) => api.get(`/products/${id}/components`).then((r) => r.data),
   addComponent: (id: number, data: object) => api.post(`/products/${id}/components`, data).then((r) => r.data),
-  updateComponent: (id: number, compId: number, data: object) =>
-    api.patch(`/products/${id}/components/${compId}`, data).then((r) => r.data),
+  updateComponent: (id: number, compId: number, data: object) => api.patch(`/products/${id}/components/${compId}`, data).then((r) => r.data),
   removeComponent: (id: number, compId: number) => api.delete(`/products/${id}/components/${compId}`),
+  listMappings: (params?: object) => api.get("/products/mappings", { params }).then((r) => r.data),
+  createMapping: (data: object) => api.post("/products/mappings", data).then((r) => r.data),
+  deleteMapping: (componentId: number) => api.delete(`/products/mappings/${componentId}`),
 };
 
 // Suppliers
@@ -74,51 +64,32 @@ export const suppliersApi = {
   inventory: (id: number) => api.get(`/suppliers/${id}/inventory`).then((r) => r.data),
   updateStock: (id: number, psId: number, stock: number) =>
     api.patch(`/suppliers/${id}/inventory/${psId}`, null, { params: { stock } }).then((r) => r.data),
-  // Supplier product catalog
-  listProducts: (id: number) => api.get(`/suppliers/${id}/products`).then((r) => r.data),
-  createProduct: (id: number, data: object) => api.post(`/suppliers/${id}/products`, data).then((r) => r.data),
-  updateProduct: (id: number, spId: number, data: object) =>
-    api.patch(`/suppliers/${id}/products/${spId}`, data).then((r) => r.data),
-  deleteProduct: (id: number, spId: number) => api.delete(`/suppliers/${id}/products/${spId}`),
-  exportCatalog: (id: number, filename: string) =>
-    api
-      .get(`/suppliers/${id}/products/export.csv`, { responseType: "blob" })
-      .then((r) => downloadBlob(r.data, filename)),
-  downloadCatalogTemplate: (id: number) =>
-    api
-      .get(`/suppliers/${id}/products/template.csv`, { responseType: "blob" })
-      .then((r) => downloadBlob(r.data, "catalog_template.csv")),
-  importCatalog: (id: number, file: File) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    return api
-      .post(`/suppliers/${id}/products/import/csv`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      })
-      .then((r) => r.data);
-  },
   orders: (id: number, params?: object) => api.get(`/suppliers/${id}/orders`, { params }).then((r) => r.data),
   invoices: (id: number) => api.get(`/suppliers/${id}/invoices`).then((r) => r.data),
   createInvoice: (id: number, data: object) => api.post(`/suppliers/${id}/invoices`, data).then((r) => r.data),
   updateInvoice: (id: number, invId: number, data: object) => api.patch(`/suppliers/${id}/invoices/${invId}`, data).then((r) => r.data),
-};
-
-// EasyPost
-export const easypostApi = {
-  getRates: (orderId: number, data: object) =>
-    api.post(`/orders/${orderId}/easypost/rates`, data).then((r) => r.data),
-  buyLabel: (orderId: number, data: object) =>
-    api.post(`/orders/${orderId}/easypost/buy`, data).then((r) => r.data),
-};
-
-// Amazon shipping (MFN)
-export const amazonShippingApi = {
-  getRates: (orderId: number, data: object) =>
-    api.post(`/orders/${orderId}/amazon/rates`, data).then((r) => r.data),
-  buyLabel: (orderId: number, data: object) =>
-    api.post(`/orders/${orderId}/amazon/buy`, data).then((r) => r.data),
-  downloadLabelUrl: (orderId: number, labelId: number) =>
-    `/api/v1/orders/${orderId}/labels/${labelId}/download`,
+  listProducts: (id: number) => api.get(`/suppliers/${id}/products`).then((r) => r.data),
+  createProduct: (id: number, data: object) => api.post(`/suppliers/${id}/products`, data).then((r) => r.data),
+  updateProduct: (id: number, spId: number, data: object) => api.patch(`/suppliers/${id}/products/${spId}`, data).then((r) => r.data),
+  deleteProduct: (id: number, spId: number) => api.delete(`/suppliers/${id}/products/${spId}`),
+  previewInvoiceFromOrders: (id: number) => api.get(`/suppliers/${id}/invoices/preview-from-orders`).then((r) => r.data),
+  createInvoiceFromOrders: (id: number, data: object) => api.post(`/suppliers/${id}/invoices/create-from-orders`, data).then((r) => r.data),
+  importCatalog: (id: number, file: File) => {
+    const fd = new FormData(); fd.append("file", file);
+    return api.post(`/suppliers/${id}/products/import/csv`, fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+  },
+  exportCatalog: (id: number, filename: string) =>
+    api.get(`/suppliers/${id}/products/export.csv`, { responseType: "blob" }).then((r) => {
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    }),
+  downloadCatalogTemplate: (id: number) =>
+    api.get(`/suppliers/${id}/products/template.csv`, { responseType: "blob" }).then((r) => {
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a"); a.href = url; a.download = "catalog_template.csv"; a.click();
+      URL.revokeObjectURL(url);
+    }),
 };
 
 // Orders
@@ -131,21 +102,19 @@ export const ordersApi = {
     api.patch(`/orders/${orderId}/line-items/${liId}`, data).then((r) => r.data),
   assignSupplier: (orderId: number, liId: number, data: object) =>
     api.patch(`/orders/${orderId}/line-items/${liId}/assign-supplier`, data).then((r) => r.data),
-  listFulfillments: (orderId: number, liId: number) =>
-    api.get(`/orders/${orderId}/line-items/${liId}/fulfillments`).then((r) => r.data),
-  updateFulfillment: (orderId: number, liId: number, fiId: number, data: object) =>
-    api.patch(`/orders/${orderId}/line-items/${liId}/fulfillments/${fiId}`, data).then((r) => r.data),
   createLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/labels`, data).then((r) => r.data),
   listLabels: (orderId: number) => api.get(`/orders/${orderId}/labels`).then((r) => r.data),
-  labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,
-  markLabelPrinted: (orderId: number, labelId: number) =>
-    api.post(`/orders/${orderId}/labels/${labelId}/mark-printed`).then((r) => r.data),
-  parcelEstimate: (orderId: number, params: { supplier_id?: number; line_item_ids?: number[] }) => {
-    const q: any = {};
-    if (params.supplier_id != null) q.supplier_id = params.supplier_id;
-    if (params.line_item_ids?.length) q.line_item_ids = params.line_item_ids.join(",");
-    return api.get(`/orders/${orderId}/parcel-estimate`, { params: q }).then((r) => r.data);
+  markLabelPrinted: (orderId: number, labelId: number) => api.post(`/orders/${orderId}/labels/${labelId}/mark-printed`).then((r) => r.data),
+  updateLabel: (orderId: number, labelId: number, data: object) => api.patch(`/orders/${orderId}/labels/${labelId}`, data).then((r) => r.data),
+  uploadLabel: (orderId: number, labelId: number, file: File) => {
+    const fd = new FormData(); fd.append("file", file);
+    return api.post(`/orders/${orderId}/labels/${labelId}/upload`, fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
   },
+  regenerateLabel: (orderId: number, labelId: number, size: string) =>
+    api.post(`/orders/${orderId}/labels/${labelId}/regenerate`, null, { params: { size } }).then((r) => r.data),
+  labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,
+  parcelEstimate: (orderId: number, params?: object) => api.get(`/orders/${orderId}/parcel-estimate`, { params }).then((r) => r.data),
+  syncTracking: (orderId: number) => api.post(`/orders/${orderId}/sync-tracking`).then((r) => r.data),
 };
 
 // Marketplace
@@ -158,13 +127,11 @@ export const marketplaceApi = {
   debugConnection: (id: number) => api.post(`/marketplace/connections/${id}/debug`).then((r) => r.data),
   syncOrders: (id: number) => api.post(`/marketplace/connections/${id}/sync-orders`).then((r) => r.data),
   syncProducts: (id: number) => api.post(`/marketplace/connections/${id}/sync-products`).then((r) => r.data),
-  syncLocations: (id: number) => api.post(`/marketplace/connections/${id}/sync-locations`).then((r) => r.data),
-  syncListings: (id: number) => api.post(`/marketplace/connections/${id}/sync-listings`).then((r) => r.data),
   listListings: (params?: object) => api.get("/marketplace/listings", { params }).then((r) => r.data),
   createListing: (data: object) => api.post("/marketplace/listings", data).then((r) => r.data),
   updateListing: (id: number, data: object) => api.patch(`/marketplace/listings/${id}`, data).then((r) => r.data),
-  autoMap: () => api.post("/marketplace/auto-map").then((r) => r.data),
   push: (data: object) => api.post("/marketplace/push", data).then((r) => r.data),
+  autoMap: () => api.post("/marketplace/listings/auto-map").then((r) => r.data),
 };
 
 // Auth & Users
@@ -186,4 +153,16 @@ export const reportsApi = {
   byMarketplace: () => api.get("/reports/by-marketplace").then((r) => r.data),
   bySupplier: () => api.get("/reports/by-supplier").then((r) => r.data),
   inventoryAlert: (threshold?: number) => api.get("/reports/inventory-alert", { params: { threshold } }).then((r) => r.data),
+};
+
+// EasyPost (admin)
+export const easypostApi = {
+  getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/rates`, data).then((r) => r.data),
+  buyLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/buy`, data).then((r) => r.data),
+};
+
+// Amazon Shipping (admin)
+export const amazonShippingApi = {
+  getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon-shipping/rates`, data).then((r) => r.data),
+  buyLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon-shipping/buy`, data).then((r) => r.data),
 };

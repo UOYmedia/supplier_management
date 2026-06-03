@@ -1,19 +1,34 @@
 "use client";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { Printer, CheckCircle, ChevronDown, ChevronUp, Package, Truck, X, Tag, Loader2 } from "lucide-react";
+import { Printer, ChevronDown, ChevronUp, Package, Truck, X, Tag, Loader2, AlertTriangle } from "lucide-react";
 
-const STATUS_COLORS: Record<string, string> = {
+const SUPPLIER_STATUS_TABS = [
+  { value: "pending_label", label: "Pending Label" },
+  { value: "unfulfilled", label: "Unfulfilled" },
+  { value: "fulfilled", label: "Fulfilled" },
+  { value: "shipped", label: "Shipped" },
+  { value: "", label: "All" },
+];
+
+const SUPPLIER_STATUS_COLORS: Record<string, string> = {
+  pending_label: "badge-red",
   unfulfilled: "badge-yellow",
-  pending: "badge-yellow",
-  shipped: "badge-blue",
-  delivered: "badge-green",
-  cancelled: "badge-red",
+  fulfilled: "badge-blue",
+  shipped: "badge-green",
 };
 
-interface LineItem {
-  line_item_id: number;
+const SUPPLIER_STATUS_LABELS: Record<string, string> = {
+  pending_label: "Pending Label",
+  unfulfilled: "Unfulfilled",
+  fulfilled: "Fulfilled",
+  shipped: "Shipped",
+};
+
+interface PortalItem {
+  item_key: string;
   order_id: number;
+  order_line_item_id: number;
   external_order_id: string | null;
   marketplace: string;
   ordered_at: string;
@@ -21,8 +36,9 @@ interface LineItem {
   shipping_address: any;
   product_name: string;
   sku: string | null;
+  image_url: string | null;
   quantity: number;
-  fulfill_status: string;
+  supplier_status: string;
   tracking_number: string | null;
   label_id: number | null;
   label_url: string | null;
@@ -31,17 +47,17 @@ interface LineItem {
 }
 
 export default function PortalOrdersPage() {
-  const [items, setItems] = useState<LineItem[]>([]);
+  const [items, setItems] = useState<PortalItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("unfulfilled");
   const [expandedOrder, setExpandedOrder] = useState<number | null>(null);
-  const [shipping, setShipping] = useState<Record<number, string>>({});
   const [canBuyLabels, setCanBuyLabels] = useState(false);
   const [buyingFor, setBuyingFor] = useState<number | null>(null);
+  const [confirmReprintOrder, setConfirmReprintOrder] = useState<number | null>(null);
 
   const load = () => {
     const token = localStorage.getItem("supplier_token");
-    const q = filter ? `?status=${filter}` : "";
+    const q = filter ? `?supplier_status=${filter}` : "";
     fetch(`/api/v1/portal/orders${q}`, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
       .then(setItems)
@@ -60,48 +76,7 @@ export default function PortalOrdersPage() {
       .catch(() => {});
   }, []);
 
-  const markShipped = async (itemId: number) => {
-    const token = localStorage.getItem("supplier_token");
-    const tracking = shipping[itemId] || "";
-    const resp = await fetch(`/api/v1/portal/orders/${itemId}/ship`, {
-      method: "PATCH",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ tracking_number: tracking }),
-    });
-    if (resp.ok) {
-      toast.success("Marked as shipped");
-      load();
-    } else {
-      toast.error("Failed to update");
-    }
-  };
-
-  const printLabel = (url: string, orderId?: number, labelId?: number) => {
-    if (!url) { toast.error("No label available"); return; }
-    const win = window.open(url, "_blank");
-    if (!win) {
-      toast.error("Popup blocked — allow popups to print labels");
-      return;
-    }
-    try {
-      win.focus();
-      setTimeout(() => {
-        try { win.print(); } catch {}
-      }, 800);
-    } catch {}
-    // Mark items shipped after print
-    if (orderId && labelId) {
-      const token = localStorage.getItem("supplier_token");
-      fetch(`/api/v1/portal/orders/${orderId}/labels/${labelId}/mark-printed`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      })
-        .then((r) => { if (r.ok) { toast.success("Marked as shipped"); load(); } })
-        .catch(() => {});
-    }
-  };
-
-  const labelInfoForOrder = (orderItems: LineItem[]) => {
+  const labelInfoForOrder = (orderItems: PortalItem[]) => {
     const withLabel = orderItems.find((i) => i.label_id);
     if (!withLabel) return null;
     const url = withLabel.label_has_pdf
@@ -110,30 +85,130 @@ export default function PortalOrdersPage() {
     return url ? { url, labelId: withLabel.label_id!, orderId: withLabel.order_id } : null;
   };
 
+  const printLabel = (url: string, orderId: number, labelId: number) => {
+    const win = window.open(url, "_blank");
+    if (!win) { toast.error("Popup blocked — allow popups to print labels"); return; }
+    try { win.focus(); setTimeout(() => { try { win.print(); } catch {} }, 800); } catch {}
+
+    const token = localStorage.getItem("supplier_token");
+    fetch(`/api/v1/portal/orders/${orderId}/labels/${labelId}/mark-printed`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => { if (r.ok) { toast.success("Label printed — order marked as Fulfilled"); load(); } })
+      .catch(() => {});
+  };
+
+  const [batchPrinting, setBatchPrinting] = useState(false);
+
+  // Distinct labels that are bought but not yet shipped/printed in the current view
+  const printableLabels = (() => {
+    const map = new Map<number, number>(); // label_id -> order_id
+    for (const i of items) {
+      if (i.label_id && (i.label_has_pdf || i.label_url) && i.supplier_status === "unfulfilled") {
+        map.set(i.label_id, i.order_id);
+      }
+    }
+    return map;
+  })();
+
+  const printAllLabels = async () => {
+    const labelIds = Array.from(printableLabels.keys());
+    if (labelIds.length === 0) return;
+    setBatchPrinting(true);
+    const token = localStorage.getItem("supplier_token");
+    try {
+      const res = await fetch(
+        `/api/v1/portal/orders/batch-labels.pdf?label_ids=${labelIds.join(",")}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!res.ok) {
+        toast.error("Failed to build batch labels");
+        return;
+      }
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const win = window.open(objUrl, "_blank");
+      if (!win) {
+        toast.error("Popup blocked — allow popups to print labels");
+        return;
+      }
+      try { win.focus(); setTimeout(() => { try { win.print(); } catch {} }, 1000); } catch {}
+
+      // Mark each label printed (matches single-label print behaviour)
+      await Promise.all(
+        Array.from(printableLabels.entries()).map(([labelId, orderId]) =>
+          fetch(`/api/v1/portal/orders/${orderId}/labels/${labelId}/mark-printed`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+          }).catch(() => {})
+        )
+      );
+      toast.success(`Printed ${labelIds.length} label(s)`);
+      load();
+    } catch {
+      toast.error("Failed to print batch");
+    } finally {
+      setBatchPrinting(false);
+    }
+  };
+
+  const handlePrintClick = (orderId: number, orderItems: PortalItem[]) => {
+    const info = labelInfoForOrder(orderItems);
+    if (!info) return;
+    const alreadyPrinted = orderItems.every(
+      (i) => i.supplier_status === "fulfilled" || i.supplier_status === "shipped"
+    );
+    if (alreadyPrinted) {
+      setConfirmReprintOrder(orderId);
+    } else {
+      printLabel(info.url, info.orderId, info.labelId);
+    }
+  };
+
   const addrText = (a: any) =>
     a ? [a.name, a.line1, a.line2, a.city, a.state, a.zip, a.country].filter(Boolean).join(", ") : "—";
 
   if (loading) return <div className="text-gray-400">Loading…</div>;
 
-  // Group items by order_id
   const orderGroups = items.reduce((acc, item) => {
-    const key = item.order_id;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(item);
+    if (!acc[item.order_id]) acc[item.order_id] = [];
+    acc[item.order_id].push(item);
     return acc;
-  }, {} as Record<number, LineItem[]>);
+  }, {} as Record<number, PortalItem[]>);
 
   const orderIds = Object.keys(orderGroups).map(Number);
 
+  const orderBadge = (orderItems: PortalItem[]) => {
+    const statuses = orderItems.map((i) => i.supplier_status);
+    if (statuses.every((s) => s === "shipped")) return { label: "Shipped", cls: "badge-green" };
+    if (statuses.every((s) => s === "fulfilled" || s === "shipped")) return { label: "Fulfilled", cls: "badge-blue" };
+    if (statuses.some((s) => s === "pending_label")) return { label: "Pending Label", cls: "badge-red" };
+    return { label: "Unfulfilled", cls: "badge-yellow" };
+  };
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="page-title">Orders to Fulfill</h1>
-        <div className="flex gap-2">
-          {["unfulfilled", "pending", "shipped", ""].map((s) => (
-            <button key={s} onClick={() => setFilter(s)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${filter === s ? "bg-blue-600 text-white" : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
-              {s === "" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
+      <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
+          <h1 className="page-title">Orders to Fulfill</h1>
+          {printableLabels.size > 0 && (
+            <button
+              onClick={printAllLabels}
+              disabled={batchPrinting}
+              className="btn-primary text-xs py-1.5 flex items-center gap-1.5"
+              title="Print every un-fulfilled label at once, each followed by a pack list"
+            >
+              {batchPrinting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Printer className="w-3 h-3" />}
+              Print All ({printableLabels.size})
+            </button>
+          )}
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {SUPPLIER_STATUS_TABS.map((tab) => (
+            <button key={tab.value} onClick={() => setFilter(tab.value)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${filter === tab.value ? "bg-blue-600 text-white" : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
+              {tab.label}
             </button>
           ))}
         </div>
@@ -147,12 +222,14 @@ export default function PortalOrdersPage() {
             const orderItems = orderGroups[orderId];
             const first = orderItems[0];
             const isExpanded = expandedOrder === orderId;
-            const allShipped = orderItems.every((i) => i.fulfill_status === "shipped" || i.fulfill_status === "delivered");
-            const someShipped = orderItems.some((i) => i.fulfill_status === "shipped" || i.fulfill_status === "delivered");
+            const alreadyPrinted = orderItems.every(
+              (i) => i.supplier_status === "fulfilled" || i.supplier_status === "shipped"
+            );
+            const labelInfo = labelInfoForOrder(orderItems);
+            const badge = orderBadge(orderItems);
 
             return (
               <div key={orderId} className="card overflow-hidden">
-                {/* Order header */}
                 <div
                   className="p-4 flex items-center gap-4 cursor-pointer hover:bg-gray-50 transition-colors"
                   onClick={() => setExpandedOrder(isExpanded ? null : orderId)}
@@ -165,115 +242,82 @@ export default function PortalOrdersPage() {
                         <span className="text-xs text-gray-400 font-mono">{first.external_order_id}</span>
                       )}
                       <span className="text-xs text-gray-400 capitalize">{first.marketplace}</span>
-                      <span className={`badge text-xs ${allShipped ? "badge-green" : someShipped ? "badge-blue" : "badge-yellow"}`}>
-                        {allShipped ? "All shipped" : someShipped ? "Partial" : "Pending"}
-                      </span>
+                      <span className={`badge text-xs ${badge.cls}`}>{badge.label}</span>
                     </div>
                     <div className="text-xs text-gray-500 mt-0.5">
                       {orderItems.length} item(s) · {first.buyer_name || "—"} · {new Date(first.ordered_at).toLocaleDateString()}
                     </div>
                   </div>
-                  {(() => {
-                    const info = labelInfoForOrder(orderItems);
-                    if (info && !allShipped) {
-                      return (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); printLabel(info.url, info.orderId, info.labelId); }}
-                          className="btn-primary text-xs py-1.5 shrink-0"
-                        >
-                          <Printer className="w-3 h-3" /> Print Label
-                        </button>
-                      );
-                    }
-                    if (canBuyLabels && !allShipped && !info) {
-                      return (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setBuyingFor(orderId); }}
-                          className="btn-secondary text-xs py-1.5 shrink-0"
-                        >
-                          <Truck className="w-3 h-3" /> Buy Label
-                        </button>
-                      );
-                    }
-                    return null;
-                  })()}
+
+                  {labelInfo ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handlePrintClick(orderId, orderItems); }}
+                      className={`text-xs py-1.5 shrink-0 flex items-center gap-1.5 ${alreadyPrinted ? "btn-secondary" : "btn-primary"}`}
+                    >
+                      <Printer className="w-3 h-3" />
+                      {alreadyPrinted ? "Reprint Label" : "Print Label"}
+                    </button>
+                  ) : canBuyLabels && !alreadyPrinted ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setBuyingFor(orderId); }}
+                      className="btn-secondary text-xs py-1.5 shrink-0 flex items-center gap-1.5"
+                    >
+                      <Truck className="w-3 h-3" /> Buy Label
+                    </button>
+                  ) : null}
+
                   <button className="p-1.5 hover:bg-gray-100 rounded text-gray-400 shrink-0">
                     {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                   </button>
                 </div>
 
-                {/* Expanded order items */}
                 {isExpanded && (
                   <div className="border-t border-gray-100">
-                    {/* Ship-to address */}
                     <div className="px-4 py-3 bg-gray-50 text-xs text-gray-600">
                       <span className="font-medium text-gray-500 uppercase mr-2">Ship to:</span>
                       {addrText(first.shipping_address)}
                     </div>
-
-                    {/* Items */}
                     <div className="divide-y divide-gray-100">
                       {orderItems.map((item) => (
-                        <div key={item.line_item_id} className="p-4">
-                          <div className="flex items-start gap-3">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="font-medium text-sm">{item.product_name}</span>
-                                {item.sku && <span className="text-xs text-gray-400 font-mono">{item.sku}</span>}
-                                <span className={`badge text-xs ${STATUS_COLORS[item.fulfill_status] || "badge-gray"}`}>
-                                  {item.fulfill_status}
-                                </span>
+                        <div key={item.item_key} className="px-4 py-4 flex items-start gap-3">
+                          {item.image_url ? (
+                            <img
+                              src={item.image_url}
+                              alt={item.product_name}
+                              className="w-16 h-16 rounded-lg object-cover shrink-0 border border-gray-200"
+                            />
+                          ) : (
+                            <div className="w-16 h-16 rounded-lg bg-gray-100 flex items-center justify-center shrink-0 border border-gray-200">
+                              <Package className="w-6 h-6 text-gray-300" />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className="font-semibold text-sm">{item.product_name}</span>
+                              <span className={`badge text-xs ${SUPPLIER_STATUS_COLORS[item.supplier_status] || "badge-gray"}`}>
+                                {SUPPLIER_STATUS_LABELS[item.supplier_status] || item.supplier_status}
+                              </span>
+                            </div>
+                            {item.sku && (
+                              <div className="text-xs text-gray-500 font-mono mb-0.5">SKU: {item.sku}</div>
+                            )}
+                            <div className="text-xs text-gray-500 font-medium">Qty: {item.quantity}</div>
+                            {item.tracking_number && (
+                              <div className="text-xs text-gray-600 mt-0.5">
+                                Tracking: <span className="font-mono">{item.tracking_number}</span>
                               </div>
-                              <div className="text-xs text-gray-500">Qty: {item.quantity}</div>
-
-                              {item.tracking_number && (
-                                <div className="mt-1 text-xs text-gray-600">
-                                  <span className="font-medium">Tracking:</span>{" "}
-                                  <span className="font-mono">{item.tracking_number}</span>
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="flex items-center gap-2 shrink-0">
-                              {item.label_id && (
-                                <button
-                                  onClick={() => {
-                                    const url = item.label_has_pdf
-                                      ? `/api/v1/orders/${item.order_id}/labels/${item.label_id}/download`
-                                      : item.label_url;
-                                    if (url) printLabel(url, item.order_id, item.label_id!);
-                                  }}
-                                  className="btn-secondary text-xs py-1.5"
-                                >
-                                  <Printer className="w-3 h-3" /> Print Label
-                                </button>
-                              )}
-                            </div>
+                            )}
+                            {item.supplier_status === "shipped" && item.fulfilled_at && (
+                              <div className="text-xs text-green-600 mt-0.5">
+                                Shipped {new Date(item.fulfilled_at).toLocaleString()}
+                              </div>
+                            )}
+                            {item.supplier_status === "fulfilled" && item.fulfilled_at && (
+                              <div className="text-xs text-blue-600 mt-0.5">
+                                Label printed {new Date(item.fulfilled_at).toLocaleString()}
+                              </div>
+                            )}
                           </div>
-
-                          {/* Ship action */}
-                          {item.fulfill_status !== "shipped" && item.fulfill_status !== "delivered" && item.fulfill_status !== "cancelled" && (
-                            <div className="flex gap-2 items-center mt-3">
-                              <input
-                                className="input flex-1 text-sm"
-                                placeholder="Tracking number (optional)"
-                                value={shipping[item.line_item_id] || ""}
-                                onChange={(e) => setShipping((p) => ({ ...p, [item.line_item_id]: e.target.value }))}
-                              />
-                              <button
-                                onClick={() => markShipped(item.line_item_id)}
-                                className="btn-primary text-sm py-2 whitespace-nowrap"
-                              >
-                                <CheckCircle className="w-4 h-4" /> Mark Shipped
-                              </button>
-                            </div>
-                          )}
-
-                          {(item.fulfill_status === "shipped" || item.fulfill_status === "delivered") && item.fulfilled_at && (
-                            <div className="mt-2 text-xs text-green-600">
-                              Shipped on {new Date(item.fulfilled_at).toLocaleString()}
-                            </div>
-                          )}
                         </div>
                       ))}
                     </div>
@@ -292,6 +336,38 @@ export default function PortalOrdersPage() {
           onBought={() => { setBuyingFor(null); load(); }}
         />
       )}
+
+      {confirmReprintOrder !== null && (() => {
+        const orderItems = orderGroups[confirmReprintOrder];
+        const info = labelInfoForOrder(orderItems);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="card w-full max-w-sm p-6">
+              <div className="flex items-start gap-3 mb-4">
+                <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                <div>
+                  <h2 className="font-semibold">Reprint label?</h2>
+                  <p className="text-sm text-gray-500 mt-1">
+                    Order #{confirmReprintOrder} label has already been printed. Print again?
+                  </p>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button className="btn-secondary" onClick={() => setConfirmReprintOrder(null)}>Cancel</button>
+                <button
+                  className="btn-primary flex items-center gap-1.5"
+                  onClick={() => {
+                    setConfirmReprintOrder(null);
+                    if (info) printLabel(info.url, info.orderId, info.labelId);
+                  }}
+                >
+                  <Printer className="w-4 h-4" /> Print anyway
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -338,11 +414,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
     const token = localStorage.getItem("supplier_token");
     return fetch(url, {
       ...init,
-      headers: {
-        ...(init.headers || {}),
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { ...(init.headers || {}), Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     });
   };
 
@@ -390,7 +462,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
         const err = await resp.json().catch(() => null);
         throw new Error(err?.detail || "Purchase failed");
       }
-      toast.success("Label purchased — items moved to Pending");
+      toast.success("Label purchased — order is now Unfulfilled (ready to print)");
       onBought();
     } catch (e: any) {
       toast.error(e.message || "Purchase failed");
@@ -415,42 +487,26 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
         {step === "parcel" && (
           <>
             <div className="mb-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
-              Enter parcel dimensions to get live USPS rates. Label cost will be recorded against the company.
+              Enter parcel dimensions to get live shipping rates from all available carriers. Label cost will be recorded against the company.
             </div>
             {estimateInfo && (
-              <div className={`mb-3 p-2 rounded-lg text-xs ${
-                estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
-              }`}>
+              <div className={`mb-3 p-2 rounded-lg text-xs ${estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"}`}>
                 {estimateInfo.complete
                   ? "✓ Auto-filled from catalog dimensions. Adjust if needed."
                   : `Partial auto-fill — ${estimateInfo.missing.length} item(s) missing dimensions.`}
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="label">Weight (oz) *</label>
-                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 16" value={parcel.weight} onChange={pf("weight")} />
-              </div>
-              <div>
-                <label className="label">Length (in) *</label>
-                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 12" value={parcel.length} onChange={pf("length")} />
-              </div>
-              <div>
-                <label className="label">Width (in) *</label>
-                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 9" value={parcel.width} onChange={pf("width")} />
-              </div>
-              <div>
-                <label className="label">Height (in) *</label>
-                <input className="input" type="number" step="0.1" min="0.1" placeholder="e.g. 4" value={parcel.height} onChange={pf("height")} />
-              </div>
+              {(([["weight", "Weight (oz)"], ["length", "Length (in)"], ["width", "Width (in)"], ["height", "Height (in)"]] as [string, string][]).map(([k, label]) => (
+                <div key={k}>
+                  <label className="label">{label} *</label>
+                  <input className="input" type="number" step="0.1" min="0.1" value={(parcel as any)[k]} onChange={pf(k)} />
+                </div>
+              )))}
             </div>
             <div className="flex justify-end gap-2 mt-5">
               <button className="btn-secondary" onClick={onClose}>Cancel</button>
-              <button
-                className="btn-primary flex items-center gap-1.5"
-                disabled={!parcelValid || busy}
-                onClick={getRates}
-              >
+              <button className="btn-primary flex items-center gap-1.5" disabled={!parcelValid || busy} onClick={getRates}>
                 {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Tag className="w-4 h-4" />}
                 {busy ? "Getting rates…" : "Get Rates"}
               </button>
@@ -463,20 +519,21 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
             {debug && (
               <div className="mb-3 border border-gray-200 rounded-lg p-3 bg-gray-50 text-xs">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="font-semibold text-gray-600 uppercase tracking-wide">EasyPost Request</span>
+                  <span className="font-semibold text-gray-600 uppercase tracking-wide">EasyPost Request — Verify Before Paying</span>
                   <button className="text-blue-600 hover:underline" onClick={() => setShowRawDebug((v) => !v)}>
                     {showRawDebug ? "Hide raw" : "Show raw JSON"}
                   </button>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-white p-2 rounded border border-gray-200">
-                    <div className="text-gray-500">Ship from</div>
+                    <div className="text-gray-500">Ship from (supplier)</div>
                     <div className="text-gray-700">{debug.from_address.name}</div>
                     <div className="text-gray-700">{[debug.from_address.street1, debug.from_address.street2].filter(Boolean).join(", ")}</div>
                     <div className="text-gray-700">{[debug.from_address.city, debug.from_address.state, debug.from_address.zip].filter(Boolean).join(", ")}</div>
+                    <div className="text-gray-700">{debug.from_address.country}</div>
                   </div>
                   <div className="bg-white p-2 rounded border border-gray-200">
-                    <div className="text-gray-500">Ship to</div>
+                    <div className="text-gray-500">Ship to (buyer)</div>
                     <div className="text-gray-700">{debug.to_address.name}</div>
                     <div className="text-gray-700">{[debug.to_address.street1, debug.to_address.street2].filter(Boolean).join(", ")}</div>
                     <div className="text-gray-700">{[debug.to_address.city, debug.to_address.state, debug.to_address.zip].filter(Boolean).join(", ")}</div>
@@ -485,36 +542,31 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
                 <div className="mt-2 bg-white p-2 rounded border border-gray-200">
                   <span className="text-gray-500">Parcel:</span>{" "}
                   <span className="font-medium">{debug.parcel.weight} oz · {debug.parcel.length}×{debug.parcel.width}×{debug.parcel.height} in</span>
-                  <span className="ml-3 text-gray-500">Rates:</span>{" "}
-                  <span className="font-medium">{debug.usps_rates} USPS / {debug.total_rates} total</span>
+                  <span className="ml-3 text-gray-500">Rates returned:</span>{" "}
+                  <span className="font-medium">{debug.total_rates} total</span>
+                  <span className="ml-2 text-gray-500">Line items:</span>{" "}
+                  <span className="font-medium">{debug.line_item_ids?.join(", ")}</span>
                 </div>
                 {showRawDebug && (
                   <pre className="mt-2 text-[10px] leading-tight p-2 max-h-40 overflow-auto bg-gray-900 text-gray-100 rounded font-mono">{JSON.stringify(debug, null, 2)}</pre>
                 )}
               </div>
             )}
-
             {rates.length === 0 ? (
               <div className="text-center text-gray-400 py-8">No rates available.</div>
             ) : (
               <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                 {rates.map((r) => (
-                  <label
-                    key={r.id}
-                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                      selectedRate === r.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="rate"
-                      checked={selectedRate === r.id}
-                      onChange={() => setSelectedRate(r.id)}
-                      className="accent-blue-600"
-                    />
+                  <label key={r.id} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedRate === r.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}>
+                    <input type="radio" name="rate" checked={selectedRate === r.id} onChange={() => setSelectedRate(r.id)} className="accent-blue-600" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="font-medium text-sm">{r.carrier}</span>
+                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
+                          r.carrier === "UPS" ? "bg-amber-100 text-amber-800" :
+                          r.carrier === "FedEx" ? "bg-purple-100 text-purple-800" :
+                          r.carrier === "USPS" ? "bg-blue-100 text-blue-800" :
+                          "bg-gray-100 text-gray-700"
+                        }`}>{r.carrier}</span>
                         <span className="text-xs text-gray-500">{r.service}</span>
                       </div>
                       {(r.delivery_days || r.est_delivery_days) && (
@@ -533,11 +585,7 @@ function BuyLabelModal({ orderId, onClose, onBought }: {
               <button className="btn-secondary" onClick={() => setStep("parcel")}>← Back</button>
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
-                <button
-                  className="btn-primary flex items-center gap-1.5"
-                  disabled={!selectedRate || busy}
-                  onClick={buy}
-                >
+                <button className="btn-primary flex items-center gap-1.5" disabled={!selectedRate || busy} onClick={buy}>
                   {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />}
                   {busy ? "Purchasing…" : "Buy Label"}
                 </button>

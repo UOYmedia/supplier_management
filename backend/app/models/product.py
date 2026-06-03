@@ -5,6 +5,20 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 
+class ProductComponent(Base):
+    """Links a shop product to supplier catalog items (for combo/set products)."""
+    __tablename__ = "product_components"
+    __table_args__ = (UniqueConstraint("product_id", "supplier_product_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    supplier_product_id: Mapped[int] = mapped_column(ForeignKey("supplier_products.id", ondelete="CASCADE"))
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+
+    product: Mapped["Product"] = relationship(back_populates="components")
+    supplier_product: Mapped["SupplierProduct"] = relationship(back_populates="components")
+
+
 class Product(Base):
     __tablename__ = "products"
 
@@ -26,21 +40,6 @@ class Product(Base):
     components: Mapped[list["ProductComponent"]] = relationship(back_populates="product", cascade="all, delete-orphan")
     listings: Mapped[list["MarketplaceListing"]] = relationship(back_populates="product")
     order_line_items: Mapped[list["OrderLineItem"]] = relationship(back_populates="product")
-
-
-class ProductComponent(Base):
-    """Maps a shop product to one or more supplier catalog items with a quantity multiplier.
-    Supports combo products (multiple supplier items) and set products (qty > 1 of same item)."""
-    __tablename__ = "product_components"
-    __table_args__ = (UniqueConstraint("product_id", "supplier_product_id"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
-    supplier_product_id: Mapped[int] = mapped_column(ForeignKey("supplier_products.id", ondelete="CASCADE"))
-    quantity: Mapped[int] = mapped_column(Integer, default=1)
-
-    product: Mapped["Product"] = relationship(back_populates="components")
-    supplier_product: Mapped["SupplierProduct"] = relationship(back_populates="components")
 
 
 class ProductSupplier(Base):

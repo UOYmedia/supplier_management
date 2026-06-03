@@ -20,7 +20,6 @@ export function SupplierModal({ onClose, supplier }: { onClose: () => void; supp
     notes: supplier?.notes ?? "",
     username: supplier?.username ?? "",
     password: "",
-    can_buy_labels: supplier?.can_buy_labels ?? false,
   });
 
   const mut = useMutation({
@@ -111,20 +110,6 @@ export function SupplierModal({ onClose, supplier }: { onClose: () => void; supp
                   placeholder={supplier ? "Leave blank to keep" : "Set password"} />
               </div>
             </div>
-            <label className="flex items-start gap-2 text-sm mt-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.can_buy_labels}
-                onChange={(e) => setForm((p) => ({ ...p, can_buy_labels: e.target.checked }))}
-                className="rounded mt-0.5"
-              />
-              <div>
-                <div>Allow this supplier to buy EasyPost labels themselves</div>
-                <div className="text-xs text-gray-500">
-                  Default off — only admin buys labels and supplier just prints the shipping label received. Label cost is always recorded against the company.
-                </div>
-              </div>
-            </label>
           </div>
         </div>
 

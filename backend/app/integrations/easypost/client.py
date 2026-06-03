@@ -1,5 +1,4 @@
-"""
-Async EasyPost REST client (httpx).
+"""Async EasyPost REST client (httpx).
 Docs: https://www.easypost.com/docs/api
 """
 import base64
@@ -20,50 +19,52 @@ class EasyPostClient:
         self._auth = (api_key, "")
 
     async def _post(self, path: str, payload: dict) -> dict:
-        async with httpx.AsyncClient(timeout=30) as http:
-            r = await http.post(f"{EASYPOST_BASE}{path}", json=payload, auth=self._auth)
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                r = await http.post(f"{EASYPOST_BASE}{path}", json=payload, auth=self._auth)
+        except httpx.HTTPError as e:
+            raise EasyPostError(503, f"EasyPost unreachable: {e}")
         if not r.is_success:
-            detail = r.json().get("error", {}).get("message", r.text)
+            try:
+                detail = r.json().get("error", {}).get("message", r.text)
+            except Exception:
+                detail = r.text or f"HTTP {r.status_code}"
             raise EasyPostError(r.status_code, detail)
         return r.json()
 
     async def _get(self, path: str, params: dict | None = None) -> dict:
-        async with httpx.AsyncClient(timeout=30) as http:
-            r = await http.get(f"{EASYPOST_BASE}{path}", params=params, auth=self._auth)
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                r = await http.get(f"{EASYPOST_BASE}{path}", params=params, auth=self._auth)
+        except httpx.HTTPError as e:
+            raise EasyPostError(503, f"EasyPost unreachable: {e}")
         if not r.is_success:
-            detail = r.json().get("error", {}).get("message", r.text)
+            try:
+                detail = r.json().get("error", {}).get("message", r.text)
+            except Exception:
+                detail = r.text or f"HTTP {r.status_code}"
             raise EasyPostError(r.status_code, detail)
         return r.json()
 
     async def fetch_label_pdf_b64(self, shipment: dict) -> str | None:
-        """Convert a bought shipment's label to PDF and download bytes as base64.
+        """Download the EasyPost PNG label and return raw PNG bytes as base64.
 
-        EasyPost labels default to PNG. We re-request format=PDF, then download
-        the PDF bytes from the resulting URL so we can archive it and serve
-        same-origin (which is what lets the browser auto-trigger print).
+        Using PNG avoids EasyPost's PDF formatting quirks (letter-size wrappers,
+        misaligned content). Callers build the final PDF with build_label_from_png.
+        Only uses label_png_url -- if the shipment was created with PDF format,
+        label_png_url won't be present and we return None so callers can call
+        regenerate_label() to explicitly request a PNG conversion.
         """
-        shipment_id = shipment.get("id")
-        if not shipment_id:
-            return None
-        pdf_url = None
-        try:
-            converted = await self._get(
-                f"/shipments/{shipment_id}/label",
-                params={"file_format": "pdf"},
-            )
-            pl = converted.get("postage_label") or {}
-            pdf_url = pl.get("label_pdf_url") or pl.get("label_url")
-        except Exception:
-            pl = shipment.get("postage_label") or {}
-            pdf_url = pl.get("label_pdf_url") or pl.get("label_url")
-        if not pdf_url:
+        pl = shipment.get("postage_label") or {}
+        png_url = pl.get("label_png_url")
+        if not png_url:
             return None
         try:
             async with httpx.AsyncClient(timeout=30) as http:
-                r = await http.get(pdf_url)
+                r = await http.get(png_url)
                 if not r.is_success:
                     return None
-                return base64.b64encode(r.content).decode()
+            return base64.b64encode(r.content).decode()
         except Exception:
             return None
 
@@ -79,6 +80,7 @@ class EasyPostClient:
             "to_address": to_address,
             "from_address": from_address,
             "parcel": parcel,
+            "options": {"label_format": "PDF", "label_size": "4x6"},
         }
         if carrier_accounts:
             shipment["carrier_accounts"] = [{"id": ca} for ca in carrier_accounts]
@@ -89,9 +91,66 @@ class EasyPostClient:
         """Purchase a rate. Returns the bought shipment with label URL + tracking."""
         return await self._post(f"/shipments/{shipment_id}/buy", {"rate": {"id": rate_id}})
 
+    async def get_shipment(self, shipment_id: str) -> dict:
+        """Retrieve an existing shipment (including already-bought ones)."""
+        return await self._get(f"/shipments/{shipment_id}")
+
+    async def regenerate_label(
+        self, shipment_id: str, label_size: str = "4x6"
+    ) -> tuple[str | None, str | None]:
+        """Re-fetch the PNG label for a bought shipment. Returns (png_b64, label_url).
+
+        Raw PNG bytes are returned as base64; callers build the final PDF with
+        build_label_from_png so the catalog overlay is applied correctly.
+        """
+        converted = await self._get(
+            f"/shipments/{shipment_id}/label",
+            params={"file_format": "png", "label_size": label_size},
+        )
+        pl = converted.get("postage_label") or {}
+        # Only use the explicit PNG URL — label_url may still point to a PDF even
+        # when file_format=png is requested (EasyPost doesn't always regenerate).
+        png_url = pl.get("label_png_url")
+        # label_url (PDF or otherwise) is still useful for the ShippingLabel.label_url field.
+        any_url = pl.get("label_url") or png_url
+        if not png_url:
+            return None, any_url
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                r = await http.get(png_url)
+                if not r.is_success:
+                    return None, any_url
+            # Validate PNG magic bytes so we never pass PDF bytes to ImageReader
+            if r.content[:8] != b'\x89PNG\r\n\x1a\n':
+                return None, any_url
+            return base64.b64encode(r.content).decode(), png_url
+        except Exception:
+            return None, any_url
+
+    async def list_webhooks(self) -> list[dict]:
+        """Return all registered EasyPost webhooks for this account."""
+        data = await self._get("/webhooks")
+        return data.get("webhooks", [])
+
+    async def create_webhook(self, url: str, webhook_secret: str = "") -> dict:
+        """Register a webhook URL with EasyPost. Returns the created webhook object."""
+        payload: dict = {"webhook": {"url": url}}
+        if webhook_secret:
+            payload["webhook"]["webhook_secret"] = webhook_secret
+        return await self._post("/webhooks", payload)
+
+    async def create_tracker(self, tracking_code: str, carrier: str = "USPS") -> dict:
+        """Create (or look up existing) EasyPost tracker. Returns tracker with .status field.
+        Statuses: unknown, pre_transit, in_transit, out_for_delivery, delivered, etc."""
+        return await self._post("/trackers", {
+            "tracker": {"tracking_code": tracking_code, "carrier": carrier}
+        })
+
 
 def supplier_to_ep_address(supplier) -> dict:
     """Convert Supplier ORM object to EasyPost address dict."""
+    raw_country = supplier.country or "US"
+    country = "US" if raw_country.lower() in ("united states", "united states of america", "us") else raw_country
     return {
         "name": supplier.name,
         "street1": supplier.street1 or "",
@@ -99,7 +158,7 @@ def supplier_to_ep_address(supplier) -> dict:
         "city": supplier.city or "",
         "state": supplier.state or "",
         "zip": supplier.zipcode or "",
-        "country": supplier.country or "US",
+        "country": country,
         "phone": supplier.phone or "",
         "email": supplier.email or "",
     }
@@ -119,5 +178,14 @@ def shipping_addr_to_ep(addr: dict) -> dict:
     }
 
 
+SUPPORTED_CARRIERS = {"USPS", "UPS"}
+
+
 def filter_usps_rates(rates: list[dict]) -> list[dict]:
     return [r for r in rates if r.get("carrier", "").upper() == "USPS"]
+
+
+def filter_supported_rates(rates: list[dict]) -> list[dict]:
+    """Return USPS + UPS rates; falls back to all rates if neither is present."""
+    filtered = [r for r in rates if r.get("carrier", "").upper() in SUPPORTED_CARRIERS]
+    return filtered or rates

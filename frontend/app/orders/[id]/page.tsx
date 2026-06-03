@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, suppliersApi, easypostApi, amazonShippingApi } from "@/lib/api";
 import { useParams, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag, ExternalLink, Download, Printer } from "lucide-react";
+import { ArrowLeft, Truck, Package, X, UserPlus, CheckCircle2, Loader2, Tag, ExternalLink, Download, Printer, Pencil, Upload, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { OrderStatusBadge } from "../order-status-badge";
 
@@ -16,12 +16,14 @@ export default function OrderDetailPage() {
   const qc = useQueryClient();
   const searchParams = useSearchParams();
   const [showLabel, setShowLabel] = useState<{ supplierId: number; lineItemIds: number[] } | null>(null);
+  const [manualLabel, setManualLabel] = useState<{ supplierId: number; lineItemIds: number[] } | null>(null);
+  const [editingLabel, setEditingLabel] = useState<any>(null);
   const [assigningItem, setAssigningItem] = useState<number | null>(null);
   const [autoOpenedForSupplier, setAutoOpenedForSupplier] = useState<number | null>(null);
 
-  const { data: order } = useQuery({ queryKey: ["order", oid], queryFn: () => ordersApi.get(oid) });
-  const { data: labels = [] } = useQuery({ queryKey: ["labels", oid], queryFn: () => ordersApi.listLabels(oid) });
-  const { data: suppliers = [] } = useQuery({ queryKey: ["suppliers"], queryFn: () => suppliersApi.list() });
+  const { data: order } = useQuery({ queryKey: ["order", oid], queryFn: () => ordersApi.get(oid), throwOnError: false });
+  const { data: labels = [] } = useQuery({ queryKey: ["labels", oid], queryFn: () => ordersApi.listLabels(oid), throwOnError: false });
+  const { data: suppliers = [] } = useQuery({ queryKey: ["suppliers"], queryFn: () => suppliersApi.list(), throwOnError: false });
 
   const updateLIMut = useMutation({
     mutationFn: ({ liId, data }: { liId: number; data: object }) => ordersApi.updateLineItem(oid, liId, data),
@@ -37,6 +39,33 @@ export default function OrderDetailPage() {
       toast.success("Supplier assigned");
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
+  });
+
+  const quickAssignMut = useMutation({
+    mutationFn: ({ liId, data }: { liId: number; data: object }) => ordersApi.assignSupplier(oid, liId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["order", oid] });
+      toast.success("Auto-assigned from mapping");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Auto-assign failed"),
+  });
+
+  const markPrintedMut = useMutation({
+    mutationFn: (labelId: number) =>
+      ordersApi.markLabelPrinted(oid, labelId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["order", oid] });
+      qc.invalidateQueries({ queryKey: ["labels", oid] });
+    },
+  });
+
+  const syncTrackingMut = useMutation({
+    mutationFn: () => ordersApi.syncTracking(oid),
+    onSuccess: (res: any) => {
+      const n = res.synced?.length ?? 0;
+      toast.success(n > 0 ? `Synced ${n} fulfillment(s) to Shopify` : "No new fulfillments to sync");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Shopify sync failed"),
   });
 
   // Auto-open Buy Label modal when navigated from supplier orders tab
@@ -63,6 +92,7 @@ export default function OrderDetailPage() {
   const addr = order.shipping_address || {};
   const supplierGroups = groupBySupplier(order.line_items);
   const isAmazonOrder = order.marketplace === "amazon" && !!order.external_order_id;
+  const isShopifyOrder = order.marketplace === "shopify" && !!order.external_order_id;
 
   const unmappedCount = order.line_items.filter((li: any) => !li.supplier_id).length;
   const supplierIds = order.line_items
@@ -93,15 +123,6 @@ export default function OrderDetailPage() {
     } catch {}
   };
 
-  const markPrintedMut = useMutation({
-    mutationFn: (labelId: number) =>
-      ordersApi.markLabelPrinted(oid, labelId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["order", oid] });
-      qc.invalidateQueries({ queryKey: ["labels", oid] });
-    },
-  });
-
   const printLabelsForGroup = (items: any[]) => {
     const labelIds = Array.from(new Set(items.map((li) => li.label_id).filter(Boolean)));
     if (labelIds.length === 0) {
@@ -115,7 +136,6 @@ export default function OrderDetailPage() {
         ? ordersApi.labelDownloadUrl(oid, lbl.id)
         : lbl.label_url;
       if (url) printLabel(url);
-      // Auto-mark items as shipped now that the supplier is printing
       markPrintedMut.mutate(labelId);
     }
   };
@@ -125,15 +145,28 @@ export default function OrderDetailPage() {
       <div className="flex items-center gap-3 mb-6">
         <Link href="/orders" className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"><ArrowLeft className="w-4 h-4" /></Link>
         <div className="flex-1">
-          <h1 className="page-title">Order #{order.id}</h1>
+          <h1 className="page-title">{order.order_name || `Order #${order.id}`}</h1>
           <div className="flex items-center gap-2 mt-0.5">
             <p className="text-sm text-gray-500 capitalize">{order.marketplace} · {new Date(order.ordered_at).toLocaleString()}</p>
-            {order.external_order_id && (
+            {order.external_order_id && !order.order_name && (
               <span className="text-xs font-mono text-gray-400">{order.external_order_id}</span>
             )}
           </div>
         </div>
-        <OrderStatusBadge status={order.status} />
+        <div className="flex items-center gap-2">
+          {isShopifyOrder && (
+            <button
+              className="btn-secondary text-xs"
+              onClick={() => syncTrackingMut.mutate()}
+              disabled={syncTrackingMut.isPending}
+              title="Push tracking number to Shopify"
+            >
+              {syncTrackingMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              Sync to Shopify
+            </button>
+          )}
+          <OrderStatusBadge status={order.status} />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
@@ -238,6 +271,15 @@ export default function OrderDetailPage() {
                     <Truck className="w-3 h-3" /> Buy Label ({needsLabel.length})
                   </button>
                 )}
+                {sid !== null && needsLabel.length > 0 && (
+                  <button
+                    className="btn-secondary text-xs py-1"
+                    onClick={() => setManualLabel({ supplierId: sid, lineItemIds: needsLabel.map((li: any) => li.id) })}
+                    title="Provide a label manually (tracking + optional PDF) without buying through a carrier"
+                  >
+                    <Tag className="w-3 h-3" /> Manual Label
+                  </button>
+                )}
               </div>
             </div>
             <div className="table-wrapper">
@@ -253,6 +295,15 @@ export default function OrderDetailPage() {
                       suppliers={suppliers}
                       onUpdate={(data) => updateLIMut.mutate({ liId: li.id, data })}
                       onAssignSupplier={() => setAssigningItem(li.id)}
+                      onQuickAssign={(s) => quickAssignMut.mutate({
+                        liId: li.id,
+                        data: {
+                          supplier_id: s.supplier_id,
+                          supplier_product_id: s.supplier_product_id,
+                          units: s.units,
+                          create_product_supplier: true,
+                        },
+                      })}
                     />
                   ))}
                 </tbody>
@@ -287,6 +338,15 @@ export default function OrderDetailPage() {
                     <ExternalLink className="w-3 h-3" /> Download
                   </a>
                 )}
+                {!l.has_label_data && !l.label_url && (
+                  <span className="text-xs text-amber-600">No PDF — upload one</span>
+                )}
+                <button
+                  className="flex items-center gap-1 text-gray-500 hover:text-gray-800 text-xs ml-auto"
+                  onClick={() => setEditingLabel(l)}
+                >
+                  <Pencil className="w-3 h-3" /> Edit
+                </button>
               </div>
             ))}
           </div>
@@ -315,6 +375,236 @@ export default function OrderDetailPage() {
           loading={assignSupplierMut.isPending}
         />
       )}
+
+      {manualLabel !== null && (
+        <ManualLabelModal
+          orderId={oid}
+          supplierId={manualLabel.supplierId}
+          lineItemIds={manualLabel.lineItemIds}
+          onClose={() => setManualLabel(null)}
+          onDone={() => {
+            qc.invalidateQueries({ queryKey: ["order", oid] });
+            qc.invalidateQueries({ queryKey: ["labels", oid] });
+            setManualLabel(null);
+          }}
+        />
+      )}
+
+      {editingLabel !== null && (
+        <EditLabelModal
+          orderId={oid}
+          label={editingLabel}
+          onClose={() => setEditingLabel(null)}
+          onDone={() => {
+            qc.invalidateQueries({ queryKey: ["order", oid] });
+            qc.invalidateQueries({ queryKey: ["labels", oid] });
+            setEditingLabel(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ManualLabelModal({ orderId, supplierId, lineItemIds, onClose, onDone }: {
+  orderId: number;
+  supplierId: number;
+  lineItemIds: number[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [carrier, setCarrier] = useState("");
+  const [service, setService] = useState("");
+  const [tracking, setTracking] = useState("");
+  const [cost, setCost] = useState("0");
+  const [labelUrl, setLabelUrl] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!carrier.trim()) { toast.error("Carrier is required"); return; }
+    setSaving(true);
+    try {
+      const label = await ordersApi.createLabel(orderId, {
+        supplier_id: supplierId,
+        carrier: carrier.trim(),
+        service: service.trim() || undefined,
+        tracking_number: tracking.trim() || undefined,
+        label_url: labelUrl.trim() || undefined,
+        cost: parseFloat(cost) || 0,
+        line_item_ids: lineItemIds,
+      });
+      if (file) {
+        await ordersApi.uploadLabel(orderId, label.id, file);
+      }
+      toast.success("Manual label saved");
+      onDone();
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || "Error saving label");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-md p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Manual Label</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">
+          Provide a label bought outside the system for {lineItemIds.length} item(s). Items move to <strong>pending</strong>.
+        </p>
+        <div className="space-y-3">
+          <div>
+            <label className="label">Carrier *</label>
+            <input className="input" value={carrier} onChange={(e) => setCarrier(e.target.value)} placeholder="e.g. USPS, UPS, DHL" />
+          </div>
+          <div>
+            <label className="label">Service</label>
+            <input className="input" value={service} onChange={(e) => setService(e.target.value)} placeholder="e.g. Ground, Priority" />
+          </div>
+          <div>
+            <label className="label">Tracking Number</label>
+            <input className="input" value={tracking} onChange={(e) => setTracking(e.target.value)} placeholder="Tracking #" />
+          </div>
+          <div>
+            <label className="label">Cost ($)</label>
+            <input className="input" type="number" step="0.01" min="0" value={cost} onChange={(e) => setCost(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Label URL (optional)</label>
+            <input className="input" value={labelUrl} onChange={(e) => setLabelUrl(e.target.value)} placeholder="https://…" />
+          </div>
+          <div>
+            <label className="label">Or upload label PDF (optional)</label>
+            <label className="btn-secondary cursor-pointer inline-flex">
+              <Upload className="w-4 h-4" /> {file ? file.name : "Choose PDF"}
+              <input type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            </label>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={!carrier.trim() || saving} onClick={handleSubmit}>
+            {saving ? "Saving…" : "Save Label"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditLabelModal({ orderId, label, onClose, onDone }: {
+  orderId: number;
+  label: any;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [carrier, setCarrier] = useState(label.carrier || "");
+  const [service, setService] = useState(label.service || "");
+  const [tracking, setTracking] = useState(label.tracking_number || "");
+  const [cost, setCost] = useState(String(label.cost ?? "0"));
+  const [labelUrl, setLabelUrl] = useState(label.label_url || "");
+  const [file, setFile] = useState<File | null>(null);
+  const [size, setSize] = useState("4x6");
+  const [saving, setSaving] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+
+  const handleSubmit = async () => {
+    setSaving(true);
+    try {
+      await ordersApi.updateLabel(orderId, label.id, {
+        carrier: carrier.trim() || undefined,
+        service: service.trim() || null,
+        tracking_number: tracking.trim() || null,
+        cost: parseFloat(cost) || 0,
+        label_url: labelUrl.trim() || null,
+      });
+      if (file) {
+        await ordersApi.uploadLabel(orderId, label.id, file);
+      }
+      toast.success("Label updated");
+      onDone();
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || "Error updating label");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    setRegenerating(true);
+    try {
+      await ordersApi.regenerateLabel(orderId, label.id, size);
+      toast.success(`Label PDF regenerated (${size})`);
+      onDone();
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || "Error regenerating label");
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-md p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Edit Label</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="label">Carrier</label>
+            <input className="input" value={carrier} onChange={(e) => setCarrier(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Service</label>
+            <input className="input" value={service} onChange={(e) => setService(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Tracking Number</label>
+            <input className="input" value={tracking} onChange={(e) => setTracking(e.target.value)} />
+            <p className="text-xs text-gray-400 mt-1">Updating this also updates the tracking number on all linked items.</p>
+          </div>
+          <div>
+            <label className="label">Cost ($)</label>
+            <input className="input" type="number" step="0.01" min="0" value={cost} onChange={(e) => setCost(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Label URL</label>
+            <input className="input" value={labelUrl} onChange={(e) => setLabelUrl(e.target.value)} placeholder="https://…" />
+          </div>
+          <div>
+            <label className="label">{label.has_label_data ? "Replace label PDF" : "Upload label PDF"}</label>
+            <label className="btn-secondary cursor-pointer inline-flex">
+              <Upload className="w-4 h-4" /> {file ? file.name : "Choose PDF"}
+              <input type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            </label>
+          </div>
+          <div className="border-t border-gray-100 pt-3">
+            <label className="label">Re-generate PDF from carrier</label>
+            <p className="text-xs text-gray-400 mb-2">Re-fetch the label from EasyPost at the chosen size (fixes a missing PDF or changes the print size). Only works for labels bought through EasyPost.</p>
+            <div className="flex items-center gap-2">
+              <select className="input w-28" value={size} onChange={(e) => setSize(e.target.value)}>
+                <option value="4x6">4x6</option>
+                <option value="7x3">7x3</option>
+              </select>
+              <button className="btn-secondary inline-flex" disabled={regenerating} onClick={handleRegenerate}>
+                {regenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Tag className="w-4 h-4" />}
+                {regenerating ? "Regenerating…" : "Re-generate"}
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={saving} onClick={handleSubmit}>
+            {saving ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -328,10 +618,11 @@ function groupBySupplier(items: any[]) {
   }, {} as Record<string, any[]>);
 }
 
-function LineItemRow({ li, onUpdate, onAssignSupplier, suppliers }: {
+function LineItemRow({ li, onUpdate, onAssignSupplier, onQuickAssign, suppliers }: {
   li: any;
   onUpdate: (d: object) => void;
   onAssignSupplier: () => void;
+  onQuickAssign: (suggestion: any) => void;
   suppliers: any[];
 }) {
   const [status, setStatus] = useState(li.fulfill_status);
@@ -339,6 +630,7 @@ function LineItemRow({ li, onUpdate, onAssignSupplier, suppliers }: {
   const [baseCost, setBaseCost] = useState(String(li.base_cost));
 
   const isShipped = status === "shipped" || status === "delivered";
+  const canReassign = !isShipped && !!li.supplier_id;
 
   return (
     <tr>
@@ -367,14 +659,34 @@ function LineItemRow({ li, onUpdate, onAssignSupplier, suppliers }: {
         )}
       </td>
       <td>
-        {!li.supplier_id && (
-          <button
-            onClick={onAssignSupplier}
-            className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium whitespace-nowrap"
-          >
-            <UserPlus className="w-3 h-3" /> Assign
-          </button>
-        )}
+        <div className="flex flex-col gap-1 items-start">
+          {!li.supplier_id && li.mapping_suggestion && (
+            <button
+              onClick={() => onQuickAssign(li.mapping_suggestion)}
+              className="flex items-center gap-1 text-xs text-green-600 hover:text-green-800 font-medium whitespace-nowrap"
+              title={`Quick assign: ${li.mapping_suggestion.supplier_name} → ${li.mapping_suggestion.catalog_name}`}
+            >
+              <CheckCircle2 className="w-3 h-3" />
+              {li.mapping_suggestion.supplier_name}
+            </button>
+          )}
+          {!li.supplier_id && (
+            <button
+              onClick={onAssignSupplier}
+              className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium whitespace-nowrap"
+            >
+              <UserPlus className="w-3 h-3" /> {li.mapping_suggestion ? "Change" : "Assign"}
+            </button>
+          )}
+          {canReassign && (
+            <button
+              onClick={onAssignSupplier}
+              className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-700 whitespace-nowrap"
+            >
+              <Pencil className="w-3 h-3" /> Re-assign
+            </button>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -389,7 +701,8 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   onAssign: (data: object) => void;
   loading: boolean;
 }) {
-  const [supplierId, setSupplierId] = useState("");
+  const isReassign = !!lineItem?.supplier_id;
+  const [supplierId, setSupplierId] = useState(lineItem?.supplier_id ? String(lineItem.supplier_id) : "");
   const [selectedSpId, setSelectedSpId] = useState<number | null>(null);
   const [units, setUnits] = useState("1");
   const [baseCost, setBaseCost] = useState(lineItem ? String(lineItem.base_cost) : "0");
@@ -434,17 +747,15 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   };
 
   const handleSubmit = () => {
-    if (!supplierId) return;
+    if (!supplierId || !selectedSpId) return;
     const payload: any = {
       supplier_id: parseInt(supplierId),
+      supplier_product_id: selectedSpId,
+      units: Math.max(1, parseInt(units) || 1),
       base_cost: parseFloat(baseCost),
       create_product_supplier: createPs,
       is_preferred: isPreferred,
     };
-    if (selectedSpId) {
-      payload.supplier_product_id = selectedSpId;
-      payload.units = Math.max(1, parseInt(units) || 1);
-    }
     onAssign(payload);
   };
 
@@ -452,7 +763,10 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="card w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold">Assign Supplier</h2>
+          <div>
+            <h2 className="font-semibold">{isReassign ? "Re-assign Supplier" : "Assign Supplier"}</h2>
+            {isReassign && <p className="text-xs text-amber-600 mt-0.5">Currently: {lineItem.supplier_name || `Supplier #${lineItem.supplier_id}`}</p>}
+          </div>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
 
@@ -477,7 +791,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
 
           {supplierId && (
             <div>
-              <label className="label">Catalog Item {catalog.length > 0 && <span className="text-gray-400 font-normal">({catalog.length} available)</span>}</label>
+              <label className="label">Catalog Item * {catalog.length > 0 && <span className="text-gray-400 font-normal">({catalog.length} available)</span>}</label>
               {selectedSp ? (
                 <div className="flex items-center justify-between gap-2 p-2 rounded-lg border border-blue-200 bg-blue-50">
                   <div className="min-w-0">
@@ -487,7 +801,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
                   <button className="text-xs text-gray-500 hover:text-red-500" onClick={() => setSelectedSpId(null)}>Change</button>
                 </div>
               ) : catalog.length === 0 ? (
-                <p className="text-xs text-gray-400">Supplier has no catalog items. Enter base cost manually below.</p>
+                <p className="text-xs text-amber-600 font-medium">This supplier has no catalog items. You must create catalog items for this supplier first before assigning.</p>
               ) : (
                 <>
                   <input
@@ -511,7 +825,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
                       </button>
                     ))}
                   </div>
-                  <p className="text-xs text-gray-400 mt-1">Picking a catalog item maps this variant for future orders and creates fulfillment items.</p>
+                  <p className="text-xs text-gray-400 mt-1">Required — select a catalog item to assign this order to the supplier.</p>
                 </>
               )}
             </div>
@@ -559,10 +873,10 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
           <button
             className="btn-primary flex items-center gap-1.5"
             onClick={handleSubmit}
-            disabled={!supplierId || loading}
+            disabled={!supplierId || !selectedSpId || loading}
           >
             <CheckCircle2 className="w-4 h-4" />
-            {loading ? "Assigning…" : "Assign Supplier"}
+            {loading ? "Assigning…" : isReassign ? "Re-assign Supplier" : "Assign Supplier"}
           </button>
         </div>
       </div>
@@ -794,7 +1108,7 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
               </div>
             )}
             <div className="flex justify-between gap-2 mt-5">
-              <button className="btn-secondary" onClick={() => setStep("parcel")}>← Back</button>
+              <button className="btn-secondary" onClick={() => setStep("parcel")}>&#8592; Back</button>
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 <button
@@ -912,7 +1226,6 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
               Covers <strong>{lineItemIds.length}</strong> item(s). Enter parcel dimensions for live carrier rates.
             </div>
 
-            {/* Debug preview — ship from / ship to */}
             <AddressPreview
               from={supplierForPreview}
               to={orderForPreview?.shipping_address}
@@ -1013,7 +1326,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
               </div>
             )}
             <div className="flex justify-between gap-2 mt-5">
-              <button className="btn-secondary" onClick={() => setStep("parcel")}>← Back</button>
+              <button className="btn-secondary" onClick={() => setStep("parcel")}>&#8592; Back</button>
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 <button
@@ -1126,8 +1439,7 @@ function EasyPostDebugPanel({
           <span className="font-medium">{debug.parcel.weight} oz</span>{" · "}
           <span className="font-medium">{debug.parcel.length}×{debug.parcel.width}×{debug.parcel.height} in</span>
           <span className="ml-3 text-gray-500">Rates returned:</span>{" "}
-          <span className="font-medium">{debug.usps_rates} USPS</span>
-          <span className="text-gray-500"> / {debug.total_rates} total</span>
+          <span className="font-medium">{debug.total_rates} total</span>
           <span className="ml-3 text-gray-500">Line items:</span>{" "}
           <span className="font-mono">{(debug.line_item_ids || []).join(", ")}</span>
         </div>

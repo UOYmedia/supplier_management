@@ -35,29 +35,6 @@ class OrderLineItemUpdate(BaseModel):
     fulfilled_at: datetime | None = None
 
 
-class OrderFulfillmentItemOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
-    order_line_item_id: int
-    supplier_product_id: int
-    quantity: int
-    fulfill_status: FulfillStatus
-    tracking_number: str | None
-    label_id: int | None
-    fulfilled_at: datetime | None
-    supplier_product_name: str | None = None
-    supplier_product_sku: str | None = None
-    supplier_id: int | None = None
-    supplier_name: str | None = None
-
-
-class OrderFulfillmentItemUpdate(BaseModel):
-    fulfill_status: FulfillStatus | None = None
-    tracking_number: str | None = None
-    label_id: int | None = None
-    fulfilled_at: datetime | None = None
-
-
 class OrderLineItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -74,7 +51,7 @@ class OrderLineItemOut(BaseModel):
     label_id: int | None
     fulfilled_at: datetime | None
     supplier_name: str | None = None
-    fulfillment_items: list[OrderFulfillmentItemOut] = []
+    mapping_suggestion: dict | None = None
 
 
 class OrderCreate(BaseModel):
@@ -100,6 +77,7 @@ class OrderOut(BaseModel):
     id: int
     marketplace: str
     external_order_id: str | None
+    order_name: str | None = None
     buyer_name: str | None
     buyer_email: str | None
     shipping_address: dict | None
@@ -114,11 +92,15 @@ class OrderOut(BaseModel):
 
 class AssignSupplierBody(BaseModel):
     supplier_id: int
+    supplier_product_id: int
     base_cost: Decimal | None = None
     create_product_supplier: bool = True
     is_preferred: bool = False
-    supplier_product_id: int | None = None
     units: int = 1
+
+
+class MarkShippedBody(BaseModel):
+    tracking_number: str | None = None
 
 
 class ShippingLabelCreate(BaseModel):
@@ -133,6 +115,14 @@ class ShippingLabelCreate(BaseModel):
     line_item_ids: list[int] = []
 
 
+class ShippingLabelUpdate(BaseModel):
+    carrier: str | None = None
+    service: str | None = None
+    tracking_number: str | None = None
+    label_url: str | None = None
+    cost: Decimal | None = None
+
+
 class ShippingLabelOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -141,6 +131,15 @@ class ShippingLabelOut(BaseModel):
     service: str | None
     tracking_number: str | None
     label_url: str | None
-    has_label_data: bool = False   # true when Amazon PDF is stored; use /labels/{id}/download
+    label_data: str | None = None
+    shipment_id: str | None = None
     cost: Decimal
     purchased_at: datetime
+    has_label_data: bool = False
+
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):
+        instance = super().model_validate(obj, *args, **kwargs)
+        if hasattr(obj, "label_data"):
+            instance.has_label_data = bool(obj.label_data)
+        return instance

@@ -1,9 +1,10 @@
-"""
+""" 
 Supplier Portal API — authenticated with supplier JWT.
 Token payload: {"sub": str(supplier_id), "role": "supplier"}
 """
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -12,14 +13,14 @@ from datetime import datetime, timezone
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import verify_password, create_access_token, decode_token
-from app.models.supplier import Supplier, Invoice
-from app.models.product import Product, ProductSupplier
-from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus
+from app.models.supplier import Supplier, Invoice, SupplierProduct
+from app.models.product import Product, ProductSupplier, ProductComponent
+from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderFulfillmentItem
 from app.api.v1.orders import _recalculate_order_status
 from app.api.v1.easypost import ParcelIn, RateOut, RatesResponse, DebugInfo
 from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
-    supplier_to_ep_address, shipping_addr_to_ep, filter_usps_rates,
+    supplier_to_ep_address, shipping_addr_to_ep,
 )
 from app.schemas.order import ShippingLabelOut
 
@@ -80,7 +81,7 @@ async def portal_me(supplier: Supplier = Depends(get_current_supplier)):
     }
 
 
-# --- Products ---
+# --- Catalog (supplier's own products) ---
 
 @router.get("/products")
 async def portal_products(
@@ -88,63 +89,312 @@ async def portal_products(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(ProductSupplier).where(ProductSupplier.supplier_id == supplier.id)
+        select(SupplierProduct)
+        .where(SupplierProduct.supplier_id == supplier.id)
+        .order_by(SupplierProduct.name)
     )
-    ps_list = result.scalars().all()
-    out = []
-    for ps in ps_list:
-        product = await db.get(Product, ps.product_id)
-        if not product or not product.is_active:
-            continue
-        out.append({
-            "product_supplier_id": ps.id,
-            "product_id": product.id,
-            "name": product.name,
-            "sku": ps.supplier_sku or product.sku,
-            "cost": float(ps.cost),
-            "stock": ps.stock,
-            "mockup_url": product.image_url,
-            "lead_time_days": ps.lead_time_days,
-        })
-    return out
+    items = result.scalars().all()
+    return [
+        {
+            "id": sp.id,
+            "name": sp.name,
+            "short_name": sp.short_name,
+            "sku": sp.sku,
+            "unit_price": float(sp.unit_price),
+            "stock_quantity": sp.stock_quantity,
+            "weight": float(sp.weight) if sp.weight is not None else None,
+            "length": float(sp.length) if sp.length is not None else None,
+            "width": float(sp.width) if sp.width is not None else None,
+            "height": float(sp.height) if sp.height is not None else None,
+            "image_url": sp.image_url,
+            "updated_at": sp.updated_at.isoformat() if sp.updated_at else None,
+        }
+        for sp in items
+    ]
 
 
 # --- Orders to fulfill ---
 
+def _supplier_status(fulfill_status: FulfillStatus, label_id: int | None) -> str:
+    """Map DB fulfill_status + label presence to supplier-facing status string."""
+    if fulfill_status in (FulfillStatus.shipped, FulfillStatus.delivered):
+        return "shipped"
+    if fulfill_status == FulfillStatus.drop_off:
+        return "fulfilled"
+    if fulfill_status == FulfillStatus.pending or label_id is not None:
+        return "unfulfilled"
+    return "pending_label"
+
+
 @router.get("/orders")
 async def portal_orders(
-    status: str | None = None,
+    supplier_status: str | None = None,
     supplier: Supplier = Depends(get_current_supplier),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy import or_, and_
     q = select(OrderLineItem).where(OrderLineItem.supplier_id == supplier.id)
-    if status:
-        q = q.where(OrderLineItem.fulfill_status == status)
+    if supplier_status == "pending_label":
+        q = q.where(
+            OrderLineItem.fulfill_status == FulfillStatus.unfulfilled,
+            OrderLineItem.label_id.is_(None),
+        )
+    elif supplier_status == "unfulfilled":
+        q = q.where(
+            or_(
+                OrderLineItem.fulfill_status == FulfillStatus.pending,
+                and_(
+                    OrderLineItem.fulfill_status == FulfillStatus.unfulfilled,
+                    OrderLineItem.label_id.isnot(None),
+                ),
+            )
+        )
+    elif supplier_status == "fulfilled":
+        q = q.where(OrderLineItem.fulfill_status == FulfillStatus.drop_off)
+    elif supplier_status == "shipped":
+        q = q.where(
+            OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered])
+        )
     result = await db.execute(q.order_by(OrderLineItem.id.desc()))
-    items = result.scalars().all()
+    lis = result.scalars().all()
     out = []
-    for item in items:
-        order = await db.get(Order, item.order_id)
-        label = await db.get(ShippingLabel, item.label_id) if item.label_id else None
-        out.append({
-            "line_item_id": item.id,
-            "order_id": item.order_id,
+    created_ofi = False  # backfill flag: persist resolved catalog links so they survive
+    for li in lis:
+        order = await db.get(Order, li.order_id)
+        label = await db.get(ShippingLabel, li.label_id) if li.label_id else None
+        base = {
+            "order_id": li.order_id,
+            "order_line_item_id": li.id,
             "external_order_id": order.external_order_id if order else None,
             "marketplace": order.marketplace if order else None,
             "ordered_at": order.ordered_at.isoformat() if order else None,
             "buyer_name": order.buyer_name if order else None,
             "shipping_address": order.shipping_address if order else None,
-            "product_name": item.product_name,
-            "sku": item.sku,
-            "quantity": item.quantity,
-            "fulfill_status": item.fulfill_status,
-            "tracking_number": item.tracking_number,
-            "label_id": item.label_id,
+            "label_id": li.label_id,
             "label_url": label.label_url if label else None,
             "label_has_pdf": bool(label and label.label_data) if label else False,
-            "fulfilled_at": item.fulfilled_at.isoformat() if item.fulfilled_at else None,
-        })
+        }
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        fis = fi_res.scalars().all()
+        if fis:
+            for fi in fis:
+                sp = await db.get(SupplierProduct, fi.supplier_product_id)
+                out.append({
+                    **base,
+                    "item_key": f"fi_{fi.id}",
+                    "product_name": (sp.short_name or sp.name) if sp else li.product_name,
+                    "sku": sp.sku if sp else li.sku,
+                    "image_url": sp.image_url if sp else None,
+                    "quantity": fi.quantity,
+                    "supplier_status": _supplier_status(fi.fulfill_status, li.label_id),
+                    "tracking_number": fi.tracking_number or li.tracking_number,
+                    "fulfilled_at": (fi.fulfilled_at.isoformat() if fi.fulfilled_at
+                                     else (li.fulfilled_at.isoformat() if li.fulfilled_at else None)),
+                })
+        else:
+            resolved = False
+            if li.product_id:
+                comp_res = await db.execute(
+                    select(ProductComponent)
+                    .join(SupplierProduct, ProductComponent.supplier_product_id == SupplierProduct.id)
+                    .where(
+                        ProductComponent.product_id == li.product_id,
+                        SupplierProduct.supplier_id == supplier.id,
+                    )
+                )
+                comps = list(comp_res.scalars().all())
+                if comps:
+                    for comp in comps:
+                        sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                        # Backfill: persist the catalog link so future loads/parcel
+                        # estimates/label overlays resolve via OrderFulfillmentItem.
+                        db.add(OrderFulfillmentItem(
+                            order_line_item_id=li.id,
+                            supplier_product_id=comp.supplier_product_id,
+                            quantity=comp.quantity * li.quantity,
+                            fulfill_status=li.fulfill_status.value,
+                            tracking_number=li.tracking_number,
+                            label_id=li.label_id,
+                            fulfilled_at=li.fulfilled_at,
+                        ))
+                        created_ofi = True
+                        out.append({
+                            **base,
+                            "item_key": f"comp_{comp.id}_{li.id}",
+                            "product_name": (sp.short_name or sp.name) if sp else li.product_name,
+                            "sku": sp.sku if sp else li.sku,
+                            "image_url": sp.image_url if sp else None,
+                            "quantity": comp.quantity * li.quantity,
+                            "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
+                            "tracking_number": li.tracking_number,
+                            "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                        })
+                    resolved = True
+            if not resolved:
+                # Tertiary fallback: match a SupplierProduct by SKU for this supplier
+                # (case-insensitive + trimmed, since marketplace SKUs vary in casing/whitespace)
+                if li.sku:
+                    from sqlalchemy import func
+                    norm_sku = li.sku.strip().lower()
+                    sp_res = await db.execute(
+                        select(SupplierProduct).where(
+                            SupplierProduct.supplier_id == supplier.id,
+                            func.lower(func.trim(SupplierProduct.sku)) == norm_sku,
+                        )
+                    )
+                    sp = sp_res.scalars().first()
+                    if sp:
+                        # Backfill: persist the catalog link via OrderFulfillmentItem.
+                        db.add(OrderFulfillmentItem(
+                            order_line_item_id=li.id,
+                            supplier_product_id=sp.id,
+                            quantity=li.quantity,
+                            fulfill_status=li.fulfill_status.value,
+                            tracking_number=li.tracking_number,
+                            label_id=li.label_id,
+                            fulfilled_at=li.fulfilled_at,
+                        ))
+                        created_ofi = True
+                        out.append({
+                            **base,
+                            "item_key": f"li_{li.id}",
+                            "product_name": sp.short_name or sp.name,
+                            "sku": sp.sku,
+                            "image_url": sp.image_url,
+                            "quantity": li.quantity,
+                            "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
+                            "tracking_number": li.tracking_number,
+                            "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                        })
+                        resolved = True
+            if not resolved:
+                out.append({
+                    **base,
+                    "item_key": f"li_{li.id}",
+                    "product_name": li.product_name,
+                    "sku": li.sku,
+                    "image_url": None,
+                    "quantity": li.quantity,
+                    "supplier_status": _supplier_status(li.fulfill_status, li.label_id),
+                    "tracking_number": li.tracking_number,
+                    "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                })
+    if created_ofi:
+        await db.commit()
     return out
+
+
+def _addr_name(addr: dict | None) -> str | None:
+    if not addr:
+        return None
+    parts = [addr.get("name"), addr.get("city"), addr.get("state")]
+    return ", ".join(p for p in parts if p) or None
+
+
+@router.get("/orders/batch-labels.pdf")
+async def portal_batch_labels(
+    label_ids: str | None = Query(None, description="Comma-separated label IDs; omit = all printable unfulfilled labels"),
+    supplier: Supplier = Depends(get_current_supplier),
+    db: AsyncSession = Depends(get_db),
+):
+    """Combine every unfulfilled label for this supplier into one PDF with catalog overlay.
+
+    For labels that already have label_data (overlay baked in at buy time) those
+    pages are used directly. For labels that only have a label_url (e.g. bought before
+    the PNG pipeline was fixed), the PDF/PNG is fetched from EasyPost's CDN and the
+    catalog overlay is applied on-the-fly.
+    """
+    import httpx
+    import base64
+    from app.integrations.pdf_labels import (
+        decode_label_data, concat_label_pdfs,
+        LabelEntry, build_label_from_png, build_batch_label_pdf,
+    )
+    from app.api.v1.orders import _catalog_items_for_line_item
+
+    wanted_ids: set[int] | None = None
+    if label_ids:
+        try:
+            wanted_ids = {int(x) for x in label_ids.split(",") if x.strip()}
+        except ValueError:
+            raise HTTPException(400, "Invalid label_ids")
+
+    q = select(OrderLineItem).where(
+        OrderLineItem.supplier_id == supplier.id,
+        OrderLineItem.label_id.isnot(None),
+        OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+    ).order_by(OrderLineItem.order_id)
+    lis = (await db.execute(q)).scalars().all()
+
+    # Group line items by label_id so we can resolve catalog items per label
+    from collections import defaultdict
+    label_to_lis: dict[int, list] = defaultdict(list)
+    for li in lis:
+        if li.label_id is None:
+            continue
+        if wanted_ids is not None and li.label_id not in wanted_ids:
+            continue
+        label_to_lis[li.label_id].append(li)
+
+    pdf_pages: list[bytes] = []
+
+    for label_id, label_lis in label_to_lis.items():
+        label = await db.get(ShippingLabel, label_id)
+        if not label or label.supplier_id != supplier.id:
+            continue
+
+        # Case 1: label_data already has carrier PNG + catalog overlay baked in
+        if label.label_data:
+            pdf = decode_label_data(label.label_data)
+            if pdf:
+                pdf_pages.append(pdf)
+                continue
+
+        # Case 2: no label_data — fetch from label_url and apply overlay now
+        if not label.label_url:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=20) as http:
+                r = await http.get(label.label_url)
+            if not r.is_success:
+                continue
+            content = r.content
+        except Exception:
+            continue
+
+        # Resolve catalog items for the overlay strip
+        pack_items = []
+        for li in label_lis:
+            pack_items.extend(await _catalog_items_for_line_item(li, db))
+
+        order = await db.get(Order, label_lis[0].order_id)
+        entry = LabelEntry(
+            order_label=(order.external_order_id if order else f"Label #{label_id}"),
+            ship_to=_addr_name(order.shipping_address) if order else None,
+            tracking_number=label.tracking_number,
+            label_pdf=None,
+            items=pack_items,
+        )
+
+        try:
+            if content[:8] == b'\x89PNG\r\n\x1a\n':
+                pdf_pages.append(build_label_from_png(content, entry))
+            else:
+                entry.label_pdf = content
+                pdf_pages.append(build_batch_label_pdf([entry]))
+        except Exception:
+            continue
+
+    if not pdf_pages:
+        raise HTTPException(404, "No printable labels found")
+
+    return Response(
+        content=concat_label_pdfs(pdf_pages),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="batch_labels.pdf"'},
+    )
 
 
 @router.patch("/orders/{item_id}/ship")
@@ -166,6 +416,20 @@ async def mark_shipped(
     item.fulfill_status = FulfillStatus.shipped
     item.tracking_number = body.get("tracking_number") or item.tracking_number
     item.fulfilled_at = datetime.now(timezone.utc)
+
+    # Update OFIs and deduct stock
+    fi_res = await db.execute(
+        select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == item.id)
+    )
+    for fi in fi_res.scalars().all():
+        if fi.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+            fi.fulfill_status = FulfillStatus.shipped.value
+            fi.fulfilled_at = item.fulfilled_at
+            if item.tracking_number and not fi.tracking_number:
+                fi.tracking_number = item.tracking_number
+            sp = await db.get(SupplierProduct, fi.supplier_product_id)
+            if sp:
+                sp.stock_quantity = max(0, sp.stock_quantity - fi.quantity)
 
     order = await db.get(Order, item.order_id)
     if order:
@@ -216,11 +480,46 @@ async def portal_mark_label_printed(
     supplier: Supplier = Depends(get_current_supplier),
     db: AsyncSession = Depends(get_db),
 ):
+    """Supplier prints the label → move linked line items to shipped and recalculate order status."""
     label = await db.get(ShippingLabel, label_id)
     if not label or label.supplier_id != supplier.id:
         raise HTTPException(404, "Label not found")
-    from app.api.v1.orders import mark_label_printed
-    return await mark_label_printed(order_id=order_id, label_id=label_id, db=db)
+
+    now = datetime.now(timezone.utc)
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.label_id == label_id,
+            OrderLineItem.order_id == order_id,
+        )
+    )
+    line_items = li_res.scalars().all()
+    for li in line_items:
+        if li.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+            li.fulfill_status = FulfillStatus.shipped
+            li.fulfilled_at = now
+            if label.tracking_number and not li.tracking_number:
+                li.tracking_number = label.tracking_number
+            # Update OFIs and deduct stock
+            fi_res = await db.execute(
+                select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+            )
+            for fi in fi_res.scalars().all():
+                if fi.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+                    fi.fulfill_status = FulfillStatus.shipped.value
+                    fi.fulfilled_at = now
+                    if label.tracking_number and not fi.tracking_number:
+                        fi.tracking_number = label.tracking_number
+                    sp = await db.get(SupplierProduct, fi.supplier_product_id)
+                    if sp:
+                        sp.stock_quantity = max(0, sp.stock_quantity - fi.quantity)
+
+    if line_items:
+        order = await db.get(Order, order_id)
+        if order:
+            await _recalculate_order_status(order, db)
+
+    await db.commit()
+    return {"status": "ok", "label_id": label_id, "items_shipped": len(line_items)}
 
 
 @router.get("/orders/{order_id}/parcel-estimate")
@@ -270,35 +569,44 @@ async def portal_easypost_rates(
         "width": body.parcel.width,
         "height": body.parcel.height,
     }
+    carrier_accounts = [
+        x.strip() for x in settings.EASYPOST_CARRIER_ACCOUNT_IDS.split(",") if x.strip()
+    ] or None
     try:
-        shipment = await ep.create_shipment(from_addr, to_addr, parcel)
+        shipment = await ep.create_shipment(to_addr, from_addr, parcel, carrier_accounts)
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 
+    # Return all rates from all carriers — no filtering
     all_rates = shipment.get("rates", [])
-    usps = filter_usps_rates(all_rates) or all_rates
-    rates_out = sorted(
-        [
-            RateOut(
+    print(f"[PORTAL RATES] EasyPost returned {len(all_rates)} rates total", flush=True)
+    for r in all_rates:
+        print(f"  carrier={r.get('carrier')} service={r.get('service')} rate={r.get('rate')}", flush=True)
+
+    rates_out = []
+    for r in all_rates:
+        try:
+            rates_out.append(RateOut(
                 id=r["id"],
                 carrier=r.get("carrier", ""),
                 service=r.get("service", ""),
-                rate=r.get("rate", "0"),
+                rate=r.get("rate") or "0",
                 currency=r.get("currency", "USD"),
                 delivery_days=r.get("delivery_days"),
                 delivery_date=r.get("delivery_date"),
                 est_delivery_days=r.get("est_delivery_days"),
-            )
-            for r in usps
-        ],
-        key=lambda r: float(r.rate),
-    )
+            ))
+        except Exception as e:
+            print(f"  [SKIP] rate build failed: {e} — raw: {r}", flush=True)
+
+    print(f"[PORTAL RATES] rates_out has {len(rates_out)} items after build", flush=True)
+    rates_out = sorted(rates_out, key=lambda r: float(r.rate))
     debug = DebugInfo(
         from_address=from_addr,
         to_address=to_addr,
         parcel=parcel,
         total_rates=len(all_rates),
-        usps_rates=len(filter_usps_rates(all_rates)),
+        filtered_rates=len(rates_out),
         line_item_ids=[li.id for li in items],
     )
     return RatesResponse(shipment_id=shipment["id"], rates=rates_out, debug=debug)
@@ -322,28 +630,69 @@ async def portal_easypost_buy(
     if not items:
         raise HTTPException(404, "No unshipped items in this order belong to you")
 
+    from app.api.v1.orders import _catalog_items_for_line_item
+    from decimal import InvalidOperation
+    import base64
+
     ep = EasyPostClient(settings.EASYPOST_API_KEY)
     try:
         bought = await ep.buy_shipment(body.shipment_id, body.rate_id)
     except EasyPostError as e:
         raise HTTPException(e.status, str(e))
 
-    tracking = bought.get("tracking_code") or bought.get("selected_rate", {}).get("tracking_code")
-    label_url = (
-        bought.get("postage_label", {}).get("label_url")
-        or bought.get("postage_label", {}).get("label_pdf_url")
-    )
-    cost_str = bought.get("selected_rate", {}).get("rate", "0")
-    label_data = await ep.fetch_label_pdf_b64(bought)
+    selected_rate = bought.get("selected_rate") or {}
+    postage_label = bought.get("postage_label") or {}
+    tracking = bought.get("tracking_code") or selected_rate.get("tracking_code")
+    label_url = postage_label.get("label_url") or postage_label.get("label_pdf_url")
+    try:
+        cost_val = Decimal(str(selected_rate.get("rate") or "0"))
+    except (InvalidOperation, ValueError):
+        cost_val = Decimal("0")
+
+    # Resolve catalog pack items for the overlay strip
+    pack_items = []
+    for li in items:
+        pack_items.extend(await _catalog_items_for_line_item(li, db))
+
+    # Fetch PNG — try buy response first, then regenerate explicitly
+    carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
+    try:
+        regen_png, regen_url = await ep.regenerate_label(bought.get("id") or body.shipment_id)
+        if regen_png:
+            carrier_png_b64 = regen_png
+        if regen_url:
+            label_url = regen_url
+    except Exception:
+        pass
+
+    try:
+        if carrier_png_b64 and pack_items:
+            from app.integrations.pdf_labels import LabelEntry, build_label_from_png
+            entry = LabelEntry(
+                order_label=(order.external_order_id or f"Order #{body.order_id}"),
+                ship_to=_addr_name(order.shipping_address),
+                tracking_number=tracking,
+                label_pdf=None,
+                items=pack_items,
+            )
+            label_data = base64.b64encode(build_label_from_png(base64.b64decode(carrier_png_b64), entry)).decode()
+        elif carrier_png_b64:
+            from app.integrations.pdf_labels import image_to_label_pdf
+            label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
+        else:
+            label_data = None
+    except Exception:
+        label_data = None
 
     label = ShippingLabel(
         supplier_id=supplier.id,
-        carrier="USPS",
-        service=bought.get("selected_rate", {}).get("service", ""),
+        carrier=selected_rate.get("carrier", "USPS"),
+        service=selected_rate.get("service", ""),
         tracking_number=tracking,
+        shipment_id=bought.get("id") or body.shipment_id,
         label_url=label_url,
         label_data=label_data,
-        cost=Decimal(str(cost_str)),
+        cost=cost_val,
         from_address=bought.get("from_address"),
         to_address=bought.get("to_address"),
     )

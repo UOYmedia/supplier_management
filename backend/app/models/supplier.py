@@ -28,10 +28,10 @@ class Supplier(Base):
     zipcode: Mapped[str | None] = mapped_column(String(20))
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(default=True)
-    can_buy_labels: Mapped[bool] = mapped_column(default=False)
     username: Mapped[str | None] = mapped_column(String(100), unique=True, index=True)
     hashed_password: Mapped[str | None] = mapped_column(String(255))
-    shopify_location_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    shopify_location_id: Mapped[str | None] = mapped_column(String(100))
+    can_buy_labels: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     product_suppliers: Mapped[list["ProductSupplier"]] = relationship(back_populates="supplier")
@@ -42,27 +42,26 @@ class Supplier(Base):
 
 
 class SupplierProduct(Base):
-    """Supplier's own product catalog (inventory items)."""
+    """Supplier catalog item — a physical SKU that a supplier stocks and ships."""
     __tablename__ = "supplier_products"
-    __table_args__ = (UniqueConstraint("supplier_id", "sku"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(255))
-    sku: Mapped[str] = mapped_column(String(100), index=True)
+    sku: Mapped[str] = mapped_column(String(100))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
     stock_quantity: Mapped[int] = mapped_column(Integer, default=0)
-    # Per-unit shipping dimensions — used by the parcel auto-estimator when buying a label
-    weight: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))  # oz
-    length: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))  # in
-    width: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))   # in
-    height: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))  # in
+    short_name: Mapped[str | None] = mapped_column(String(100))
+    weight: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
+    length: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    width: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    height: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    image_url: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     supplier: Mapped["Supplier"] = relationship(back_populates="supplier_products")
-    components: Mapped[list["ProductComponent"]] = relationship(back_populates="supplier_product", cascade="all, delete-orphan")
-    fulfillment_items: Mapped[list["OrderFulfillmentItem"]] = relationship(back_populates="supplier_product")
+    components: Mapped[list["ProductComponent"]] = relationship(back_populates="supplier_product")
 
 
 class Invoice(Base):

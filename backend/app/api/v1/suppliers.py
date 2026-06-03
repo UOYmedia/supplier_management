@@ -4,11 +4,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
 from app.models.supplier import Supplier, Invoice, InvoiceLineItem, SupplierProduct
-from app.models.product import ProductSupplier
+from app.models.product import ProductSupplier, ProductComponent
 from app.models.order import Order, OrderLineItem, OrderFulfillmentItem, FulfillStatus, ShippingLabel
 from app.schemas.supplier import (
     SupplierCreate, SupplierUpdate, SupplierOut, SupplierListOut,
-    InvoiceCreate, InvoiceUpdate, InvoiceOut
+    InvoiceCreate, InvoiceUpdate, InvoiceOut,
+    InvoicePreviewResponse, InvoicePreviewItem, InvoiceFromOrdersCreate,
 )
 from app.schemas.supplier_product import (
     SupplierProductCreate, SupplierProductUpdate, SupplierProductOut
@@ -171,6 +172,15 @@ def _fmt_dim(v) -> str:
     return "" if v is None else f"{v}"
 
 
+def _csv_bytes(rows: list[list]) -> bytes:
+    """Build CSV bytes with UTF-8 BOM so Excel preserves encoding on save."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    for row in rows:
+        writer.writerow(row)
+    return "﻿".encode("utf-8") + buf.getvalue().encode("utf-8")
+
+
 @router.get("/{supplier_id}/products/export.csv")
 async def export_supplier_catalog(supplier_id: int, db: AsyncSession = Depends(get_db)):
     supplier = await _get_or_404(supplier_id, db)
@@ -179,20 +189,16 @@ async def export_supplier_catalog(supplier_id: int, db: AsyncSession = Depends(g
     )
     products = result.scalars().all()
 
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(CATALOG_CSV_COLUMNS)
-    for sp in products:
-        writer.writerow([
-            sp.name, sp.sku, f"{sp.unit_price:.2f}", sp.stock_quantity,
-            _fmt_dim(sp.weight), _fmt_dim(sp.length), _fmt_dim(sp.width), _fmt_dim(sp.height),
-        ])
-
+    rows = [CATALOG_CSV_COLUMNS] + [
+        [sp.name, sp.sku, f"{sp.unit_price:.2f}", sp.stock_quantity,
+         _fmt_dim(sp.weight), _fmt_dim(sp.length), _fmt_dim(sp.width), _fmt_dim(sp.height)]
+        for sp in products
+    ]
     safe_name = "".join(c if c.isalnum() else "_" for c in supplier.name)[:40] or "supplier"
     filename = f"{safe_name}_catalog_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
     return Response(
-        content=buf.getvalue(),
-        media_type="text/csv",
+        content=_csv_bytes(rows),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -200,13 +206,13 @@ async def export_supplier_catalog(supplier_id: int, db: AsyncSession = Depends(g
 @router.get("/{supplier_id}/products/template.csv")
 async def supplier_catalog_template(supplier_id: int, db: AsyncSession = Depends(get_db)):
     await _get_or_404(supplier_id, db)
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(CATALOG_CSV_COLUMNS)
-    writer.writerow(["Example Product", "SKU-001", "9.99", "100", "8.5", "12", "9", "4"])
+    rows = [
+        CATALOG_CSV_COLUMNS,
+        ["Example Product", "SKU-001", "9.99", "100", "8.5", "12", "9", "4"],
+    ]
     return Response(
-        content=buf.getvalue(),
-        media_type="text/csv",
+        content=_csv_bytes(rows),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="catalog_template.csv"'},
     )
 
@@ -220,29 +226,85 @@ async def import_supplier_catalog(
     await _get_or_404(supplier_id, db)
 
     raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Uploaded file is empty")
+
+    # Detect common non-CSV formats
+    if raw[:4] in (b"PK\x03\x04", b"PK\x05\x06") or raw[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        raise HTTPException(400, "Please upload a CSV file, not an Excel file (.xlsx / .xls). "
+                            "In Excel: File -> Save As -> CSV (Comma delimited).")
+
+    # Pick encoding order based on BOM / null-byte heuristic.
+    # UTF-16 files have a BOM (FF FE or FE FF) or dense null bytes; otherwise
+    # try single-byte codecs *before* UTF-16 so that CP1252/Latin-1 special
+    # chars (e.g. en-dash 0x96) don't cause UTF-8 to fail and then get
+    # mis-decoded as UTF-16 LE pairs, producing garbled CJK column names.
+    if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+        enc_order = ("utf-16", "utf-16-le", "utf-16-be")
+    elif raw[:3] == b'\xef\xbb\xbf':
+        enc_order = ("utf-8-sig",)
+    elif raw[:200].count(b'\x00') / max(len(raw[:200]), 1) > 0.3:
+        enc_order = ("utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1")
+    else:
+        enc_order = ("utf-8-sig", "utf-8", "cp1252", "latin-1", "utf-16", "utf-16-le", "utf-16-be")
+
     text = None
-    for enc in ("utf-8-sig", "utf-16", "cp1252", "latin-1"):
+    for enc in enc_order:
         try:
-            text = raw.decode(enc)
+            candidate = raw.decode(enc)
+            # Reject if too many null bytes -- UTF-16 decoded as a single-byte codec
+            if candidate.count('\x00') > len(candidate) * 0.2:
+                continue
+            text = candidate
             break
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError, LookupError):
             continue
     if text is None:
-        raise HTTPException(400, "Could not decode CSV — please save as UTF-8")
+        raise HTTPException(400, "Could not decode CSV -- please save as UTF-8 or UTF-16")
 
+    # Strip BOM character that may remain after decoding
+    text = text.lstrip('﻿')
+
+    # Try to auto-detect delimiter; fall back to comma then semicolon
     sample = text[:4096]
+    detected_dialect = None
     try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        detected_dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
     except csv.Error:
-        dialect = csv.excel
-    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
-    if not reader.fieldnames:
-        raise HTTPException(400, "CSV is empty")
+        pass
 
-    fieldnames = {(f or "").strip().lower() for f in reader.fieldnames}
-    missing = {"name", "sku"} - fieldnames
-    if missing:
-        raise HTTPException(400, f"CSV missing required columns: {sorted(missing)}")
+    def _try_parse(dialect_or_delimiter):
+        if isinstance(dialect_or_delimiter, str):
+            r = csv.DictReader(io.StringIO(text), delimiter=dialect_or_delimiter)
+        else:
+            r = csv.DictReader(io.StringIO(text), dialect=dialect_or_delimiter)
+        fnames = r.fieldnames or []
+        # Strip BOM and whitespace from field names when normalizing
+        norm = {(f or "").strip().lstrip('﻿').lower() for f in fnames}
+        return r, norm, fnames
+
+    reader = None
+    fieldnames_raw = []
+    for candidate in ([detected_dialect] if detected_dialect else []) + [",", ";", "\t"]:
+        if candidate is None:
+            continue
+        r, norm_fnames, raw_fnames = _try_parse(candidate)
+        if {"name", "sku"} <= norm_fnames:
+            reader = r
+            fieldnames = norm_fnames
+            fieldnames_raw = raw_fnames
+            break
+
+    if reader is None:
+        # Still couldn't find required columns -- try once more with comma to get field list for error
+        r, norm_fnames, raw_fnames = _try_parse(",")
+        found = sorted(raw_fnames) if raw_fnames else []
+        detail = "CSV missing required columns: 'name' and 'sku'."
+        if found:
+            detail += f" Columns found: {found}. Make sure your CSV header row has exactly 'name' and 'sku' columns."
+        else:
+            detail += " No columns detected -- check that the file is a valid CSV."
+        raise HTTPException(400, detail)
 
     existing_q = await db.execute(
         select(SupplierProduct).where(SupplierProduct.supplier_id == supplier_id)
@@ -266,12 +328,16 @@ async def import_supplier_catalog(
         seen_skus.add(sku)
 
         try:
-            unit_price = Decimal(norm["unit_price"]) if norm.get("unit_price") else Decimal("0")
+            raw_price = norm.get("unit_price") or ""
+            raw_price = raw_price.replace("$", "").replace(",", "").strip()
+            unit_price = Decimal(raw_price) if raw_price else Decimal("0")
         except (InvalidOperation, KeyError):
             errors.append(f"Row {idx} (SKU {sku}): invalid unit_price")
             continue
         try:
-            stock_quantity = int(norm["stock_quantity"]) if norm.get("stock_quantity") else 0
+            raw_qty = norm.get("stock_quantity") or ""
+            raw_qty = raw_qty.replace(",", "").strip()
+            stock_quantity = int(raw_qty) if raw_qty else 0
         except (ValueError, KeyError):
             errors.append(f"Row {idx} (SKU {sku}): invalid stock_quantity")
             continue
@@ -382,26 +448,80 @@ async def supplier_orders(
     for li in items:
         order = orders_map.get(li.order_id)
         label = labels_map.get(li.label_id) if li.label_id else None
-        out.append({
-            "id": li.id,
+        base = {
+            "order_line_item_id": li.id,
             "order_id": li.order_id,
             "external_order_id": order.external_order_id if order else None,
             "marketplace": order.marketplace if order else None,
             "ordered_at": order.ordered_at.isoformat() if order else None,
             "buyer_name": order.buyer_name if order else None,
             "order_status": order.status if order else None,
-            "product_id": li.product_id,
-            "product_name": li.product_name,
-            "sku": li.sku,
-            "quantity": li.quantity,
+            "shipping_address": order.shipping_address if order else None,
             "price": float(li.price),
             "base_cost": float(li.base_cost),
-            "fulfill_status": li.fulfill_status,
-            "tracking_number": li.tracking_number,
+            "li_quantity": li.quantity,
             "label_id": li.label_id,
             "label_url": label.label_url if label else None,
             "label_has_pdf": bool(label and label.label_data) if label else False,
-        })
+        }
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        fis = list(fi_res.scalars().all())
+        if fis:
+            for fi in fis:
+                sp = await db.get(SupplierProduct, fi.supplier_product_id)
+                out.append({
+                    **base,
+                    "item_key": f"fi_{fi.id}",
+                    "product_name": sp.name if sp else li.product_name,
+                    "sku": sp.sku if sp else li.sku,
+                    "image_url": sp.image_url if sp else None,
+                    "quantity": fi.quantity,
+                    "fulfill_status": fi.fulfill_status,
+                    "tracking_number": fi.tracking_number or li.tracking_number,
+                    "fulfilled_at": (fi.fulfilled_at.isoformat() if fi.fulfilled_at
+                                    else (li.fulfilled_at.isoformat() if li.fulfilled_at else None)),
+                })
+        else:
+            resolved = False
+            if li.product_id:
+                comp_res = await db.execute(
+                    select(ProductComponent)
+                    .join(SupplierProduct, ProductComponent.supplier_product_id == SupplierProduct.id)
+                    .where(
+                        ProductComponent.product_id == li.product_id,
+                        SupplierProduct.supplier_id == supplier_id,
+                    )
+                )
+                comps = list(comp_res.scalars().all())
+                if comps:
+                    for comp in comps:
+                        sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                        out.append({
+                            **base,
+                            "item_key": f"comp_{comp.id}_{li.id}",
+                            "product_name": sp.name if sp else li.product_name,
+                            "sku": sp.sku if sp else li.sku,
+                            "image_url": sp.image_url if sp else None,
+                            "quantity": comp.quantity * li.quantity,
+                            "fulfill_status": li.fulfill_status,
+                            "tracking_number": li.tracking_number,
+                            "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                        })
+                    resolved = True
+            if not resolved:
+                out.append({
+                    **base,
+                    "item_key": f"li_{li.id}",
+                    "product_name": li.product_name,
+                    "sku": li.sku,
+                    "image_url": None,
+                    "quantity": li.quantity,
+                    "fulfill_status": li.fulfill_status,
+                    "tracking_number": li.tracking_number,
+                    "fulfilled_at": li.fulfilled_at.isoformat() if li.fulfilled_at else None,
+                })
     return out
 
 
@@ -423,6 +543,122 @@ async def list_invoices(supplier_id: int, db: AsyncSession = Depends(get_db)):
         ]
         out.append(InvoiceOut(**inv_dict))
     return out
+
+
+@router.get("/{supplier_id}/invoices/preview-from-orders", response_model=InvoicePreviewResponse)
+async def preview_invoice_from_orders(supplier_id: int, db: AsyncSession = Depends(get_db)):
+    """Return fulfilled order line items for this supplier that have not yet been invoiced."""
+    supplier = await _get_or_404(supplier_id, db)
+
+    invoiced_ids_result = await db.execute(
+        select(InvoiceLineItem.order_line_item_id).where(InvoiceLineItem.order_line_item_id.isnot(None))
+    )
+    invoiced_ids = {r for r in invoiced_ids_result.scalars().all()}
+
+    result = await db.execute(
+        select(OrderLineItem)
+        .where(
+            OrderLineItem.supplier_id == supplier_id,
+            OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
+        )
+        .order_by(OrderLineItem.order_id)
+    )
+    line_items = result.scalars().all()
+
+    order_ids = {li.order_id for li in line_items}
+    orders_by_id: dict[int, Order] = {}
+    if order_ids:
+        ord_result = await db.execute(select(Order).where(Order.id.in_(order_ids)))
+        for o in ord_result.scalars().all():
+            orders_by_id[o.id] = o
+
+    items = []
+    for li in line_items:
+        if li.id in invoiced_ids:
+            continue
+        unit_cost = li.base_cost
+        total_cost = unit_cost * li.quantity
+        order = orders_by_id.get(li.order_id)
+        items.append(InvoicePreviewItem(
+            order_line_item_id=li.id,
+            order_id=li.order_id,
+            order_external_id=order.external_order_id if order else None,
+            product_name=li.product_name,
+            sku=li.sku,
+            quantity=li.quantity,
+            unit_cost=unit_cost,
+            total_cost=total_cost,
+            fulfill_status=li.fulfill_status.value,
+            fulfilled_at=li.fulfilled_at,
+        ))
+
+    total = sum(i.total_cost for i in items)
+    return InvoicePreviewResponse(
+        supplier_id=supplier_id,
+        supplier_name=supplier.name,
+        items=items,
+        total_amount=total,
+    )
+
+
+@router.post("/{supplier_id}/invoices/create-from-orders", response_model=InvoiceOut, status_code=201)
+async def create_invoice_from_orders(supplier_id: int, body: InvoiceFromOrdersCreate, db: AsyncSession = Depends(get_db)):
+    """Create an invoice from fulfilled order line items with optional cost adjustments."""
+    await _get_or_404(supplier_id, db)
+
+    if not body.items:
+        raise HTTPException(400, "No line items provided")
+
+    item_ids = [it.order_line_item_id for it in body.items]
+    already_result = await db.execute(
+        select(InvoiceLineItem.order_line_item_id).where(
+            InvoiceLineItem.order_line_item_id.in_(item_ids)
+        )
+    )
+    already_invoiced = {r for r in already_result.scalars().all()}
+    if already_invoiced:
+        raise HTTPException(400, f"Line items already invoiced: {sorted(already_invoiced)}")
+
+    li_result = await db.execute(
+        select(OrderLineItem).where(OrderLineItem.id.in_(item_ids))
+    )
+    db_items = {li.id: li for li in li_result.scalars().all()}
+
+    dates = [li.fulfilled_at or li.order.created_at for li in db_items.values() if li.fulfilled_at]
+    now = datetime.now(timezone.utc)
+    period_start = min(dates) if dates else now
+    period_end = max(dates) if dates else now
+
+    total = sum(it.total_amount for it in body.items)
+    inv_number = f"INV-{supplier_id}-{now.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+    invoice = Invoice(
+        supplier_id=supplier_id,
+        invoice_number=inv_number,
+        period_start=period_start,
+        period_end=period_end,
+        total_amount=total,
+        notes=body.notes,
+    )
+    db.add(invoice)
+    await db.flush()
+
+    for it in body.items:
+        db.add(InvoiceLineItem(
+            invoice_id=invoice.id,
+            order_line_item_id=it.order_line_item_id,
+            description=it.description,
+            quantity=it.quantity,
+            unit_amount=it.unit_amount,
+            total_amount=it.total_amount,
+        ))
+
+    await db.commit()
+    await db.refresh(invoice)
+    li_result2 = await db.execute(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice.id))
+    li_list = li_result2.scalars().all()
+    inv_dict = {c.name: getattr(invoice, c.name) for c in invoice.__table__.columns}
+    inv_dict["line_items"] = [{c.name: getattr(li, c.name) for c in li.__table__.columns} for li in li_list]
+    return InvoiceOut(**inv_dict)
 
 
 @router.post("/{supplier_id}/invoices", response_model=InvoiceOut, status_code=201)

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
@@ -77,6 +78,138 @@ async def create_product(body: ProductCreate, db: AsyncSession = Depends(get_db)
     return await _product_out(product, db)
 
 
+# --- SKU Mappings (flat view of Product → SupplierProduct links) ---
+
+class MappingCreate(BaseModel):
+    marketplace_sku: str
+    supplier_product_id: int
+    units: int = 1
+
+
+@router.get("/mappings")
+async def list_mappings(
+    search: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Flat list: marketplace SKU → supplier catalog item."""
+    q = (
+        select(ProductComponent, Product, SupplierProduct, Supplier)
+        .join(Product, ProductComponent.product_id == Product.id)
+        .join(SupplierProduct, ProductComponent.supplier_product_id == SupplierProduct.id)
+        .join(Supplier, SupplierProduct.supplier_id == Supplier.id)
+    )
+    if search:
+        q = q.where(
+            Product.sku.ilike(f"%{search}%") |
+            SupplierProduct.name.ilike(f"%{search}%") |
+            SupplierProduct.sku.ilike(f"%{search}%")
+        )
+    q = q.order_by(Product.sku)
+    result = await db.execute(q)
+    rows = result.all()
+    return [
+        {
+            "component_id": comp.id,
+            "product_id": product.id,
+            "product_sku": product.sku,
+            "product_name": product.name,
+            "supplier_product_id": sp.id,
+            "catalog_name": sp.name,
+            "catalog_short_name": sp.short_name,
+            "catalog_sku": sp.sku,
+            "unit_price": float(sp.unit_price),
+            "stock_quantity": sp.stock_quantity,
+            "supplier_id": sup.id,
+            "supplier_name": sup.name,
+            "units": comp.quantity,
+        }
+        for comp, product, sp, sup in rows
+    ]
+
+
+@router.post("/mappings", status_code=201)
+async def create_mapping(body: MappingCreate, db: AsyncSession = Depends(get_db)):
+    """Create or update a mapping: marketplace SKU → supplier catalog item."""
+    marketplace_sku = body.marketplace_sku.strip()
+    if not marketplace_sku:
+        raise HTTPException(400, "marketplace_sku is required")
+
+    sp = await db.get(SupplierProduct, body.supplier_product_id)
+    if not sp:
+        raise HTTPException(404, "Supplier product not found")
+
+    # Find or create Product for this SKU (case-insensitive match)
+    prod_res = await db.execute(
+        select(Product).where(func.lower(func.trim(Product.sku)) == marketplace_sku.lower())
+    )
+    product = prod_res.scalar_one_or_none()
+    if not product:
+        product = Product(name=marketplace_sku, sku=marketplace_sku, base_cost=sp.unit_price)
+        db.add(product)
+        await db.flush()
+
+    # Upsert ProductComponent
+    comp_res = await db.execute(
+        select(ProductComponent).where(
+            ProductComponent.product_id == product.id,
+            ProductComponent.supplier_product_id == body.supplier_product_id,
+        )
+    )
+    comp = comp_res.scalar_one_or_none()
+    if comp:
+        comp.quantity = body.units
+    else:
+        comp = ProductComponent(
+            product_id=product.id,
+            supplier_product_id=body.supplier_product_id,
+            quantity=body.units,
+        )
+        db.add(comp)
+        await db.flush()
+
+    # Ensure ProductSupplier link exists
+    ps_res = await db.execute(
+        select(ProductSupplier).where(
+            ProductSupplier.product_id == product.id,
+            ProductSupplier.supplier_id == sp.supplier_id,
+        )
+    )
+    if not ps_res.scalar_one_or_none():
+        db.add(ProductSupplier(
+            product_id=product.id,
+            supplier_id=sp.supplier_id,
+            cost=sp.unit_price * body.units,
+            is_preferred=True,
+        ))
+
+    await db.commit()
+    sup = await db.get(Supplier, sp.supplier_id)
+    return {
+        "component_id": comp.id,
+        "product_id": product.id,
+        "product_sku": product.sku,
+        "supplier_product_id": sp.id,
+        "catalog_name": sp.name,
+        "catalog_short_name": sp.short_name,
+        "catalog_sku": sp.sku,
+        "unit_price": float(sp.unit_price),
+        "stock_quantity": sp.stock_quantity,
+        "supplier_id": sup.id if sup else None,
+        "supplier_name": sup.name if sup else None,
+        "units": comp.quantity,
+    }
+
+
+@router.delete("/mappings/{component_id}", status_code=204)
+async def delete_mapping(component_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ProductComponent).where(ProductComponent.id == component_id))
+    comp = result.scalar_one_or_none()
+    if not comp:
+        raise HTTPException(404, "Mapping not found")
+    await db.delete(comp)
+    await db.commit()
+
+
 @router.get("/{product_id}", response_model=ProductOut)
 async def get_product(product_id: int, db: AsyncSession = Depends(get_db)):
     product = await _get_or_404(product_id, db)
@@ -151,6 +284,30 @@ async def add_product_supplier(product_id: int, body: ProductSupplierCreate, db:
                 quantity=units,
             ))
 
+        # Backfill OrderFulfillmentItem for existing unshipped orders that have
+        # this product_id but no OFI yet — so they immediately reflect the mapping.
+        from app.models.order import OrderLineItem, OrderFulfillmentItem, FulfillStatus
+        li_res = await db.execute(
+            select(OrderLineItem).where(
+                OrderLineItem.product_id == product_id,
+                OrderLineItem.supplier_id == body.supplier_id,
+                OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+            )
+        )
+        for li in li_res.scalars().all():
+            fi_res = await db.execute(
+                select(OrderFulfillmentItem).where(
+                    OrderFulfillmentItem.order_line_item_id == li.id,
+                    OrderFulfillmentItem.supplier_product_id == supplier_product_id,
+                )
+            )
+            if not fi_res.scalar_one_or_none():
+                db.add(OrderFulfillmentItem(
+                    order_line_item_id=li.id,
+                    supplier_product_id=supplier_product_id,
+                    quantity=units * li.quantity,
+                ))
+
     await db.commit()
     await db.refresh(ps)
     sup = await db.get(Supplier, ps.supplier_id)
@@ -202,10 +359,36 @@ async def add_component(product_id: int, body: ProductComponentCreate, db: Async
     comp = ProductComponent(product_id=product_id, **body.model_dump())
     db.add(comp)
     try:
-        await db.commit()
+        await db.flush()
     except Exception:
         await db.rollback()
         raise HTTPException(400, "This supplier product is already linked to this product")
+
+    # Backfill OrderFulfillmentItem for existing unshipped orders with this product
+    # that belong to the same supplier, so they immediately reflect the new mapping.
+    from app.models.order import OrderLineItem, OrderFulfillmentItem, FulfillStatus
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.product_id == product_id,
+            OrderLineItem.supplier_id == sp.supplier_id,
+            OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+        )
+    )
+    for li in li_res.scalars().all():
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(
+                OrderFulfillmentItem.order_line_item_id == li.id,
+                OrderFulfillmentItem.supplier_product_id == body.supplier_product_id,
+            )
+        )
+        if not fi_res.scalar_one_or_none():
+            db.add(OrderFulfillmentItem(
+                order_line_item_id=li.id,
+                supplier_product_id=body.supplier_product_id,
+                quantity=body.quantity * li.quantity,
+            ))
+
+    await db.commit()
     await db.refresh(comp)
     return await _component_out(comp, db)
 

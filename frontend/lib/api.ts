@@ -125,7 +125,13 @@ export const marketplaceApi = {
   deleteConnection: (id: number) => api.delete(`/marketplace/connections/${id}`),
   testConnection: (id: number) => api.post(`/marketplace/connections/${id}/test`).then((r) => r.data),
   debugConnection: (id: number) => api.post(`/marketplace/connections/${id}/debug`).then((r) => r.data),
-  syncOrders: (id: number) => api.post(`/marketplace/connections/${id}/sync-orders`).then((r) => r.data),
+  syncOrders: (id: number, opts?: { forceRefresh?: boolean; createdAfter?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.forceRefresh) params.set("force_refresh", "true");
+    if (opts?.createdAfter) params.set("created_after", opts.createdAfter);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return api.post(`/marketplace/connections/${id}/sync-orders${qs}`).then((r) => r.data);
+  },
   syncProducts: (id: number) => api.post(`/marketplace/connections/${id}/sync-products`).then((r) => r.data),
   listListings: (params?: object) => api.get("/marketplace/listings", { params }).then((r) => r.data),
   createListing: (data: object) => api.post("/marketplace/listings", data).then((r) => r.data),

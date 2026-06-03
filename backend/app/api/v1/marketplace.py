@@ -371,12 +371,15 @@ async def sync_orders(
     conn_id: int,
     background_tasks: BackgroundTasks,
     created_after: str | None = None,
+    force_refresh: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
     """Trigger order sync. Pass ?created_after=YYYY-MM-DDTHH:MM:SSZ to override
-    the default 30-day window (Amazon SP-API requires this filter)."""
+    the default 30-day window. Pass ?force_refresh=true to also re-fetch PII
+    (address, buyer info, ASIN) on orders already imported — useful after
+    granting Amazon PII permissions."""
     conn = await _get_conn_or_404(conn_id, db)
-    background_tasks.add_task(_do_sync_orders, conn_id, created_after)
+    background_tasks.add_task(_do_sync_orders, conn_id, created_after, force_refresh)
     return {"message": "Order sync started in background"}
 
 
@@ -387,7 +390,7 @@ async def sync_products(conn_id: int, background_tasks: BackgroundTasks, db: Asy
     return {"message": "Product sync started in background"}
 
 
-async def _do_sync_orders(conn_id: int, created_after: str | None = None):
+async def _do_sync_orders(conn_id: int, created_after: str | None = None, force_refresh: bool = False):
     """Background task. Catches errors and records them on the connection so the
     user gets feedback instead of a silent no-op."""
     import traceback
@@ -399,7 +402,7 @@ async def _do_sync_orders(conn_id: int, created_after: str | None = None):
         try:
             syncer = _get_syncer(conn)
             if isinstance(syncer, AmazonSync):
-                await syncer.sync_orders(db, created_after=created_after)
+                await syncer.sync_orders(db, created_after=created_after, force_refresh=force_refresh)
             else:
                 await syncer.sync_orders(db)
             conn.last_synced_at = datetime.now(timezone.utc)

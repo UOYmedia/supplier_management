@@ -54,19 +54,26 @@ class AmazonSync(MarketplaceSyncer):
         path = f"/orders/v0/orders/{order_id}/address"
         try:
             data = await self.client.get(path)
-            return (data.get("payload") or {}).get("ShippingAddress")
-        except Exception:
-            pass
+            addr = (data.get("payload") or {}).get("ShippingAddress")
+            if addr:
+                print(f"Amazon address (direct) OK for {order_id}", flush=True)
+                return addr
+            print(f"Amazon address (direct) returned empty payload for {order_id}", flush=True)
+        except Exception as e:
+            print(f"Amazon address (direct) failed for {order_id}: {e}", flush=True)
         rdt = await self.client.create_restricted_data_token(
             path=path, method="GET", data_elements=["shippingAddress"]
         )
         if not rdt:
+            print(f"Amazon address: no RDT granted for {order_id} — seller likely missing Direct-to-Consumer Shipping role", flush=True)
             return None
         try:
             data = await self.client.get(path, rdt=rdt)
-            return (data.get("payload") or {}).get("ShippingAddress")
+            addr = (data.get("payload") or {}).get("ShippingAddress")
+            print(f"Amazon address (RDT) OK for {order_id}: keys={list(addr.keys()) if addr else None}", flush=True)
+            return addr
         except Exception as e:
-            print(f"Amazon address fetch failed for {order_id}: {e}", flush=True)
+            print(f"Amazon address (RDT) call failed for {order_id}: {e}", flush=True)
             return None
 
     async def _fetch_buyer_info(self, order_id: str) -> dict | None:
@@ -74,22 +81,34 @@ class AmazonSync(MarketplaceSyncer):
         path = f"/orders/v0/orders/{order_id}/buyerInfo"
         try:
             data = await self.client.get(path)
-            return data.get("payload")
-        except Exception:
-            pass
+            info = data.get("payload")
+            if info and (info.get("BuyerName") or info.get("BuyerEmail")):
+                print(f"Amazon buyer info (direct) OK for {order_id}", flush=True)
+                return info
+            print(f"Amazon buyer info (direct) returned empty payload for {order_id}", flush=True)
+        except Exception as e:
+            print(f"Amazon buyer info (direct) failed for {order_id}: {e}", flush=True)
         rdt = await self.client.create_restricted_data_token(
             path=path, method="GET", data_elements=["buyerInfo"]
         )
         if not rdt:
+            print(f"Amazon buyer info: no RDT granted for {order_id}", flush=True)
             return None
         try:
             data = await self.client.get(path, rdt=rdt)
-            return data.get("payload")
+            info = data.get("payload")
+            print(f"Amazon buyer info (RDT) OK for {order_id}: name={bool(info and info.get('BuyerName'))}, email={bool(info and info.get('BuyerEmail'))}", flush=True)
+            return info
         except Exception as e:
-            print(f"Amazon buyer info fetch failed for {order_id}: {e}", flush=True)
+            print(f"Amazon buyer info (RDT) call failed for {order_id}: {e}", flush=True)
             return None
 
-    async def sync_orders(self, db: AsyncSession, created_after: str | None = None) -> int:
+    async def sync_orders(
+        self,
+        db: AsyncSession,
+        created_after: str | None = None,
+        force_refresh: bool = False,
+    ) -> int:
         """Fetch unshipped orders from SP-API and upsert into local DB.
 
         SP-API /orders/v0/orders REQUIRES one of CreatedAfter / CreatedBefore /
@@ -98,6 +117,10 @@ class AmazonSync(MarketplaceSyncer):
         when the caller doesn't pass one. Exceptions propagate so the
         background task records the real error on the connection instead of
         silently returning 0.
+
+        force_refresh=True re-fetches PII (address, buyer info, ASIN) for
+        orders that already exist locally — useful after granting
+        Direct-to-Consumer Shipping role or fixing the sync code.
         """
         from datetime import timedelta
         if not created_after:
@@ -130,12 +153,48 @@ class AmazonSync(MarketplaceSyncer):
         print(f"Amazon sync_orders: fetched {len(all_orders)} orders (CreatedAfter={created_after})", flush=True)
 
         count = 0
+        refreshed = 0
         for od in all_orders:
             ext_id = od.get("AmazonOrderId")
             if not ext_id:
                 continue
-            existing = await db.execute(select(Order).where(Order.external_order_id == ext_id))
-            if existing.scalar_one_or_none():
+            existing_q = await db.execute(select(Order).where(Order.external_order_id == ext_id))
+            existing_order = existing_q.scalar_one_or_none()
+
+            if existing_order and not force_refresh:
+                continue
+
+            if existing_order and force_refresh:
+                # Update PII + ASIN on an order we already imported
+                addr = await self._fetch_address(ext_id)
+                buyer_info = await self._fetch_buyer_info(ext_id) or {}
+                if addr:
+                    existing_order.shipping_address = {
+                        "name": addr.get("Name"),
+                        "line1": addr.get("AddressLine1"),
+                        "line2": addr.get("AddressLine2"),
+                        "city": addr.get("City"),
+                        "state": addr.get("StateOrRegion"),
+                        "zip": addr.get("PostalCode"),
+                        "country": addr.get("CountryCode"),
+                        "phone": addr.get("Phone"),
+                    }
+                if buyer_info.get("BuyerName"):
+                    existing_order.buyer_name = buyer_info.get("BuyerName")
+                if buyer_info.get("BuyerEmail"):
+                    existing_order.buyer_email = buyer_info.get("BuyerEmail")
+                # Also backfill ASIN on existing line items
+                try:
+                    items_data = await self.client.get(f"/orders/v0/orders/{ext_id}/orderItems")
+                    asin_by_sku = {it.get("SellerSKU"): it.get("ASIN") for it in items_data.get("payload", {}).get("OrderItems", []) if it.get("ASIN")}
+                    li_q = await db.execute(select(OrderLineItem).where(OrderLineItem.order_id == existing_order.id))
+                    for li in li_q.scalars().all():
+                        if not li.asin and li.sku and asin_by_sku.get(li.sku):
+                            li.asin = asin_by_sku[li.sku]
+                except Exception as e:
+                    print(f"Amazon sync_orders: ASIN backfill failed for {ext_id} — {e}", flush=True)
+                await db.commit()
+                refreshed += 1
                 continue
 
             order_total = od.get("OrderTotal") or {}
@@ -213,5 +272,5 @@ class AmazonSync(MarketplaceSyncer):
             await db.commit()  # commit per order so a later failure doesn't lose progress
             count += 1
 
-        print(f"Amazon sync_orders: imported {count} new orders", flush=True)
-        return count
+        print(f"Amazon sync_orders: imported {count} new orders, refreshed {refreshed} existing", flush=True)
+        return count + refreshed

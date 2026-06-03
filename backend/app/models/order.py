@@ -36,7 +36,7 @@ class Order(Base):
     buyer_name: Mapped[str | None] = mapped_column(String(255))
     buyer_email: Mapped[str | None] = mapped_column(String(255))
     shipping_address: Mapped[dict | None] = mapped_column(JSON)
-    status: Mapped[OrderStatus] = mapped_column(SAEnum(OrderStatus), default=OrderStatus.pending)
+    status: Mapped[str] = mapped_column(String(50), default=OrderStatus.pending.value)
     total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     notes: Mapped[str | None] = mapped_column(Text)
@@ -63,7 +63,7 @@ class OrderLineItem(Base):
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     price: Mapped[Decimal] = mapped_column(Numeric(10, 2))         # selling price
     base_cost: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)  # cost from supplier
-    fulfill_status: Mapped[FulfillStatus] = mapped_column(SAEnum(FulfillStatus), default=FulfillStatus.unfulfilled)
+    fulfill_status: Mapped[str] = mapped_column(String(50), default=FulfillStatus.unfulfilled.value)
     tracking_number: Mapped[str | None] = mapped_column(String(255))
     label_id: Mapped[int | None] = mapped_column(ForeignKey("shipping_labels.id"))
     fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

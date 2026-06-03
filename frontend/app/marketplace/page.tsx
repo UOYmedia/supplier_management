@@ -26,7 +26,8 @@ export default function MarketplacePage() {
   });
 
   const syncOrdersMut = useMutation({
-    mutationFn: (id: number) => marketplaceApi.syncOrders(id),
+    mutationFn: ({ id, force }: { id: number; force?: boolean }) =>
+      marketplaceApi.syncOrders(id, { forceRefresh: force }),
     onSuccess: () => toast.success("Order sync started"),
   });
 
@@ -65,7 +66,12 @@ export default function MarketplacePage() {
             <ConnectionCard key={c.id} conn={c}
               onTest={() => testMut.mutate(c.id)}
               onDebug={() => setDebugConn(c)}
-              onSyncOrders={() => syncOrdersMut.mutate(c.id)}
+              onSyncOrders={() => syncOrdersMut.mutate({ id: c.id })}
+              onRefreshPII={() => {
+                if (confirm("Re-fetch shipping address, buyer info and ASIN for all imported Amazon orders in the last 30 days?")) {
+                  syncOrdersMut.mutate({ id: c.id, force: true });
+                }
+              }}
               onSyncProducts={() => syncProductsMut.mutate(c.id)}
               onDelete={() => confirm("Delete?") && deleteMut.mutate(c.id)}
             />
@@ -120,6 +126,15 @@ function ConnectionCard(props: any) {
         <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onSyncOrders}>
           <RefreshCw className="w-3 h-3" /> Sync Orders
         </button>
+        {conn.marketplace === "amazon" && props.onRefreshPII && (
+          <button
+            className="btn-secondary text-xs py-1 flex-1"
+            onClick={props.onRefreshPII}
+            title="Re-fetch shipping address, buyer info and ASIN for already-imported orders"
+          >
+            <RefreshCw className="w-3 h-3" /> Refresh PII
+          </button>
+        )}
         <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onSyncProducts}>
           <Package className="w-3 h-3" /> Sync Products
         </button>
@@ -212,7 +227,15 @@ function ConnectionDebugModal({ conn, onClose }: { conn: any; onClose: () => voi
       const data = await marketplaceApi.debugConnection(conn.id);
       setReport(data);
     } catch (e: any) {
-      setError(e.response?.data?.detail || "Debug failed");
+      const status = e.response?.status;
+      const detail = e.response?.data?.detail;
+      const body = e.response?.data;
+      let msg = "Debug failed";
+      if (status) msg = `HTTP ${status}`;
+      if (detail) msg += ` — ${typeof detail === "string" ? detail : JSON.stringify(detail)}`;
+      else if (body) msg += ` — ${typeof body === "string" ? body : JSON.stringify(body).slice(0, 400)}`;
+      else if (e.message) msg += ` — ${e.message}`;
+      setError(msg);
     } finally {
       setBusy(false);
     }

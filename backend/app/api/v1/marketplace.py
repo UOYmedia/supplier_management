@@ -81,18 +81,26 @@ def _mask(value: str | None) -> str:
 async def debug_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
     """Run a detailed diagnostic against the marketplace API and return every
     step's outcome so missing/wrong credentials show up clearly. Credentials
-    are masked — only first/last 3 chars + length are returned."""
+    are masked — only first/last 3 chars + length are returned.
+
+    Never raises — every failure is captured into the report so the frontend
+    always has something to show.
+    """
     import httpx
+    import traceback
     conn = await _get_conn_or_404(conn_id, db)
     creds = conn.credentials or {}
+
+    def _enum_value(v):
+        return v.value if hasattr(v, "value") else v
 
     report: dict = {
         "connection": {
             "id": conn.id,
             "name": conn.name,
-            "marketplace": conn.marketplace,
+            "marketplace": _enum_value(conn.marketplace),
             "marketplace_id": conn.marketplace_id,
-            "status": conn.status,
+            "status": _enum_value(conn.status),
             "last_synced_at": conn.last_synced_at.isoformat() if conn.last_synced_at else None,
             "error_message": conn.error_message,
             "shop_url": conn.shop_url,
@@ -102,7 +110,6 @@ async def debug_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
             "client_secret": bool(creds.get("client_secret")),
             "refresh_token": bool(creds.get("refresh_token")),
             "access_token": bool(creds.get("access_token")),
-            "sandbox": bool(creds.get("sandbox", False)),
         },
         "credentials_masked": {
             "client_id": _mask(creds.get("client_id")),
@@ -116,99 +123,126 @@ async def debug_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
     def add(step: str, ok: bool, **extra):
         report["checks"].append({"step": step, "ok": ok, **extra})
 
-    if conn.marketplace == MarketplaceType.amazon:
-        missing = [k for k in ("client_id", "client_secret", "refresh_token") if not creds.get(k)]
-        if missing:
-            add("credentials", False, missing=missing,
-                hint="Set Amazon LWA credentials on the connection.")
-            return report
-        add("credentials", True)
+    marketplace = _enum_value(conn.marketplace)
 
-        from app.integrations.amazon.client import AmazonSPClient
-        client = AmazonSPClient(
-            client_id=creds["client_id"],
-            client_secret=creds["client_secret"],
-            refresh_token=creds["refresh_token"],
-            marketplace_id=conn.marketplace_id or "ATVPDKIKX0DER",
-            sandbox=bool(creds.get("sandbox", False)),
-        )
-        try:
-            async with httpx.AsyncClient(timeout=15) as http:
-                r = await http.post(client.LWA_TOKEN_URL, data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": client.refresh_token,
-                    "client_id": client.client_id,
-                    "client_secret": client.client_secret,
-                })
-            body = r.json() if "application/json" in r.headers.get("content-type", "") else {"text": r.text[:300]}
-            ok = r.is_success
-            add("lwa_token_exchange", ok, status=r.status_code,
-                response_keys=list(body.keys()) if isinstance(body, dict) else None,
-                error=body.get("error") or body.get("error_description") if not ok else None,
-                expires_in=body.get("expires_in") if ok else None,
-                token_type=body.get("token_type") if ok else None,
-                hint=None if ok else "Check that the refresh_token is current and matches the LWA app's client_id/secret.",
-            )
-            if not ok:
+    try:
+        if marketplace == "amazon":
+            missing = [k for k in ("client_id", "client_secret", "refresh_token") if not creds.get(k)]
+            if missing:
+                add("credentials", False, missing=missing,
+                    hint="Set Amazon LWA credentials on the connection.")
                 return report
-        except Exception as e:
-            add("lwa_token_exchange", False, error=str(e))
-            return report
+            add("credentials", True)
 
-        try:
-            data = await client.get("/sellers/v1/marketplaceParticipations")
-            participations = data.get("payload", [])
-            marketplaces = []
-            for p in participations:
-                mp = p.get("marketplace") or {}
-                marketplaces.append({
-                    "id": mp.get("id"),
-                    "name": mp.get("name"),
-                    "country_code": mp.get("countryCode"),
-                    "default_currency_code": mp.get("defaultCurrencyCode"),
-                    "is_participating": (p.get("participation") or {}).get("isParticipating"),
-                })
-            add("sp_api_participations", True,
-                base_url=client.SP_API_BASE,
-                participation_count=len(participations),
-                marketplaces=marketplaces,
-                configured_marketplace_id=client.marketplace_id,
-                configured_marketplace_in_list=any(m["id"] == client.marketplace_id for m in marketplaces),
+            from app.integrations.amazon.client import AmazonSPClient
+            client = AmazonSPClient(
+                client_id=creds["client_id"],
+                client_secret=creds["client_secret"],
+                refresh_token=creds["refresh_token"],
+                marketplace_id=conn.marketplace_id or "ATVPDKIKX0DER",
             )
-        except Exception as e:
-            status = getattr(e, "status", None)
-            add("sp_api_participations", False, status=status, error=str(e)[:500],
-                hint="Check IAM role, SP-API app roles (Sellers), and that the marketplace_id matches the LWA region.")
+            try:
+                async with httpx.AsyncClient(timeout=15) as http:
+                    r = await http.post(client.LWA_TOKEN_URL, data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": client.refresh_token,
+                        "client_id": client.client_id,
+                        "client_secret": client.client_secret,
+                    })
+                try:
+                    body = r.json()
+                except Exception:
+                    body = {"text": r.text[:500]}
+                ok = r.is_success
+                add("lwa_token_exchange", ok, status=r.status_code,
+                    response_keys=list(body.keys()) if isinstance(body, dict) else None,
+                    error=(body.get("error") or body.get("error_description")) if (not ok and isinstance(body, dict)) else None,
+                    expires_in=body.get("expires_in") if (ok and isinstance(body, dict)) else None,
+                    token_type=body.get("token_type") if (ok and isinstance(body, dict)) else None,
+                    hint=None if ok else "Check that the refresh_token is current and matches the LWA app's client_id/secret.",
+                )
+                if not ok:
+                    return report
+            except Exception as e:
+                add("lwa_token_exchange", False, error=f"{type(e).__name__}: {e}")
+                return report
 
-    elif conn.marketplace == MarketplaceType.shopify:
-        from app.integrations.shopify.client import ShopifyClient
-        if not creds.get("access_token"):
-            add("credentials", False, missing=["access_token"])
-            return report
-        if not conn.shop_url:
-            add("credentials", False, missing=["shop_url"])
-            return report
-        add("credentials", True)
+            try:
+                data = await client.get("/sellers/v1/marketplaceParticipations")
+                payload = data.get("payload", [])
+                marketplaces = []
+                for p in payload if isinstance(payload, list) else []:
+                    mp = p.get("marketplace") or {}
+                    marketplaces.append({
+                        "id": mp.get("id"),
+                        "name": mp.get("name"),
+                        "country_code": mp.get("countryCode"),
+                        "default_currency_code": mp.get("defaultCurrencyCode"),
+                        "is_participating": (p.get("participation") or {}).get("isParticipating"),
+                    })
+                add("sp_api_participations", True,
+                    base_url=client.SP_API_BASE,
+                    participation_count=len(marketplaces),
+                    marketplaces=marketplaces,
+                    configured_marketplace_id=client.marketplace_id,
+                    configured_marketplace_in_list=any(m["id"] == client.marketplace_id for m in marketplaces),
+                )
+            except Exception as e:
+                status = getattr(e, "status", None)
+                add("sp_api_participations", False, status=status,
+                    error=f"{type(e).__name__}: {str(e)[:500]}",
+                    hint="Check IAM role, SP-API app roles (Sellers), and that the marketplace_id matches the LWA region.")
 
-        sclient = ShopifyClient(shop_url=conn.shop_url, access_token=creds["access_token"])
-        try:
-            data = await sclient.get("/shop.json")
-            shop = data.get("shop", {})
-            add("shop_api", True,
-                shop_id=shop.get("id"),
-                shop_name=shop.get("name"),
-                domain=shop.get("domain"),
-                myshopify_domain=shop.get("myshopify_domain"),
-                country_code=shop.get("country_code"),
-                currency=shop.get("currency"),
-                plan_name=shop.get("plan_name"),
-            )
-        except Exception as e:
-            add("shop_api", False, error=str(e)[:500],
-                hint="Check access_token scope (read_orders / read_products) and shop_url.")
+        elif marketplace == "shopify":
+            from app.integrations.shopify.client import ShopifyClient
+            if not creds.get("access_token"):
+                add("credentials", False, missing=["access_token"])
+                return report
+            if not conn.shop_url:
+                add("credentials", False, missing=["shop_url"])
+                return report
+            add("credentials", True)
 
-    else:
-        add("marketplace_type", False, error=f"Unknown marketplace: {conn.marketplace}")
+            sclient = ShopifyClient(shop_url=conn.shop_url, access_token=creds["access_token"])
+            try:
+                data = await sclient.get("/shop.json")
+                shop = data.get("shop", {}) if isinstance(data, dict) else {}
+                add("shop_api", True,
+                    shop_id=shop.get("id"),
+                    shop_name=shop.get("name"),
+                    domain=shop.get("domain"),
+                    myshopify_domain=shop.get("myshopify_domain"),
+                    country_code=shop.get("country_code"),
+                    currency=shop.get("currency"),
+                    plan_name=shop.get("plan_name"),
+                )
+            except Exception as e:
+                add("shop_api", False, error=f"{type(e).__name__}: {str(e)[:500]}",
+                    hint="Check access_token scope (read_orders / read_products) and shop_url.")
+
+            # What scopes does this token actually have? Unversioned endpoint.
+            try:
+                import httpx as _httpx
+                async with _httpx.AsyncClient() as _c:
+                    _r = await _c.get(
+                        f"{conn.shop_url.rstrip('/')}/admin/oauth/access_scopes.json",
+                        headers={"X-Shopify-Access-Token": creds["access_token"]},
+                    )
+                    _r.raise_for_status()
+                    handles = sorted(s.get("handle", "") for s in _r.json().get("access_scopes", []))
+                    add("token_scopes", True, scopes=handles)
+            except Exception as e:
+                add("token_scopes", False, error=f"{type(e).__name__}: {str(e)[:300]}")
+
+        else:
+            add("marketplace_type", False, error=f"Unknown marketplace: {marketplace!r}")
+
+    except Exception as e:
+        # Anything unexpected — still return a usable report rather than 500.
+        add("internal_error", False,
+            error=f"{type(e).__name__}: {e}",
+            traceback=traceback.format_exc()[-1500:],
+            hint="Backend hit an unhandled exception while running diagnostics; check server logs.")
 
     return report
 
@@ -347,9 +381,19 @@ async def push_to_marketplace(
 # --- Sync orders from marketplace ---
 
 @router.post("/connections/{conn_id}/sync-orders")
-async def sync_orders(conn_id: int, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def sync_orders(
+    conn_id: int,
+    background_tasks: BackgroundTasks,
+    created_after: str | None = None,
+    force_refresh: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger order sync. Pass ?created_after=YYYY-MM-DDTHH:MM:SSZ to override
+    the default 30-day window. Pass ?force_refresh=true to also re-fetch PII
+    (address, buyer info, ASIN) on orders already imported — useful after
+    granting Amazon PII permissions."""
     conn = await _get_conn_or_404(conn_id, db)
-    background_tasks.add_task(_do_sync_orders, conn_id)
+    background_tasks.add_task(_do_sync_orders, conn_id, created_after, force_refresh)
     return {"message": "Order sync started in background"}
 
 
@@ -360,15 +404,30 @@ async def sync_products(conn_id: int, background_tasks: BackgroundTasks, db: Asy
     return {"message": "Product sync started in background"}
 
 
-async def _do_sync_orders(conn_id: int):
+async def _do_sync_orders(conn_id: int, created_after: str | None = None, force_refresh: bool = False):
+    """Background task. Catches errors and records them on the connection so the
+    user gets feedback instead of a silent no-op."""
+    import traceback
     from app.core.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         conn = await db.get(MarketplaceConnection, conn_id)
         if not conn:
             return
-        syncer = _get_syncer(conn)
-        await syncer.sync_orders(db)
-        conn.last_synced_at = datetime.now(timezone.utc)
+        try:
+            syncer = _get_syncer(conn)
+            if isinstance(syncer, AmazonSync):
+                await syncer.sync_orders(db, created_after=created_after, force_refresh=force_refresh)
+            else:
+                await syncer.sync_orders(db)
+            conn.last_synced_at = datetime.now(timezone.utc)
+            conn.error_message = None
+            conn.status = ConnectionStatus.active
+        except Exception as e:
+            tb = traceback.format_exc()
+            msg = f"{type(e).__name__}: {e}"
+            print(f"sync_orders failed for conn={conn_id}: {msg}\n{tb}", flush=True)
+            conn.error_message = msg[:500]
+            conn.status = ConnectionStatus.error
         await db.commit()
 
 

@@ -59,6 +59,7 @@ class OrderLineItem(Base):
     external_line_item_id: Mapped[str | None] = mapped_column(String(255))
     product_name: Mapped[str] = mapped_column(String(255))
     sku: Mapped[str | None] = mapped_column(String(100))
+    asin: Mapped[str | None] = mapped_column(String(20))
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     price: Mapped[Decimal] = mapped_column(Numeric(10, 2))         # selling price
     base_cost: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)  # cost from supplier

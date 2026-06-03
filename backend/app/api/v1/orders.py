@@ -343,6 +343,8 @@ async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSessio
     await _recalculate_order_status(order, db)
     await db.commit()
     await db.refresh(label)
+    if body.tracking_number:
+        await _try_push_marketplace_tracking(order, db)
     return label
 
 
@@ -440,6 +442,8 @@ async def update_label(
 
     await db.commit()
     await db.refresh(label)
+    if "tracking_number" in data and data["tracking_number"]:
+        await _try_push_marketplace_tracking(order, db)
     return label
 
 

@@ -124,6 +124,7 @@ export const marketplaceApi = {
   updateConnection: (id: number, data: object) => api.patch(`/marketplace/connections/${id}`, data).then((r) => r.data),
   deleteConnection: (id: number) => api.delete(`/marketplace/connections/${id}`),
   testConnection: (id: number) => api.post(`/marketplace/connections/${id}/test`).then((r) => r.data),
+  debugConnection: (id: number) => api.post(`/marketplace/connections/${id}/debug`).then((r) => r.data),
   syncOrders: (id: number) => api.post(`/marketplace/connections/${id}/sync-orders`).then((r) => r.data),
   syncProducts: (id: number) => api.post(`/marketplace/connections/${id}/sync-products`).then((r) => r.data),
   listListings: (params?: object) => api.get("/marketplace/listings", { params }).then((r) => r.data),

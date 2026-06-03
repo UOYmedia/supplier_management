@@ -92,6 +92,11 @@ async def shopify_callback(
 
     # --- HMAC verification (skip for embedded token-exchange flow) ---
     if not embedded and hmac_received:
+        if not settings.SHOPIFY_API_SECRET:
+            return JSONResponse(
+                {"error": "SHOPIFY_API_SECRET is not configured. Set it in Railway environment variables to match your Shopify Partner App secret."},
+                status_code=500,
+            )
         verify_params = {k: v for k, v in params.items() if k != "hmac"}
         message = "&".join(f"{k}={v}" for k, v in sorted(verify_params.items()))
         digest = hmac_lib.new(
@@ -100,7 +105,7 @@ async def shopify_callback(
             hashlib.sha256,
         ).hexdigest()
         if not hmac_lib.compare_digest(digest, hmac_received):
-            return JSONResponse({"error": "HMAC verification failed"}, status_code=403)
+            return JSONResponse({"error": "HMAC verification failed — SHOPIFY_API_SECRET does not match your Shopify Partner App secret."}, status_code=403)
 
     # --- State / nonce check (standard flow only) ---
     if state and not embedded:

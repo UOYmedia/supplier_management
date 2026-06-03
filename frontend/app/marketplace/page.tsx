@@ -135,6 +135,15 @@ function ConnectionCard(props: any) {
             <RefreshCw className="w-3 h-3" /> Refresh PII
           </button>
         )}
+        {conn.marketplace === "shopify" && conn.shop_url && (
+          <a
+            href={`/api/v1/shopify/auth?shop=${new URL(conn.shop_url).hostname}`}
+            className="btn-secondary text-xs py-1 flex-1 flex items-center justify-center gap-1"
+            title="Re-authorize to get updated scopes (e.g. read_fulfillments)"
+          >
+            <Link2 className="w-3 h-3" /> Re-authorize
+          </a>
+        )}
         <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onSyncProducts}>
           <Package className="w-3 h-3" /> Sync Products
         </button>

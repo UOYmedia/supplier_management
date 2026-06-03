@@ -198,7 +198,7 @@ async def update_product_supplier(product_id: int, ps_id: int, body: ProductSupp
 @router.delete("/{product_id}/suppliers/{ps_id}", status_code=204)
 async def remove_product_supplier(product_id: int, ps_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(ProductSupplier).where(ProductSupplier.id == ps_id, ProductSupplier.product_id == product_id))
-    ps = result.scalar_one_or_none()  
+    ps = result.scalar_one_or_none()
     if not ps:
         raise HTTPException(404, "Not found")
     await db.delete(ps)

@@ -51,6 +51,7 @@ class OrderLineItemOut(BaseModel):
     label_id: int | None
     fulfilled_at: datetime | None
     supplier_name: str | None = None
+    mapping_suggestion: dict | None = None
 
 
 class OrderCreate(BaseModel):
@@ -100,6 +101,8 @@ class AssignSupplierBody(BaseModel):
 
 class MarkShippedBody(BaseModel):
     tracking_number: str | None = None
+    line_item_ids: list[int] | None = None
+    supplier_id: int | None = None
 
 
 class ShippingLabelCreate(BaseModel):

@@ -8,6 +8,7 @@ class SupplierProductCreate(BaseModel):
     sku: str
     unit_price: Decimal = Decimal("0")
     stock_quantity: int = 0
+    short_name: str | None = None
     weight: Decimal | None = None
     length: Decimal | None = None
     width: Decimal | None = None
@@ -20,6 +21,7 @@ class SupplierProductUpdate(BaseModel):
     sku: str | None = None
     unit_price: Decimal | None = None
     stock_quantity: int | None = None
+    short_name: str | None = None
     weight: Decimal | None = None
     length: Decimal | None = None
     width: Decimal | None = None
@@ -35,6 +37,7 @@ class SupplierProductOut(BaseModel):
     sku: str
     unit_price: Decimal
     stock_quantity: int
+    short_name: str | None = None
     sold_quantity: int = 0
     pending_quantity: int = 0
     weight: Decimal | None = None

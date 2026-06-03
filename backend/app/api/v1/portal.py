@@ -98,6 +98,7 @@ async def portal_products(
         {
             "id": sp.id,
             "name": sp.name,
+            "short_name": sp.short_name,
             "sku": sp.sku,
             "unit_price": float(sp.unit_price),
             "stock_quantity": sp.stock_quantity,
@@ -183,7 +184,7 @@ async def portal_orders(
                 out.append({
                     **base,
                     "item_key": f"fi_{fi.id}",
-                    "product_name": sp.name if sp else li.product_name,
+                    "product_name": (sp.short_name or sp.name) if sp else li.product_name,
                     "sku": sp.sku if sp else li.sku,
                     "image_url": sp.image_url if sp else None,
                     "quantity": fi.quantity,
@@ -222,7 +223,7 @@ async def portal_orders(
                         out.append({
                             **base,
                             "item_key": f"comp_{comp.id}_{li.id}",
-                            "product_name": sp.name if sp else li.product_name,
+                            "product_name": (sp.short_name or sp.name) if sp else li.product_name,
                             "sku": sp.sku if sp else li.sku,
                             "image_url": sp.image_url if sp else None,
                             "quantity": comp.quantity * li.quantity,
@@ -259,7 +260,7 @@ async def portal_orders(
                         out.append({
                             **base,
                             "item_key": f"li_{li.id}",
-                            "product_name": sp.name,
+                            "product_name": sp.short_name or sp.name,
                             "sku": sp.sku,
                             "image_url": sp.image_url,
                             "quantity": li.quantity,
@@ -416,6 +417,20 @@ async def mark_shipped(
     item.tracking_number = body.get("tracking_number") or item.tracking_number
     item.fulfilled_at = datetime.now(timezone.utc)
 
+    # Update OFIs and deduct stock
+    fi_res = await db.execute(
+        select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == item.id)
+    )
+    for fi in fi_res.scalars().all():
+        if fi.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+            fi.fulfill_status = FulfillStatus.shipped.value
+            fi.fulfilled_at = item.fulfilled_at
+            if item.tracking_number and not fi.tracking_number:
+                fi.tracking_number = item.tracking_number
+            sp = await db.get(SupplierProduct, fi.supplier_product_id)
+            if sp:
+                sp.stock_quantity = max(0, sp.stock_quantity - fi.quantity)
+
     order = await db.get(Order, item.order_id)
     if order:
         await _recalculate_order_status(order, db)
@@ -484,6 +499,19 @@ async def portal_mark_label_printed(
             li.fulfilled_at = now
             if label.tracking_number and not li.tracking_number:
                 li.tracking_number = label.tracking_number
+            # Update OFIs and deduct stock
+            fi_res = await db.execute(
+                select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+            )
+            for fi in fi_res.scalars().all():
+                if fi.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+                    fi.fulfill_status = FulfillStatus.shipped.value
+                    fi.fulfilled_at = now
+                    if label.tracking_number and not fi.tracking_number:
+                        fi.tracking_number = label.tracking_number
+                    sp = await db.get(SupplierProduct, fi.supplier_product_id)
+                    if sp:
+                        sp.stock_quantity = max(0, sp.stock_quantity - fi.quantity)
 
     if line_items:
         order = await db.get(Order, order_id)

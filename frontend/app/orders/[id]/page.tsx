@@ -41,6 +41,15 @@ export default function OrderDetailPage() {
     onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
 
+  const quickAssignMut = useMutation({
+    mutationFn: ({ liId, data }: { liId: number; data: object }) => ordersApi.assignSupplier(oid, liId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["order", oid] });
+      toast.success("Auto-assigned from mapping");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Auto-assign failed"),
+  });
+
   const markPrintedMut = useMutation({
     mutationFn: (labelId: number) =>
       ordersApi.markLabelPrinted(oid, labelId),
@@ -286,6 +295,15 @@ export default function OrderDetailPage() {
                       suppliers={suppliers}
                       onUpdate={(data) => updateLIMut.mutate({ liId: li.id, data })}
                       onAssignSupplier={() => setAssigningItem(li.id)}
+                      onQuickAssign={(s) => quickAssignMut.mutate({
+                        liId: li.id,
+                        data: {
+                          supplier_id: s.supplier_id,
+                          supplier_product_id: s.supplier_product_id,
+                          units: s.units,
+                          create_product_supplier: true,
+                        },
+                      })}
                     />
                   ))}
                 </tbody>
@@ -600,10 +618,11 @@ function groupBySupplier(items: any[]) {
   }, {} as Record<string, any[]>);
 }
 
-function LineItemRow({ li, onUpdate, onAssignSupplier, suppliers }: {
+function LineItemRow({ li, onUpdate, onAssignSupplier, onQuickAssign, suppliers }: {
   li: any;
   onUpdate: (d: object) => void;
   onAssignSupplier: () => void;
+  onQuickAssign: (suggestion: any) => void;
   suppliers: any[];
 }) {
   const [status, setStatus] = useState(li.fulfill_status);
@@ -611,6 +630,7 @@ function LineItemRow({ li, onUpdate, onAssignSupplier, suppliers }: {
   const [baseCost, setBaseCost] = useState(String(li.base_cost));
 
   const isShipped = status === "shipped" || status === "delivered";
+  const canReassign = !isShipped && !!li.supplier_id;
 
   return (
     <tr>
@@ -639,14 +659,34 @@ function LineItemRow({ li, onUpdate, onAssignSupplier, suppliers }: {
         )}
       </td>
       <td>
-        {!li.supplier_id && (
-          <button
-            onClick={onAssignSupplier}
-            className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium whitespace-nowrap"
-          >
-            <UserPlus className="w-3 h-3" /> Assign
-          </button>
-        )}
+        <div className="flex flex-col gap-1 items-start">
+          {!li.supplier_id && li.mapping_suggestion && (
+            <button
+              onClick={() => onQuickAssign(li.mapping_suggestion)}
+              className="flex items-center gap-1 text-xs text-green-600 hover:text-green-800 font-medium whitespace-nowrap"
+              title={`Quick assign: ${li.mapping_suggestion.supplier_name} → ${li.mapping_suggestion.catalog_name}`}
+            >
+              <CheckCircle2 className="w-3 h-3" />
+              {li.mapping_suggestion.supplier_name}
+            </button>
+          )}
+          {!li.supplier_id && (
+            <button
+              onClick={onAssignSupplier}
+              className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium whitespace-nowrap"
+            >
+              <UserPlus className="w-3 h-3" /> {li.mapping_suggestion ? "Change" : "Assign"}
+            </button>
+          )}
+          {canReassign && (
+            <button
+              onClick={onAssignSupplier}
+              className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-700 whitespace-nowrap"
+            >
+              <Pencil className="w-3 h-3" /> Re-assign
+            </button>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -661,7 +701,8 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   onAssign: (data: object) => void;
   loading: boolean;
 }) {
-  const [supplierId, setSupplierId] = useState("");
+  const isReassign = !!lineItem?.supplier_id;
+  const [supplierId, setSupplierId] = useState(lineItem?.supplier_id ? String(lineItem.supplier_id) : "");
   const [selectedSpId, setSelectedSpId] = useState<number | null>(null);
   const [units, setUnits] = useState("1");
   const [baseCost, setBaseCost] = useState(lineItem ? String(lineItem.base_cost) : "0");
@@ -722,7 +763,10 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="card w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold">Assign Supplier</h2>
+          <div>
+            <h2 className="font-semibold">{isReassign ? "Re-assign Supplier" : "Assign Supplier"}</h2>
+            {isReassign && <p className="text-xs text-amber-600 mt-0.5">Currently: {lineItem.supplier_name || `Supplier #${lineItem.supplier_id}`}</p>}
+          </div>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
 
@@ -832,7 +876,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
             disabled={!supplierId || !selectedSpId || loading}
           >
             <CheckCircle2 className="w-4 h-4" />
-            {loading ? "Assigning…" : "Assign Supplier"}
+            {loading ? "Assigning…" : isReassign ? "Re-assign Supplier" : "Assign Supplier"}
           </button>
         </div>
       </div>

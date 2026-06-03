@@ -170,6 +170,9 @@ async def mark_shipped(order_id: int, body: MarkShippedBody, db: AsyncSession = 
                 fi.fulfilled_at = now
                 if body.tracking_number:
                     fi.tracking_number = body.tracking_number
+                sp_stock = await db.get(SupplierProduct, fi.supplier_product_id)
+                if sp_stock:
+                    sp_stock.stock_quantity = max(0, sp_stock.stock_quantity - fi.quantity)
 
     await _recalculate_order_status(order, db)
     await db.commit()
@@ -200,11 +203,33 @@ async def assign_supplier_to_line_item(
     if not sp or sp.supplier_id != body.supplier_id:
         raise HTTPException(400, "Catalog item not found for this supplier")
 
+    # Remove stale OFIs when re-assigning to a different catalog item
+    old_fi_res = await db.execute(
+        select(OrderFulfillmentItem).where(
+            OrderFulfillmentItem.order_line_item_id == li.id,
+            OrderFulfillmentItem.supplier_product_id != sp.id,
+        )
+    )
+    for old_fi in old_fi_res.scalars().all():
+        await db.delete(old_fi)
+
     li.supplier_id = body.supplier_id
     effective_cost = body.base_cost if body.base_cost is not None else (sp.unit_price * body.units)
     li.base_cost = effective_cost
 
-    # Upsert ProductComponent to map product → supplier catalog item
+    # If line item has no product_id, try to resolve it from SKU now so the
+    # ProductComponent link can be stored for future orders with the same product.
+    if not li.product_id and li.sku:
+        from sqlalchemy import func as sqlfunc
+        prod_res = await db.execute(
+            select(Product).where(sqlfunc.lower(sqlfunc.trim(Product.sku)) == li.sku.strip().lower())
+        )
+        product = prod_res.scalar_one_or_none()
+        if product:
+            li.product_id = product.id
+
+    # Upsert ProductComponent (product → supplier catalog item) — reusable for all
+    # future orders that carry the same product_id.
     if li.product_id:
         comp_res = await db.execute(
             select(ProductComponent).where(
@@ -214,31 +239,13 @@ async def assign_supplier_to_line_item(
         )
         comp = comp_res.scalar_one_or_none()
         if not comp:
-            comp = ProductComponent(
+            db.add(ProductComponent(
                 product_id=li.product_id,
                 supplier_product_id=sp.id,
                 quantity=body.units,
-            )
-            db.add(comp)
-        else:
-            comp.quantity = body.units
-
-        # Create/upsert OrderFulfillmentItem
-        fi_res = await db.execute(
-            select(OrderFulfillmentItem).where(
-                OrderFulfillmentItem.order_line_item_id == li.id,
-                OrderFulfillmentItem.supplier_product_id == sp.id,
-            )
-        )
-        fi = fi_res.scalar_one_or_none()
-        if not fi:
-            db.add(OrderFulfillmentItem(
-                order_line_item_id=li.id,
-                supplier_product_id=sp.id,
-                quantity=body.units * li.quantity,
             ))
         else:
-            fi.quantity = body.units * li.quantity
+            comp.quantity = body.units
 
         # Create ProductSupplier relationship for future auto-assignment
         if body.create_product_supplier:
@@ -264,6 +271,24 @@ async def assign_supplier_to_line_item(
                 for other in all_ps.scalars().all():
                     other.is_preferred = False
                 ps_link.is_preferred = True
+
+    # Always create/upsert OrderFulfillmentItem for this specific line item,
+    # whether or not product_id exists — this is what the supplier sees immediately.
+    fi_res = await db.execute(
+        select(OrderFulfillmentItem).where(
+            OrderFulfillmentItem.order_line_item_id == li.id,
+            OrderFulfillmentItem.supplier_product_id == sp.id,
+        )
+    )
+    fi = fi_res.scalar_one_or_none()
+    if not fi:
+        db.add(OrderFulfillmentItem(
+            order_line_item_id=li.id,
+            supplier_product_id=sp.id,
+            quantity=body.units * li.quantity,
+        ))
+    else:
+        fi.quantity = body.units * li.quantity
 
     await db.commit()
     await db.refresh(li)
@@ -737,8 +762,21 @@ async def _get_or_404(order_id: int, db: AsyncSession) -> Order:
 
 
 async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> list:
-    """Resolve catalog name+qty for a line item via ProductComponent → SupplierProduct."""
+    """Resolve catalog name+qty for a line item via OFI → ProductComponent → SupplierProduct."""
     from app.integrations.pdf_labels import PackItem
+    # Prefer OFI (already resolved and persisted)
+    fi_res = await db.execute(
+        select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+    )
+    fis = fi_res.scalars().all()
+    if fis:
+        items = []
+        for fi in fis:
+            sp = await db.get(SupplierProduct, fi.supplier_product_id)
+            if sp:
+                items.append(PackItem(name=sp.short_name or sp.name, sku=sp.sku, quantity=fi.quantity))
+        if items:
+            return items
     if li.product_id:
         comps = (await db.execute(
             select(ProductComponent).where(ProductComponent.product_id == li.product_id)
@@ -748,7 +786,7 @@ async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> l
             for comp in comps:
                 sp = await db.get(SupplierProduct, comp.supplier_product_id)
                 if sp:
-                    items.append(PackItem(name=sp.name, sku=sp.sku,
+                    items.append(PackItem(name=sp.short_name or sp.name, sku=sp.sku,
                                           quantity=li.quantity * comp.quantity))
             if items:
                 return items
@@ -759,6 +797,36 @@ async def _line_item_out(li: OrderLineItem, db: AsyncSession) -> OrderLineItemOu
     sup = await db.get(Supplier, li.supplier_id) if li.supplier_id else None
     data = {c.name: getattr(li, c.name) for c in li.__table__.columns}
     data["supplier_name"] = sup.name if sup else None
+
+    mapping_suggestion = None
+    if not li.supplier_id:
+        from sqlalchemy import func as sqlfunc
+        product_id = li.product_id
+        if not product_id and li.sku:
+            prod_res = await db.execute(
+                select(Product).where(sqlfunc.lower(sqlfunc.trim(Product.sku)) == li.sku.strip().lower())
+            )
+            prod = prod_res.scalar_one_or_none()
+            if prod:
+                product_id = prod.id
+        if product_id:
+            comp_res = await db.execute(
+                select(ProductComponent).where(ProductComponent.product_id == product_id)
+            )
+            comp = comp_res.scalars().first()
+            if comp:
+                sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                if sp:
+                    sp_sup = await db.get(Supplier, sp.supplier_id)
+                    mapping_suggestion = {
+                        "supplier_id": sp.supplier_id,
+                        "supplier_name": sp_sup.name if sp_sup else None,
+                        "supplier_product_id": sp.id,
+                        "catalog_name": sp.short_name or sp.name,
+                        "catalog_sku": sp.sku,
+                        "units": comp.quantity,
+                    }
+    data["mapping_suggestion"] = mapping_suggestion
     return OrderLineItemOut(**data)
 
 

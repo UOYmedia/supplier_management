@@ -629,6 +629,9 @@ async def _push_shopify_tracking(order: Order, db: AsyncSession) -> dict:
     try:
         fulfillment_orders = await client.get_fulfillment_orders(order.external_order_id)
     except Exception as e:
+        err_str = str(e)
+        if "403" in err_str:
+            return {"error": "Shopify connection needs re-authorization: the current token is missing fulfillment scopes (read_fulfillments / write_fulfillments). Go to Marketplace → your Shopify connection → Re-authorize to fix this."}
         return {"error": f"get_fulfillment_orders failed: {e}"}
 
     open_fos = [fo for fo in fulfillment_orders if fo.get("status") in ("open", "in_progress")]
@@ -688,7 +691,9 @@ async def sync_tracking_to_shopify(
         raise HTTPException(400, "Only Shopify orders support tracking sync")
     result = await _push_shopify_tracking(order, db)
     if result.get("error"):
-        raise HTTPException(502, result["error"])
+        err = result["error"]
+        status = 403 if "re-authorization" in err else 502
+        raise HTTPException(status, err)
     if result.get("skipped"):
         raise HTTPException(400, result["skipped"])
     if not result.get("synced") and result.get("errors"):

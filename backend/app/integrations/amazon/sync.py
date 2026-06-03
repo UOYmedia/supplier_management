@@ -46,6 +46,49 @@ class AmazonSync(MarketplaceSyncer):
         )
         return result.get("sku", product.sku)
 
+    async def _fetch_address(self, order_id: str) -> dict | None:
+        """SP-API hides shipping address by default. Try direct GET first
+        (works if seller account has shippingAddress access), fall back to
+        Restricted Data Token flow. Returns None if seller account isn't
+        authorised for PII."""
+        path = f"/orders/v0/orders/{order_id}/address"
+        try:
+            data = await self.client.get(path)
+            return (data.get("payload") or {}).get("ShippingAddress")
+        except Exception:
+            pass
+        rdt = await self.client.create_restricted_data_token(
+            path=path, method="GET", data_elements=["shippingAddress"]
+        )
+        if not rdt:
+            return None
+        try:
+            data = await self.client.get(path, rdt=rdt)
+            return (data.get("payload") or {}).get("ShippingAddress")
+        except Exception as e:
+            print(f"Amazon address fetch failed for {order_id}: {e}", flush=True)
+            return None
+
+    async def _fetch_buyer_info(self, order_id: str) -> dict | None:
+        """Same PII gate as the address endpoint."""
+        path = f"/orders/v0/orders/{order_id}/buyerInfo"
+        try:
+            data = await self.client.get(path)
+            return data.get("payload")
+        except Exception:
+            pass
+        rdt = await self.client.create_restricted_data_token(
+            path=path, method="GET", data_elements=["buyerInfo"]
+        )
+        if not rdt:
+            return None
+        try:
+            data = await self.client.get(path, rdt=rdt)
+            return data.get("payload")
+        except Exception as e:
+            print(f"Amazon buyer info fetch failed for {order_id}: {e}", flush=True)
+            return None
+
     async def sync_orders(self, db: AsyncSession, created_after: str | None = None) -> int:
         """Fetch unshipped orders from SP-API and upsert into local DB.
 
@@ -95,13 +138,17 @@ class AmazonSync(MarketplaceSyncer):
             if existing.scalar_one_or_none():
                 continue
 
-            addr = od.get("ShippingAddress") or {}
-            buyer_info = od.get("BuyerInfo") or {}
             order_total = od.get("OrderTotal") or {}
             try:
                 ordered_at = datetime.fromisoformat(od.get("PurchaseDate", "").replace("Z", "+00:00"))
             except Exception:
                 ordered_at = datetime.now(timezone.utc)
+
+            # SP-API hides shipping address + buyer info by default — they live
+            # behind PII endpoints that need a Restricted Data Token. Try each;
+            # fall back to whatever (if anything) was inlined on the order.
+            addr = await self._fetch_address(ext_id) or (od.get("ShippingAddress") or {})
+            buyer_info = await self._fetch_buyer_info(ext_id) or (od.get("BuyerInfo") or {})
 
             order = Order(
                 connection_id=self.connection.id,
@@ -118,7 +165,7 @@ class AmazonSync(MarketplaceSyncer):
                     "zip": addr.get("PostalCode"),
                     "country": addr.get("CountryCode"),
                     "phone": addr.get("Phone"),
-                },
+                } if addr else None,
                 total=float(order_total.get("Amount", 0)),
                 currency=order_total.get("CurrencyCode", "USD"),
                 ordered_at=ordered_at,
@@ -145,6 +192,7 @@ class AmazonSync(MarketplaceSyncer):
                         external_line_item_id=item.get("OrderItemId"),
                         product_name=item.get("Title", ""),
                         sku=item.get("SellerSKU"),
+                        asin=item.get("ASIN"),
                         quantity=int(item.get("QuantityOrdered", 1)),
                         price=float((item.get("ItemPrice") or {}).get("Amount", 0)),
                     )

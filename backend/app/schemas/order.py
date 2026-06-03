@@ -101,6 +101,8 @@ class AssignSupplierBody(BaseModel):
 
 class MarkShippedBody(BaseModel):
     tracking_number: str | None = None
+    line_item_ids: list[int] | None = None
+    supplier_id: int | None = None
 
 
 class ShippingLabelCreate(BaseModel):

@@ -168,8 +168,9 @@ class AmazonSync(MarketplaceSyncer):
                 # Update PII + ASIN on an order we already imported
                 addr = await self._fetch_address(ext_id)
                 buyer_info = await self._fetch_buyer_info(ext_id) or {}
+                changes: list[str] = []
                 if addr:
-                    existing_order.shipping_address = {
+                    new_addr = {
                         "name": addr.get("Name"),
                         "line1": addr.get("AddressLine1"),
                         "line2": addr.get("AddressLine2"),
@@ -179,21 +180,41 @@ class AmazonSync(MarketplaceSyncer):
                         "country": addr.get("CountryCode"),
                         "phone": addr.get("Phone"),
                     }
+                    existing_order.shipping_address = new_addr
+                    # JSON columns aren't always dirty-tracked on in-place assignment;
+                    # flag_modified ensures the UPDATE actually fires.
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(existing_order, "shipping_address")
+                    changes.append(f"address(line1={new_addr.get('line1')!r})")
                 if buyer_info.get("BuyerName"):
                     existing_order.buyer_name = buyer_info.get("BuyerName")
+                    changes.append("buyer_name")
                 if buyer_info.get("BuyerEmail"):
                     existing_order.buyer_email = buyer_info.get("BuyerEmail")
+                    changes.append("buyer_email")
                 # Also backfill ASIN on existing line items
+                asin_updated = 0
                 try:
                     items_data = await self.client.get(f"/orders/v0/orders/{ext_id}/orderItems")
-                    asin_by_sku = {it.get("SellerSKU"): it.get("ASIN") for it in items_data.get("payload", {}).get("OrderItems", []) if it.get("ASIN")}
+                    asin_by_sku = {
+                        it.get("SellerSKU"): it.get("ASIN")
+                        for it in items_data.get("payload", {}).get("OrderItems", [])
+                        if it.get("ASIN")
+                    }
                     li_q = await db.execute(select(OrderLineItem).where(OrderLineItem.order_id == existing_order.id))
                     for li in li_q.scalars().all():
                         if not li.asin and li.sku and asin_by_sku.get(li.sku):
                             li.asin = asin_by_sku[li.sku]
+                            asin_updated += 1
                 except Exception as e:
                     print(f"Amazon sync_orders: ASIN backfill failed for {ext_id} — {e}", flush=True)
+                if asin_updated:
+                    changes.append(f"asin×{asin_updated}")
                 await db.commit()
+                if changes:
+                    print(f"Amazon refresh OK ext_id={ext_id} local_id={existing_order.id}: {', '.join(changes)}", flush=True)
+                else:
+                    print(f"Amazon refresh: no changes applied for ext_id={ext_id} local_id={existing_order.id}", flush=True)
                 refreshed += 1
                 continue
 

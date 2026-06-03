@@ -212,7 +212,15 @@ function ConnectionDebugModal({ conn, onClose }: { conn: any; onClose: () => voi
       const data = await marketplaceApi.debugConnection(conn.id);
       setReport(data);
     } catch (e: any) {
-      setError(e.response?.data?.detail || "Debug failed");
+      const status = e.response?.status;
+      const detail = e.response?.data?.detail;
+      const body = e.response?.data;
+      let msg = "Debug failed";
+      if (status) msg = `HTTP ${status}`;
+      if (detail) msg += ` — ${typeof detail === "string" ? detail : JSON.stringify(detail)}`;
+      else if (body) msg += ` — ${typeof body === "string" ? body : JSON.stringify(body).slice(0, 400)}`;
+      else if (e.message) msg += ` — ${e.message}`;
+      setError(msg);
     } finally {
       setBusy(false);
     }

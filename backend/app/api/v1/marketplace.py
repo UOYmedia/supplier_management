@@ -110,7 +110,6 @@ async def debug_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
             "client_secret": bool(creds.get("client_secret")),
             "refresh_token": bool(creds.get("refresh_token")),
             "access_token": bool(creds.get("access_token")),
-            "sandbox": bool(creds.get("sandbox", False)),
         },
         "credentials_masked": {
             "client_id": _mask(creds.get("client_id")),
@@ -141,7 +140,6 @@ async def debug_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
                 client_secret=creds["client_secret"],
                 refresh_token=creds["refresh_token"],
                 marketplace_id=conn.marketplace_id or "ATVPDKIKX0DER",
-                sandbox=bool(creds.get("sandbox", False)),
             )
             try:
                 async with httpx.AsyncClient(timeout=15) as http:

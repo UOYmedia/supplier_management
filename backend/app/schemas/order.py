@@ -43,6 +43,7 @@ class OrderLineItemOut(BaseModel):
     supplier_id: int | None
     product_name: str
     sku: str | None
+    asin: str | None = None
     quantity: int
     price: Decimal
     base_cost: Decimal

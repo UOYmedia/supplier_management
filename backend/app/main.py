@@ -59,8 +59,15 @@ async def _run_migrations():
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS hashed_password VARCHAR(255)",
         # unique index on username (partial -- ignores NULLs)
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_suppliers_username ON suppliers(username) WHERE username IS NOT NULL",
+        # suppliers: portal toggle for self-service EasyPost label purchase
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS can_buy_labels BOOLEAN NOT NULL DEFAULT FALSE",
         # supplier_products: short label for PDF overlays
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS short_name VARCHAR(100)",
+        # supplier_products: per-unit shipping dimensions for parcel auto-estimate
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS weight NUMERIC(10, 3)",
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS length NUMERIC(10, 2)",
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS width NUMERIC(10, 2)",
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS height NUMERIC(10, 2)",
     ]
     try:
         async with engine.begin() as conn:

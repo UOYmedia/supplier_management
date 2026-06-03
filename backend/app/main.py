@@ -48,7 +48,9 @@ async def _seed_admin():
 
 
 async def _run_migrations():
-    """Add new columns to existing tables without dropping data."""
+    """Add new columns/indexes to existing tables without dropping data.
+    Each statement runs in its own transaction so a failure on one step
+    does not prevent the rest from applying."""
     migrations = [
         # suppliers: address fields + portal auth
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS street1 VARCHAR(255)",
@@ -71,13 +73,16 @@ async def _run_migrations():
         # order_line_items: Amazon ASIN identifier
         "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS asin VARCHAR(20)",
     ]
-    try:
-        async with engine.begin() as conn:
-            for sql in migrations:
+    ok, failed = 0, 0
+    for sql in migrations:
+        try:
+            async with engine.begin() as conn:
                 await conn.execute(text(sql))
-        print("Migrations applied.", flush=True)
-    except Exception as e:
-        print(f"WARNING: migration error (non-fatal): {e}", flush=True)
+            ok += 1
+        except Exception as e:
+            failed += 1
+            print(f"WARNING: migration skipped ({e.__class__.__name__}): {sql[:60]}... — {e}", flush=True)
+    print(f"Migrations done: {ok} applied, {failed} skipped.", flush=True)
 
 
 app = FastAPI(

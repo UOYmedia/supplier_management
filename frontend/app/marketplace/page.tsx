@@ -1,13 +1,14 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { marketplaceApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, RefreshCw, Zap, Trash2, CheckCircle, XCircle, X, Package, Link2 } from "lucide-react";
+import { Plus, RefreshCw, Zap, Trash2, CheckCircle, XCircle, X, Package, Link2, Bug, Loader2 } from "lucide-react";
 
 export default function MarketplacePage() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
+  const [debugConn, setDebugConn] = useState<any>(null);
 
   const { data: connections = [], isLoading } = useQuery({ queryKey: ["connections"], queryFn: marketplaceApi.listConnections });
 
@@ -63,6 +64,7 @@ export default function MarketplacePage() {
           {connections.map((c: any) => (
             <ConnectionCard key={c.id} conn={c}
               onTest={() => testMut.mutate(c.id)}
+              onDebug={() => setDebugConn(c)}
               onSyncOrders={() => syncOrdersMut.mutate(c.id)}
               onSyncProducts={() => syncProductsMut.mutate(c.id)}
               onDelete={() => confirm("Delete?") && deleteMut.mutate(c.id)}
@@ -72,11 +74,13 @@ export default function MarketplacePage() {
       )}
 
       {showCreate && <ConnectionModal onClose={() => setShowCreate(false)} />}
+      {debugConn && <ConnectionDebugModal conn={debugConn} onClose={() => setDebugConn(null)} />}
     </div>
   );
 }
 
-function ConnectionCard({ conn, onTest, onSyncOrders, onSyncProducts, onDelete }: any) {
+function ConnectionCard(props: any) {
+  const { conn } = props;
   const statusIcon = conn.status === "active" ? (
     <CheckCircle className="w-4 h-4 text-green-500" />
   ) : conn.status === "error" ? (
@@ -107,19 +111,19 @@ function ConnectionCard({ conn, onTest, onSyncOrders, onSyncProducts, onDelete }
         Last synced: {conn.last_synced_at ? new Date(conn.last_synced_at).toLocaleString() : "Never"}
       </div>
       <div className="flex flex-wrap gap-2">
-        <button className="btn-secondary text-xs py-1 flex-1" onClick={onTest}>
+        <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onTest}>
           <Zap className="w-3 h-3" /> Test
         </button>
-        <button className="btn-secondary text-xs py-1 flex-1" onClick={onDebug}>
+        <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onDebug}>
           <Bug className="w-3 h-3" /> Debug
         </button>
-        <button className="btn-secondary text-xs py-1 flex-1" onClick={onSyncOrders}>
+        <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onSyncOrders}>
           <RefreshCw className="w-3 h-3" /> Sync Orders
         </button>
-        <button className="btn-secondary text-xs py-1 flex-1" onClick={onSyncProducts}>
+        <button className="btn-secondary text-xs py-1 flex-1" onClick={props.onSyncProducts}>
           <Package className="w-3 h-3" /> Sync Products
         </button>
-        <button className="p-1.5 hover:text-red-500 text-gray-400" onClick={onDelete}>
+        <button className="p-1.5 hover:text-red-500 text-gray-400" onClick={props.onDelete}>
           <Trash2 className="w-4 h-4" />
         </button>
       </div>

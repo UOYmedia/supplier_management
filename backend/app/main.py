@@ -59,6 +59,8 @@ async def _run_migrations():
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS hashed_password VARCHAR(255)",
         # unique index on username (partial -- ignores NULLs)
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_suppliers_username ON suppliers(username) WHERE username IS NOT NULL",
+        # supplier_products: short label for PDF overlays
+        "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS short_name VARCHAR(100)",
     ]
     try:
         async with engine.begin() as conn:

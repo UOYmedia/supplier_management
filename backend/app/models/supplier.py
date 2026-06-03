@@ -51,6 +51,7 @@ class SupplierProduct(Base):
     sku: Mapped[str] = mapped_column(String(100))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
     stock_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    short_name: Mapped[str | None] = mapped_column(String(100))
     weight: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
     length: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     width: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))

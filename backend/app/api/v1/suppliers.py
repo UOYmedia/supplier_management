@@ -234,11 +234,6 @@ async def import_supplier_catalog(
         raise HTTPException(400, "Please upload a CSV file, not an Excel file (.xlsx / .xls). "
                             "In Excel: File -> Save As -> CSV (Comma delimited).")
 
-    # Pick encoding order based on BOM / null-byte heuristic.
-    # UTF-16 files have a BOM (FF FE or FE FF) or dense null bytes; otherwise
-    # try single-byte codecs *before* UTF-16 so that CP1252/Latin-1 special
-    # chars (e.g. en-dash 0x96) don't cause UTF-8 to fail and then get
-    # mis-decoded as UTF-16 LE pairs, producing garbled CJK column names.
     if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
         enc_order = ("utf-16", "utf-16-le", "utf-16-be")
     elif raw[:3] == b'\xef\xbb\xbf':
@@ -252,7 +247,6 @@ async def import_supplier_catalog(
     for enc in enc_order:
         try:
             candidate = raw.decode(enc)
-            # Reject if too many null bytes -- UTF-16 decoded as a single-byte codec
             if candidate.count('\x00') > len(candidate) * 0.2:
                 continue
             text = candidate
@@ -262,10 +256,8 @@ async def import_supplier_catalog(
     if text is None:
         raise HTTPException(400, "Could not decode CSV -- please save as UTF-8 or UTF-16")
 
-    # Strip BOM character that may remain after decoding
     text = text.lstrip('﻿')
 
-    # Try to auto-detect delimiter; fall back to comma then semicolon
     sample = text[:4096]
     detected_dialect = None
     try:
@@ -279,7 +271,6 @@ async def import_supplier_catalog(
         else:
             r = csv.DictReader(io.StringIO(text), dialect=dialect_or_delimiter)
         fnames = r.fieldnames or []
-        # Strip BOM and whitespace from field names when normalizing
         norm = {(f or "").strip().lstrip('﻿').lower() for f in fnames}
         return r, norm, fnames
 
@@ -296,7 +287,6 @@ async def import_supplier_catalog(
             break
 
     if reader is None:
-        # Still couldn't find required columns -- try once more with comma to get field list for error
         r, norm_fnames, raw_fnames = _try_parse(",")
         found = sorted(raw_fnames) if raw_fnames else []
         detail = "CSV missing required columns: 'name' and 'sku'."
@@ -315,7 +305,7 @@ async def import_supplier_catalog(
     errors: list[str] = []
     seen_skus: set[str] = set()
 
-    for idx, row in enumerate(reader, start=2):  # row 1 is header
+    for idx, row in enumerate(reader, start=2):
         norm = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
         sku = norm.get("sku", "")
         name = norm.get("name", "")
@@ -746,12 +736,14 @@ async def _supplier_product_out(sp: SupplierProduct, db: AsyncSession) -> Suppli
         sku=sp.sku,
         unit_price=sp.unit_price,
         stock_quantity=sp.stock_quantity,
+        short_name=sp.short_name,
         pending_quantity=int(pending_result.scalar()),
         sold_quantity=int(sold_result.scalar()),
         weight=sp.weight,
         length=sp.length,
         width=sp.width,
         height=sp.height,
+        image_url=sp.image_url,
         created_at=sp.created_at,
         updated_at=sp.updated_at,
     )

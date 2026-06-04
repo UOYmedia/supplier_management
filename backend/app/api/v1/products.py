@@ -213,12 +213,18 @@ async def delete_mapping(component_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/mappings/template.csv")
-async def mappings_template_csv():
-    """Download a blank CSV template for bulk mapping import."""
+async def mappings_template_csv(db: AsyncSession = Depends(get_db)):
+    """Download a CSV template pre-filled with all active supplier names."""
+    # Fetch real supplier names to populate the sample rows
+    sup_res = await db.execute(select(Supplier).order_by(Supplier.name))
+    supplier_names = [s.name for s in sup_res.scalars().all()]
+    sample_supplier = supplier_names[0] if supplier_names else "My Supplier"
+
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["marketplace_sku", "supplier_sku", "units"])
-    writer.writerow(["B0GX5Z686V", "SUP-SKU-001", "1"])
+    writer.writerow(["marketplace_sku", "supplier_sku", "supplier_name", "units"])
+    writer.writerow(["B0GX5Z686V", "SUP-SKU-001", sample_supplier, "1"])
+    writer.writerow(["B0GX5Z686V", "SUP-SKU-002", sample_supplier, "2"])
     content = "﻿".encode("utf-8") + buf.getvalue().encode("utf-8")
     return Response(
         content=content,
@@ -234,10 +240,11 @@ async def import_mappings_csv(
 ):
     """Bulk-import SKU mappings from CSV.
     Required columns: marketplace_sku, supplier_sku
-    Optional: units (default 1)
+    Optional: supplier_name (disambiguates when the same SKU exists in multiple suppliers),
+              units (default 1)
     Rows are upserted: existing mappings are updated, new ones created.
     supplier_sku is matched against SupplierProduct.sku (case-insensitive).
-    If a supplier_sku exists in multiple suppliers the row is flagged as ambiguous.
+    If supplier_name is provided it is used to pick the correct supplier unambiguously.
     """
     raw = await file.read()
     if not raw:
@@ -300,6 +307,12 @@ async def import_mappings_csv(
         key = sp.sku.strip().lower()
         sp_by_sku.setdefault(key, []).append(sp)
 
+    # Pre-load all Suppliers indexed by lower-cased name
+    all_sup_res = await db.execute(select(Supplier))
+    sup_by_name: dict[str, Supplier] = {}
+    for sup in all_sup_res.scalars().all():
+        sup_by_name[sup.name.strip().lower()] = sup
+
     created = updated = 0
     errors: list[str] = []
 
@@ -307,6 +320,7 @@ async def import_mappings_csv(
         norm_row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
         marketplace_sku = norm_row.get("marketplace_sku", "").strip()
         supplier_sku = norm_row.get("supplier_sku", "").strip()
+        supplier_name_col = norm_row.get("supplier_name", "").strip()
         try:
             units = max(1, int(norm_row.get("units") or "1"))
         except ValueError:
@@ -321,12 +335,34 @@ async def import_mappings_csv(
         if not matches:
             errors.append(f"Row {idx} ({marketplace_sku}): supplier_sku '{supplier_sku}' not found in any catalog")
             continue
-        if len(matches) > 1:
-            names = ", ".join(f"{sp.sku} (supplier {sp.supplier_id})" for sp in matches)
-            errors.append(f"Row {idx} ({marketplace_sku}): supplier_sku '{supplier_sku}' is ambiguous — found in multiple suppliers: {names}")
-            continue
 
-        sp = matches[0]
+        if supplier_name_col:
+            # Filter by supplier name when provided
+            named_sup = sup_by_name.get(supplier_name_col.lower())
+            if not named_sup:
+                errors.append(
+                    f"Row {idx} ({marketplace_sku}): supplier_name '{supplier_name_col}' not found. "
+                    f"Known suppliers: {', '.join(sorted(sup_by_name.keys()))}"
+                )
+                continue
+            filtered = [m for m in matches if m.supplier_id == named_sup.id]
+            if not filtered:
+                errors.append(
+                    f"Row {idx} ({marketplace_sku}): supplier_sku '{supplier_sku}' not found in supplier '{supplier_name_col}'"
+                )
+                continue
+            sp = filtered[0]
+        elif len(matches) > 1:
+            names = ", ".join(
+                f"supplier_id={m.supplier_id}" for m in matches
+            )
+            errors.append(
+                f"Row {idx} ({marketplace_sku}): supplier_sku '{supplier_sku}' exists in multiple suppliers ({names}). "
+                f"Add a 'supplier_name' column to specify which one."
+            )
+            continue
+        else:
+            sp = matches[0]
 
         # Find or create Product for this marketplace SKU
         prod_res = await db.execute(

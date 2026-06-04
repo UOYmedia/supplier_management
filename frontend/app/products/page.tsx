@@ -153,8 +153,12 @@ function ImportMappingsModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="text-sm text-gray-600 space-y-1 mb-4">
-          <p>CSV must have columns: <code className="bg-gray-100 px-1 rounded">marketplace_sku</code>, <code className="bg-gray-100 px-1 rounded">supplier_sku</code>, and optionally <code className="bg-gray-100 px-1 rounded">units</code> (default 1).</p>
-          <p>The <code className="bg-gray-100 px-1 rounded">supplier_sku</code> must match an existing catalog item SKU exactly.</p>
+          <p>Required columns: <code className="bg-gray-100 px-1 rounded">marketplace_sku</code>, <code className="bg-gray-100 px-1 rounded">supplier_sku</code></p>
+          <p>Optional columns: <code className="bg-gray-100 px-1 rounded">supplier_name</code>, <code className="bg-gray-100 px-1 rounded">units</code> (default 1)</p>
+          <p className="text-amber-700 bg-amber-50 rounded px-2 py-1 text-xs">
+            Vì các supplier quản lý catalog riêng, cùng một SKU có thể tồn tại ở nhiều supplier.
+            Khi đó, cột <code className="bg-amber-100 px-0.5 rounded">supplier_name</code> là bắt buộc để xác định đúng supplier.
+          </p>
         </div>
 
         <a

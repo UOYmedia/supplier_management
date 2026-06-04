@@ -18,6 +18,7 @@ export default function OrderDetailPage() {
   const [showLabel, setShowLabel] = useState<{ supplierId: number; lineItemIds: number[] } | null>(null);
   const [manualLabel, setManualLabel] = useState<{ supplierId: number; lineItemIds: number[] } | null>(null);
   const [editingLabel, setEditingLabel] = useState<any>(null);
+  const [editingOrderInfo, setEditingOrderInfo] = useState(false);
   const [assigningItem, setAssigningItem] = useState<number | null>(null);
   const [autoOpenedForSupplier, setAutoOpenedForSupplier] = useState<number | null>(null);
 
@@ -57,6 +58,12 @@ export default function OrderDetailPage() {
       qc.invalidateQueries({ queryKey: ["order", oid] });
       qc.invalidateQueries({ queryKey: ["labels", oid] });
     },
+  });
+
+  const updateOrderMut = useMutation({
+    mutationFn: (data: object) => ordersApi.update(oid, data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["order", oid] }); toast.success("Order updated"); setEditingOrderInfo(false); },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
 
   const syncTrackingMut = useMutation({
@@ -171,12 +178,34 @@ export default function OrderDetailPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         <div className="card p-4">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Buyer</h3>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold text-gray-500 uppercase">Buyer</h3>
+            {labels.length === 0 && (
+              <button
+                className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-gray-700"
+                title="Edit buyer & address"
+                onClick={() => setEditingOrderInfo(true)}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           <div className="text-sm font-medium">{order.buyer_name || "—"}</div>
           <div className="text-sm text-gray-500">{order.buyer_email || "—"}</div>
         </div>
         <div className="card p-4">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Shipping Address</h3>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold text-gray-500 uppercase">Shipping Address</h3>
+            {labels.length === 0 && (
+              <button
+                className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-gray-700"
+                title="Edit buyer & address"
+                onClick={() => setEditingOrderInfo(true)}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           {addr.line1 ? (
             <div className="text-sm text-gray-700 space-y-0.5">
               <div>{addr.name}</div>
@@ -402,6 +431,127 @@ export default function OrderDetailPage() {
           }}
         />
       )}
+
+      {editingOrderInfo && (
+        <EditOrderInfoModal
+          order={order}
+          onClose={() => setEditingOrderInfo(false)}
+          onSave={(data) => updateOrderMut.mutate(data)}
+          saving={updateOrderMut.isPending}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditOrderInfoModal({ order, onClose, onSave, saving }: {
+  order: any;
+  onClose: () => void;
+  onSave: (data: object) => void;
+  saving: boolean;
+}) {
+  const addr = order.shipping_address || {};
+  const [buyerName, setBuyerName] = useState(order.buyer_name || "");
+  const [buyerEmail, setBuyerEmail] = useState(order.buyer_email || "");
+  const [addrName, setAddrName] = useState(addr.name || "");
+  const [line1, setLine1] = useState(addr.line1 || "");
+  const [line2, setLine2] = useState(addr.line2 || "");
+  const [city, setCity] = useState(addr.city || "");
+  const [state, setState] = useState(addr.state || "");
+  const [zip, setZip] = useState(addr.zip || "");
+  const [country, setCountry] = useState(addr.country || "");
+  const [phone, setPhone] = useState(addr.phone || "");
+
+  const handleSave = () => {
+    onSave({
+      buyer_name: buyerName.trim() || null,
+      buyer_email: buyerEmail.trim() || null,
+      shipping_address: {
+        name: addrName.trim() || null,
+        line1: line1.trim() || null,
+        line2: line2.trim() || null,
+        city: city.trim() || null,
+        state: state.trim() || null,
+        zip: zip.trim() || null,
+        country: country.trim() || null,
+        phone: phone.trim() || null,
+      },
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="card w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Edit Buyer & Address</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Customer</h3>
+            <div className="space-y-2">
+              <div>
+                <label className="label">Name</label>
+                <input className="input" value={buyerName} onChange={(e) => setBuyerName(e.target.value)} placeholder="Full name" />
+              </div>
+              <div>
+                <label className="label">Email</label>
+                <input className="input" type="email" value={buyerEmail} onChange={(e) => setBuyerEmail(e.target.value)} placeholder="email@example.com" />
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Shipping Address</h3>
+            <div className="space-y-2">
+              <div>
+                <label className="label">Recipient Name</label>
+                <input className="input" value={addrName} onChange={(e) => setAddrName(e.target.value)} placeholder="Name on package" />
+              </div>
+              <div>
+                <label className="label">Address Line 1</label>
+                <input className="input" value={line1} onChange={(e) => setLine1(e.target.value)} placeholder="Street address" />
+              </div>
+              <div>
+                <label className="label">Address Line 2</label>
+                <input className="input" value={line2} onChange={(e) => setLine2(e.target.value)} placeholder="Apt, suite, unit (optional)" />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="label">City</label>
+                  <input className="input" value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" />
+                </div>
+                <div>
+                  <label className="label">State</label>
+                  <input className="input" value={state} onChange={(e) => setState(e.target.value)} placeholder="State" />
+                </div>
+                <div>
+                  <label className="label">ZIP</label>
+                  <input className="input" value={zip} onChange={(e) => setZip(e.target.value)} placeholder="ZIP" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="label">Country</label>
+                  <input className="input" value={country} onChange={(e) => setCountry(e.target.value)} placeholder="US" />
+                </div>
+                <div>
+                  <label className="label">Phone</label>
+                  <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1 555 000 0000" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={saving} onClick={handleSave}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

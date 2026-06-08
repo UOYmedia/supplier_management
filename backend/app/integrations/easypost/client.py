@@ -18,6 +18,19 @@ class EasyPostClient:
     def __init__(self, api_key: str):
         self._auth = (api_key, "")
 
+    @staticmethod
+    def _extract_error(r) -> str:
+        try:
+            body = r.json()
+            err = body.get("error", {})
+            if isinstance(err, dict):
+                return err.get("message") or err.get("code") or r.text
+            if isinstance(err, str) and err:
+                return err
+        except Exception:
+            pass
+        return r.text or f"HTTP {r.status_code}"
+
     async def _post(self, path: str, payload: dict) -> dict:
         try:
             async with httpx.AsyncClient(timeout=30) as http:
@@ -25,11 +38,7 @@ class EasyPostClient:
         except httpx.HTTPError as e:
             raise EasyPostError(503, f"EasyPost unreachable: {e}")
         if not r.is_success:
-            try:
-                detail = r.json().get("error", {}).get("message", r.text)
-            except Exception:
-                detail = r.text or f"HTTP {r.status_code}"
-            raise EasyPostError(r.status_code, detail)
+            raise EasyPostError(r.status_code, self._extract_error(r))
         return r.json()
 
     async def _get(self, path: str, params: dict | None = None) -> dict:
@@ -39,11 +48,7 @@ class EasyPostClient:
         except httpx.HTTPError as e:
             raise EasyPostError(503, f"EasyPost unreachable: {e}")
         if not r.is_success:
-            try:
-                detail = r.json().get("error", {}).get("message", r.text)
-            except Exception:
-                detail = r.text or f"HTTP {r.status_code}"
-            raise EasyPostError(r.status_code, detail)
+            raise EasyPostError(r.status_code, self._extract_error(r))
         return r.json()
 
     async def fetch_label_pdf_b64(self, shipment: dict) -> str | None:

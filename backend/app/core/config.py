@@ -29,13 +29,6 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = "admin"
 
-    SMTP_HOST: str = ""
-    SMTP_PORT: int = 587
-    SMTP_USER: str = ""
-    SMTP_PASSWORD: str = ""
-    SMTP_FROM: str = ""
-    SMTP_FROM_NAME: str = "Supplier Management"
-
 
 @lru_cache
 def get_settings() -> Settings:

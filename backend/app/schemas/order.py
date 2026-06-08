@@ -43,6 +43,7 @@ class OrderLineItemOut(BaseModel):
     supplier_id: int | None
     product_name: str
     sku: str | None
+    asin: str | None = None
     quantity: int
     price: Decimal
     base_cost: Decimal
@@ -51,6 +52,7 @@ class OrderLineItemOut(BaseModel):
     label_id: int | None
     fulfilled_at: datetime | None
     supplier_name: str | None = None
+    mapping_suggestion: dict | None = None
 
 
 class OrderCreate(BaseModel):
@@ -76,6 +78,7 @@ class OrderOut(BaseModel):
     id: int
     marketplace: str
     external_order_id: str | None
+    order_name: str | None = None
     buyer_name: str | None
     buyer_email: str | None
     shipping_address: dict | None
@@ -90,9 +93,17 @@ class OrderOut(BaseModel):
 
 class AssignSupplierBody(BaseModel):
     supplier_id: int
+    supplier_product_id: int
     base_cost: Decimal | None = None
     create_product_supplier: bool = True
     is_preferred: bool = False
+    units: int = 1
+
+
+class MarkShippedBody(BaseModel):
+    tracking_number: str | None = None
+    line_item_ids: list[int] | None = None
+    supplier_id: int | None = None
 
 
 class ShippingLabelCreate(BaseModel):
@@ -107,18 +118,6 @@ class ShippingLabelCreate(BaseModel):
     line_item_ids: list[int] = []
 
 
-class ShippingLabelOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
-    supplier_id: int
-    carrier: str
-    service: str | None
-    tracking_number: str | None
-    label_url: str | None
-    cost: Decimal
-    purchased_at: datetime
-
-
 class ShippingLabelUpdate(BaseModel):
     carrier: str | None = None
     service: str | None = None
@@ -127,7 +126,23 @@ class ShippingLabelUpdate(BaseModel):
     cost: Decimal | None = None
 
 
-class MarkShippedBody(BaseModel):
-    line_item_ids: list[int] = []
-    supplier_id: int | None = None
-    tracking_number: str | None = None
+class ShippingLabelOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    supplier_id: int
+    carrier: str
+    service: str | None
+    tracking_number: str | None
+    label_url: str | None
+    label_data: str | None = None
+    shipment_id: str | None = None
+    cost: Decimal
+    purchased_at: datetime
+    has_label_data: bool = False
+
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):
+        instance = super().model_validate(obj, *args, **kwargs)
+        if hasattr(obj, "label_data"):
+            instance.has_label_data = bool(obj.label_data)
+        return instance

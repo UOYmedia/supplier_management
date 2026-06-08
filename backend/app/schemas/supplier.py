@@ -118,20 +118,13 @@ class InvoicePreviewItem(BaseModel):
 
 
 class InvoicePreviewResponse(BaseModel):
-    supplier_id: int
-    supplier_name: str
     items: list[InvoicePreviewItem]
     total_amount: Decimal
 
 
-class InvoiceFromOrdersItem(BaseModel):
-    order_line_item_id: int
-    description: str
-    quantity: int
-    unit_amount: Decimal
-    total_amount: Decimal
-
-
 class InvoiceFromOrdersCreate(BaseModel):
+    supplier_id: int
+    period_start: datetime
+    period_end: datetime
+    order_line_item_ids: list[int]
     notes: str | None = None
-    items: list[InvoiceFromOrdersItem]

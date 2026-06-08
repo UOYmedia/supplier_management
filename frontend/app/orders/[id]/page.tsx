@@ -18,6 +18,7 @@ export default function OrderDetailPage() {
   const [showLabel, setShowLabel] = useState<{ supplierId: number; lineItemIds: number[] } | null>(null);
   const [manualLabel, setManualLabel] = useState<{ supplierId: number; lineItemIds: number[] } | null>(null);
   const [editingLabel, setEditingLabel] = useState<any>(null);
+  const [editingOrderInfo, setEditingOrderInfo] = useState(false);
   const [assigningItem, setAssigningItem] = useState<number | null>(null);
   const [autoOpenedForSupplier, setAutoOpenedForSupplier] = useState<number | null>(null);
 
@@ -41,6 +42,15 @@ export default function OrderDetailPage() {
     onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
 
+  const quickAssignMut = useMutation({
+    mutationFn: ({ liId, data }: { liId: number; data: object }) => ordersApi.assignSupplier(oid, liId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["order", oid] });
+      toast.success("Auto-assigned from mapping");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Auto-assign failed"),
+  });
+
   const markPrintedMut = useMutation({
     mutationFn: (labelId: number) =>
       ordersApi.markLabelPrinted(oid, labelId),
@@ -48,6 +58,12 @@ export default function OrderDetailPage() {
       qc.invalidateQueries({ queryKey: ["order", oid] });
       qc.invalidateQueries({ queryKey: ["labels", oid] });
     },
+  });
+
+  const updateOrderMut = useMutation({
+    mutationFn: (data: object) => ordersApi.update(oid, data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["order", oid] }); toast.success("Order updated"); setEditingOrderInfo(false); },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
 
   const syncTrackingMut = useMutation({
@@ -162,12 +178,34 @@ export default function OrderDetailPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         <div className="card p-4">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Buyer</h3>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold text-gray-500 uppercase">Buyer</h3>
+            {labels.length === 0 && (
+              <button
+                className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-gray-700"
+                title="Edit buyer & address"
+                onClick={() => setEditingOrderInfo(true)}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           <div className="text-sm font-medium">{order.buyer_name || "—"}</div>
           <div className="text-sm text-gray-500">{order.buyer_email || "—"}</div>
         </div>
         <div className="card p-4">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Shipping Address</h3>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold text-gray-500 uppercase">Shipping Address</h3>
+            {labels.length === 0 && (
+              <button
+                className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-gray-700"
+                title="Edit buyer & address"
+                onClick={() => setEditingOrderInfo(true)}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           {addr.line1 ? (
             <div className="text-sm text-gray-700 space-y-0.5">
               <div>{addr.name}</div>
@@ -286,6 +324,15 @@ export default function OrderDetailPage() {
                       suppliers={suppliers}
                       onUpdate={(data) => updateLIMut.mutate({ liId: li.id, data })}
                       onAssignSupplier={() => setAssigningItem(li.id)}
+                      onQuickAssign={(s) => quickAssignMut.mutate({
+                        liId: li.id,
+                        data: {
+                          supplier_id: s.supplier_id,
+                          supplier_product_id: s.supplier_product_id,
+                          units: s.units,
+                          create_product_supplier: true,
+                        },
+                      })}
                     />
                   ))}
                 </tbody>
@@ -384,6 +431,127 @@ export default function OrderDetailPage() {
           }}
         />
       )}
+
+      {editingOrderInfo && (
+        <EditOrderInfoModal
+          order={order}
+          onClose={() => setEditingOrderInfo(false)}
+          onSave={(data) => updateOrderMut.mutate(data)}
+          saving={updateOrderMut.isPending}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditOrderInfoModal({ order, onClose, onSave, saving }: {
+  order: any;
+  onClose: () => void;
+  onSave: (data: object) => void;
+  saving: boolean;
+}) {
+  const addr = order.shipping_address || {};
+  const [buyerName, setBuyerName] = useState(order.buyer_name || "");
+  const [buyerEmail, setBuyerEmail] = useState(order.buyer_email || "");
+  const [addrName, setAddrName] = useState(addr.name || "");
+  const [line1, setLine1] = useState(addr.line1 || "");
+  const [line2, setLine2] = useState(addr.line2 || "");
+  const [city, setCity] = useState(addr.city || "");
+  const [state, setState] = useState(addr.state || "");
+  const [zip, setZip] = useState(addr.zip || "");
+  const [country, setCountry] = useState(addr.country || "");
+  const [phone, setPhone] = useState(addr.phone || "");
+
+  const handleSave = () => {
+    onSave({
+      buyer_name: buyerName.trim() || null,
+      buyer_email: buyerEmail.trim() || null,
+      shipping_address: {
+        name: addrName.trim() || null,
+        line1: line1.trim() || null,
+        line2: line2.trim() || null,
+        city: city.trim() || null,
+        state: state.trim() || null,
+        zip: zip.trim() || null,
+        country: country.trim() || null,
+        phone: phone.trim() || null,
+      },
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="card w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Edit Buyer & Address</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Customer</h3>
+            <div className="space-y-2">
+              <div>
+                <label className="label">Name</label>
+                <input className="input" value={buyerName} onChange={(e) => setBuyerName(e.target.value)} placeholder="Full name" />
+              </div>
+              <div>
+                <label className="label">Email</label>
+                <input className="input" type="email" value={buyerEmail} onChange={(e) => setBuyerEmail(e.target.value)} placeholder="email@example.com" />
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Shipping Address</h3>
+            <div className="space-y-2">
+              <div>
+                <label className="label">Recipient Name</label>
+                <input className="input" value={addrName} onChange={(e) => setAddrName(e.target.value)} placeholder="Name on package" />
+              </div>
+              <div>
+                <label className="label">Address Line 1</label>
+                <input className="input" value={line1} onChange={(e) => setLine1(e.target.value)} placeholder="Street address" />
+              </div>
+              <div>
+                <label className="label">Address Line 2</label>
+                <input className="input" value={line2} onChange={(e) => setLine2(e.target.value)} placeholder="Apt, suite, unit (optional)" />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="label">City</label>
+                  <input className="input" value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" />
+                </div>
+                <div>
+                  <label className="label">State</label>
+                  <input className="input" value={state} onChange={(e) => setState(e.target.value)} placeholder="State" />
+                </div>
+                <div>
+                  <label className="label">ZIP</label>
+                  <input className="input" value={zip} onChange={(e) => setZip(e.target.value)} placeholder="ZIP" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="label">Country</label>
+                  <input className="input" value={country} onChange={(e) => setCountry(e.target.value)} placeholder="US" />
+                </div>
+                <div>
+                  <label className="label">Phone</label>
+                  <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1 555 000 0000" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={saving} onClick={handleSave}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -600,10 +768,11 @@ function groupBySupplier(items: any[]) {
   }, {} as Record<string, any[]>);
 }
 
-function LineItemRow({ li, onUpdate, onAssignSupplier, suppliers }: {
+function LineItemRow({ li, onUpdate, onAssignSupplier, onQuickAssign, suppliers }: {
   li: any;
   onUpdate: (d: object) => void;
   onAssignSupplier: () => void;
+  onQuickAssign: (suggestion: any) => void;
   suppliers: any[];
 }) {
   const [status, setStatus] = useState(li.fulfill_status);
@@ -611,6 +780,7 @@ function LineItemRow({ li, onUpdate, onAssignSupplier, suppliers }: {
   const [baseCost, setBaseCost] = useState(String(li.base_cost));
 
   const isShipped = status === "shipped" || status === "delivered";
+  const canReassign = !isShipped && !!li.supplier_id;
 
   return (
     <tr>
@@ -639,14 +809,34 @@ function LineItemRow({ li, onUpdate, onAssignSupplier, suppliers }: {
         )}
       </td>
       <td>
-        {!li.supplier_id && (
-          <button
-            onClick={onAssignSupplier}
-            className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium whitespace-nowrap"
-          >
-            <UserPlus className="w-3 h-3" /> Assign
-          </button>
-        )}
+        <div className="flex flex-col gap-1 items-start">
+          {!li.supplier_id && li.mapping_suggestion && (
+            <button
+              onClick={() => onQuickAssign(li.mapping_suggestion)}
+              className="flex items-center gap-1 text-xs text-green-600 hover:text-green-800 font-medium whitespace-nowrap"
+              title={`Quick assign: ${li.mapping_suggestion.supplier_name} → ${li.mapping_suggestion.catalog_name}`}
+            >
+              <CheckCircle2 className="w-3 h-3" />
+              {li.mapping_suggestion.supplier_name}
+            </button>
+          )}
+          {!li.supplier_id && (
+            <button
+              onClick={onAssignSupplier}
+              className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium whitespace-nowrap"
+            >
+              <UserPlus className="w-3 h-3" /> {li.mapping_suggestion ? "Change" : "Assign"}
+            </button>
+          )}
+          {canReassign && (
+            <button
+              onClick={onAssignSupplier}
+              className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-700 whitespace-nowrap"
+            >
+              <Pencil className="w-3 h-3" /> Re-assign
+            </button>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -661,7 +851,8 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   onAssign: (data: object) => void;
   loading: boolean;
 }) {
-  const [supplierId, setSupplierId] = useState("");
+  const isReassign = !!lineItem?.supplier_id;
+  const [supplierId, setSupplierId] = useState(lineItem?.supplier_id ? String(lineItem.supplier_id) : "");
   const [selectedSpId, setSelectedSpId] = useState<number | null>(null);
   const [units, setUnits] = useState("1");
   const [baseCost, setBaseCost] = useState(lineItem ? String(lineItem.base_cost) : "0");
@@ -706,17 +897,15 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   };
 
   const handleSubmit = () => {
-    if (!supplierId) return;
+    if (!supplierId || !selectedSpId) return;
     const payload: any = {
       supplier_id: parseInt(supplierId),
+      supplier_product_id: selectedSpId,
+      units: Math.max(1, parseInt(units) || 1),
       base_cost: parseFloat(baseCost),
       create_product_supplier: createPs,
       is_preferred: isPreferred,
     };
-    if (selectedSpId) {
-      payload.supplier_product_id = selectedSpId;
-      payload.units = Math.max(1, parseInt(units) || 1);
-    }
     onAssign(payload);
   };
 
@@ -724,7 +913,10 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="card w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold">Assign Supplier</h2>
+          <div>
+            <h2 className="font-semibold">{isReassign ? "Re-assign Supplier" : "Assign Supplier"}</h2>
+            {isReassign && <p className="text-xs text-amber-600 mt-0.5">Currently: {lineItem.supplier_name || `Supplier #${lineItem.supplier_id}`}</p>}
+          </div>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
 
@@ -749,7 +941,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
 
           {supplierId && (
             <div>
-              <label className="label">Catalog Item {catalog.length > 0 && <span className="text-gray-400 font-normal">({catalog.length} available)</span>}</label>
+              <label className="label">Catalog Item * {catalog.length > 0 && <span className="text-gray-400 font-normal">({catalog.length} available)</span>}</label>
               {selectedSp ? (
                 <div className="flex items-center justify-between gap-2 p-2 rounded-lg border border-blue-200 bg-blue-50">
                   <div className="min-w-0">
@@ -759,7 +951,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
                   <button className="text-xs text-gray-500 hover:text-red-500" onClick={() => setSelectedSpId(null)}>Change</button>
                 </div>
               ) : catalog.length === 0 ? (
-                <p className="text-xs text-gray-400">Supplier has no catalog items. Enter base cost manually below.</p>
+                <p className="text-xs text-amber-600 font-medium">This supplier has no catalog items. You must create catalog items for this supplier first before assigning.</p>
               ) : (
                 <>
                   <input
@@ -783,7 +975,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
                       </button>
                     ))}
                   </div>
-                  <p className="text-xs text-gray-400 mt-1">Picking a catalog item maps this variant for future orders and creates fulfillment items.</p>
+                  <p className="text-xs text-gray-400 mt-1">Required — select a catalog item to assign this order to the supplier.</p>
                 </>
               )}
             </div>
@@ -831,10 +1023,10 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
           <button
             className="btn-primary flex items-center gap-1.5"
             onClick={handleSubmit}
-            disabled={!supplierId || loading}
+            disabled={!supplierId || !selectedSpId || loading}
           >
             <CheckCircle2 className="w-4 h-4" />
-            {loading ? "Assigning…" : "Assign Supplier"}
+            {loading ? "Assigning…" : isReassign ? "Re-assign Supplier" : "Assign Supplier"}
           </button>
         </div>
       </div>
@@ -850,6 +1042,7 @@ function LabelModal({ orderId, supplierId, lineItemIds, isAmazonOrder, amazonOrd
   isAmazonOrder: boolean;
   amazonOrderId?: string | null;
   onClose: () => void;
+  onSwitchToEasyPost: () => void;
 }) {
   const [provider, setProvider] = useState<"amazon" | "easypost">(isAmazonOrder ? "amazon" : "easypost");
 
@@ -950,13 +1143,7 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
       toast.success("Amazon label purchased — items moved to Pending");
       onClose();
     },
-    onError: (e: any) => {
-      const detail = e.response?.data?.detail;
-      const msg = Array.isArray(detail)
-        ? detail.map((d: any) => d.msg || d.type || JSON.stringify(d)).join("; ")
-        : detail || "Purchase failed";
-      toast.error(msg);
-    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Purchase failed"),
   });
 
   const pf = (k: string) => (e: any) => setParcel((p) => ({ ...p, [k]: e.target.value }));
@@ -1072,7 +1259,7 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
               </div>
             )}
             <div className="flex justify-between gap-2 mt-5">
-              <button className="btn-secondary" onClick={() => setStep("parcel")}>← Back</button>
+              <button className="btn-secondary" onClick={() => setStep("parcel")}>&#8592; Back</button>
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 <button
@@ -1152,31 +1339,20 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
   });
 
   const buyMut = useMutation({
-    mutationFn: () => {
-      if (!shipmentId || !selectedRate) {
-        toast.error("No rate selected — please get rates first");
-        return Promise.reject(new Error("missing rate"));
-      }
-      return easypostApi.buyLabel(orderId, {
+    mutationFn: () =>
+      easypostApi.buyLabel(orderId, {
         supplier_id: supplierId,
         shipment_id: shipmentId,
         rate_id: selectedRate,
         line_item_ids: lineItemIds,
-      });
-    },
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["labels", orderId] });
       qc.invalidateQueries({ queryKey: ["order", orderId] });
       toast.success("Label purchased — items moved to Pending");
       onClose();
     },
-    onError: (e: any) => {
-      const detail = e.response?.data?.detail;
-      const msg = Array.isArray(detail)
-        ? detail.map((d: any) => d.msg || d.type || JSON.stringify(d)).join("; ")
-        : detail || "Purchase failed";
-      toast.error(msg);
-    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Purchase failed"),
   });
 
   const pf = (k: string) => (e: any) => setParcel((p) => ({ ...p, [k]: e.target.value }));
@@ -1301,7 +1477,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
               </div>
             )}
             <div className="flex justify-between gap-2 mt-5">
-              <button className="btn-secondary" onClick={() => setStep("parcel")}>← Back</button>
+              <button className="btn-secondary" onClick={() => setStep("parcel")}>&#8592; Back</button>
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 <button

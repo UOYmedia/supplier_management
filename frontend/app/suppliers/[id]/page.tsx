@@ -1,29 +1,76 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { suppliersApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Pencil, FileText } from "lucide-react";
+import { ArrowLeft, Download, Mail, Package, Pencil, Plus, Printer, Send, Trash2, Truck, Upload, X, Pencil as PencilIcon } from "lucide-react";
 import Link from "next/link";
 import { SupplierModal } from "../supplier-modal";
+import { OrderStatusBadge } from "../../orders/order-status-badge";
 
 export default function SupplierDetailPage() {
   const { id } = useParams<{ id: string }>();
   const sid = parseInt(id);
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"inventory" | "orders" | "invoices">("inventory");
+  const [tab, setTab] = useState<"catalog" | "orders" | "invoices">("catalog");
   const [showEdit, setShowEdit] = useState(false);
+  const [showAddProduct, setShowAddProduct] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<any>(null);
+  const [catalogSearch, setCatalogSearch] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // Orders tab state
+  const [orderStatusFilter, setOrderStatusFilter] = useState("all");
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Set<number>>(new Set());
+  const [showSendOrders, setShowSendOrders] = useState(false);
 
   const { data: supplier } = useQuery({ queryKey: ["supplier", sid], queryFn: () => suppliersApi.get(sid) });
-  const { data: inventory = [] } = useQuery({ queryKey: ["supplier-inventory", sid], queryFn: () => suppliersApi.inventory(sid) });
-  const { data: orders = [] } = useQuery({ queryKey: ["supplier-orders", sid], queryFn: () => suppliersApi.orders(sid) });
+  const { data: catalog = [] } = useQuery({ queryKey: ["supplier-catalog", sid], queryFn: () => suppliersApi.listProducts(sid) });
+  const { data: orders = [] } = useQuery({
+    queryKey: ["supplier-orders", sid, orderStatusFilter],
+    queryFn: () => suppliersApi.orders(sid, orderStatusFilter !== "all" ? { status: orderStatusFilter } : undefined),
+  });
   const { data: invoices = [] } = useQuery({ queryKey: ["supplier-invoices", sid], queryFn: () => suppliersApi.invoices(sid) });
 
-  const updateStockMut = useMutation({
-    mutationFn: ({ psId, stock }: { psId: number; stock: number }) => suppliersApi.updateStock(sid, psId, stock),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["supplier-inventory", sid] }); toast.success("Stock updated"); },
+  const q = catalogSearch.trim().toLowerCase();
+  const filteredCatalog = q
+    ? catalog.filter((i: any) =>
+        (i.name || "").toLowerCase().includes(q) || (i.sku || "").toLowerCase().includes(q)
+      )
+    : catalog;
+
+  const deleteMut = useMutation({
+    mutationFn: (spId: number) => suppliersApi.deleteProduct(sid, spId),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["supplier-catalog", sid] }); toast.success("Deleted"); },
+    onError: () => toast.error("Cannot delete — product is used by components"),
   });
+
+  const importMut = useMutation({
+    mutationFn: (file: File) => suppliersApi.importCatalog(sid, file),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: ["supplier-catalog", sid] });
+      const msg = `Imported: ${data.created} created, ${data.updated} updated`;
+      if (data.errors?.length) {
+        toast.error(`${msg}. ${data.errors.length} row(s) skipped — see console.`);
+        console.warn("Catalog import errors:", data.errors);
+      } else {
+        toast.success(msg);
+      }
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Import failed"),
+  });
+
+  const exportMut = useMutation({
+    mutationFn: () => {
+      const safe = (supplier?.name || "supplier").replace(/[^a-z0-9]+/gi, "_").slice(0, 40);
+      const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      return suppliersApi.exportCatalog(sid, `${safe}_catalog_${date}.csv`);
+    },
+    onError: () => toast.error("Export failed"),
+  });
+
+  const [showGenerateInvoice, setShowGenerateInvoice] = useState(false);
 
   const markPaidMut = useMutation({
     mutationFn: (invId: number) => suppliersApi.updateInvoice(sid, invId, { status: "paid", paid_at: new Date().toISOString() }),
@@ -49,110 +96,827 @@ export default function SupplierDetailPage() {
       </div>
 
       <div className="flex gap-1 mb-5 border-b border-gray-200">
-        {(["inventory", "orders", "invoices"] as const).map((t) => (
+        {(["catalog", "orders", "invoices"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm font-medium capitalize border-b-2 transition-colors ${tab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
-            {t}
+            {t === "catalog" ? `Catalog (${catalog.length})` : t}
           </button>
         ))}
       </div>
 
-      {tab === "inventory" && (
-        <div className="card table-wrapper">
-          <table>
-            <thead><tr><th>Product ID</th><th>Supplier SKU</th><th>Cost</th><th>Stock</th><th>Lead (days)</th><th>Update Stock</th></tr></thead>
-            <tbody>
-              {inventory.length === 0 ? (
-                <tr><td colSpan={6} className="text-center py-6 text-gray-400">No inventory.</td></tr>
-              ) : inventory.map((item: any) => (
-                <StockRow key={item.product_supplier_id} item={item} onUpdate={(psId, stock) => updateStockMut.mutate({ psId, stock })} />
-              ))}
-            </tbody>
-          </table>
+      {tab === "catalog" && (
+        <div>
+          <div className="flex justify-between items-center mb-3 gap-3">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <input
+                className="input w-64"
+                placeholder="Search by name or SKU…"
+                value={catalogSearch}
+                onChange={(e) => setCatalogSearch(e.target.value)}
+              />
+              <button
+                className="text-xs text-blue-600 hover:underline whitespace-nowrap"
+                onClick={() => suppliersApi.downloadCatalogTemplate(sid)}
+              >
+                Download CSV template
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) importMut.mutate(file);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                className="btn-secondary"
+                onClick={() => fileRef.current?.click()}
+                disabled={importMut.isPending}
+              >
+                <Upload className="w-4 h-4" /> {importMut.isPending ? "Importing…" : "Import CSV"}
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => exportMut.mutate()}
+                disabled={exportMut.isPending || catalog.length === 0}
+              >
+                <Download className="w-4 h-4" /> Export CSV
+              </button>
+              <button className="btn-primary" onClick={() => setShowAddProduct(true)}>
+                <Plus className="w-4 h-4" /> Add Product
+              </button>
+            </div>
+          </div>
+          <div className="card table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>SKU</th>
+                  <th>Unit Price</th>
+                  <th>Stock</th>
+                  <th>Pending</th>
+                  <th>Sold</th>
+                  <th>Total</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {catalog.length === 0 ? (
+                  <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products in catalog. Add one to start tracking inventory.</td></tr>
+                ) : filteredCatalog.length === 0 ? (
+                  <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products match "{catalogSearch}".</td></tr>
+                ) : filteredCatalog.map((item: any) => (
+                  <CatalogRow
+                    key={item.id}
+                    item={item}
+                    onEdit={() => setEditingProduct(item)}
+                    onDelete={() => {
+                      if (confirm(`Delete "${item.name}"?`)) deleteMut.mutate(item.id);
+                    }}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {catalog.length > 0 && (
+            <div className="mt-3 flex gap-6 text-sm text-gray-500 px-1">
+              <span>Total products: <strong className="text-gray-800">{catalog.length}</strong></span>
+              <span>Total stock: <strong className="text-gray-800">{catalog.reduce((s: number, i: any) => s + i.stock_quantity, 0)}</strong></span>
+              <span>Total pending: <strong className="text-yellow-700">{catalog.reduce((s: number, i: any) => s + i.pending_quantity, 0)}</strong></span>
+              <span>Total sold: <strong className="text-green-700">{catalog.reduce((s: number, i: any) => s + i.sold_quantity, 0)}</strong></span>
+            </div>
+          )}
         </div>
       )}
 
-      {tab === "orders" && (
-        <div className="card table-wrapper">
-          <table>
-            <thead><tr><th>Order ID</th><th>Product</th><th>SKU</th><th>Qty</th><th>Price</th><th>Cost</th><th>Status</th><th>Tracking</th></tr></thead>
-            <tbody>
-              {orders.length === 0 ? (
-                <tr><td colSpan={8} className="text-center py-6 text-gray-400">No orders.</td></tr>
-              ) : orders.map((o: any) => (
-                <tr key={o.id}>
-                  <td><Link href={`/orders/${o.order_id}`} className="text-blue-600 hover:underline">#{o.order_id}</Link></td>
-                  <td>{o.product_name}</td>
-                  <td className="font-mono text-xs">{o.sku || "—"}</td>
-                  <td>{o.quantity}</td>
-                  <td>${o.price.toFixed(2)}</td>
-                  <td>${o.base_cost.toFixed(2)}</td>
-                  <td><FulfillBadge status={o.fulfill_status} /></td>
-                  <td className="text-xs text-gray-500">{o.tracking_number || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {tab === "orders" && (() => {
+        const grouped = groupOrders(orders);
+        const allGroupOrderIds = grouped.map((g: any) => g.order_id);
+        const allSelected = allGroupOrderIds.length > 0 && allGroupOrderIds.every((id: number) => selectedOrderIds.has(id));
+        const someSelected = selectedOrderIds.size > 0;
+
+        const toggleOrder = (orderId: number) => {
+          setSelectedOrderIds((prev) => {
+            const next = new Set(prev);
+            next.has(orderId) ? next.delete(orderId) : next.add(orderId);
+            return next;
+          });
+        };
+
+        const toggleAll = () => {
+          if (allSelected) {
+            setSelectedOrderIds(new Set());
+          } else {
+            setSelectedOrderIds(new Set(allGroupOrderIds));
+          }
+        };
+
+        return (
+          <div>
+            {/* Toolbar */}
+            <div className="flex items-center gap-3 mb-3 flex-wrap">
+              <label className="flex items-center gap-1.5 cursor-pointer select-none text-sm text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                  onChange={toggleAll}
+                  disabled={grouped.length === 0}
+                />
+                Select all
+              </label>
+
+              <select
+                className="input text-sm py-1 w-40"
+                value={orderStatusFilter}
+                onChange={(e) => { setOrderStatusFilter(e.target.value); setSelectedOrderIds(new Set()); }}
+              >
+                <option value="all">All statuses</option>
+                <option value="unfulfilled">Unfulfilled</option>
+                <option value="pending">Pending</option>
+                <option value="drop_off">Drop off</option>
+                <option value="shipped">Shipped</option>
+              </select>
+
+              {someSelected && (
+                <span className="text-xs text-gray-500">{selectedOrderIds.size} order(s) selected</span>
+              )}
+
+              <button
+                className="btn-primary ml-auto"
+                disabled={!someSelected}
+                onClick={() => setShowSendOrders(true)}
+              >
+                <Send className="w-4 h-4" /> Send Orders ({selectedOrderIds.size})
+              </button>
+            </div>
+
+            {grouped.length === 0 ? (
+              <div className="card p-6 text-center text-gray-400">No orders.</div>
+            ) : grouped.map((group: any) => {
+              const unshipped = group.items.filter((i: any) => i.fulfill_status === "unfulfilled" || i.fulfill_status === "pending" || i.fulfill_status === "drop_off");
+              const needsLabel = Array.from(new Map(unshipped.filter((i: any) => !i.label_id).map((i: any) => [i.order_line_item_id, i])).values());
+              const labeled = group.items.filter((i: any) => i.label_id);
+              const uniqueLIs = Array.from(new Map(group.items.map((i: any) => [i.order_line_item_id, i])).values());
+              const subtotal = uniqueLIs.reduce((s: number, i: any) => s + i.base_cost * i.li_quantity, 0);
+              const isSelected = selectedOrderIds.has(group.order_id);
+
+              return (
+                <div key={group.order_id} className={`card mb-4 transition-shadow ${isSelected ? "ring-2 ring-blue-400" : ""}`}>
+                  <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleOrder(group.order_id)}
+                        className="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Link href={`/orders/${group.order_id}`} className="text-blue-600 hover:underline font-semibold text-sm">
+                            Order #{group.order_id}
+                          </Link>
+                          {group.external_order_id && <span className="font-mono text-xs text-gray-400">{group.external_order_id}</span>}
+                          {group.marketplace && <span className="text-xs text-gray-400 capitalize">{group.marketplace}</span>}
+                          {group.order_status && <OrderStatusBadge status={group.order_status} />}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {group.items.length} item(s) · {group.buyer_name || "—"} · {group.ordered_at ? new Date(group.ordered_at).toLocaleDateString() : "—"} · subtotal ${subtotal.toFixed(2)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      {labeled.length > 0 && (
+                        <button
+                          type="button"
+                          className="btn-primary text-xs py-1 whitespace-nowrap"
+                          onClick={() => printAndMarkShipped(group.order_id, labeled, qc, sid)}
+                        >
+                          <Printer className="w-3 h-3" /> Print Label
+                        </button>
+                      )}
+                      {needsLabel.length > 0 && (
+                        <Link
+                          href={`/orders/${group.order_id}?buy_label_supplier=${sid}`}
+                          className="btn-secondary text-xs py-1 whitespace-nowrap"
+                        >
+                          <Truck className="w-3 h-3" /> Buy Label ({needsLabel.length})
+                        </Link>
+                      )}
+                    </div>
+                  </div>
+                  <div className="table-wrapper">
+                    <table>
+                      <thead><tr><th className="w-12"></th><th>Catalog Product</th><th>Supplier SKU</th><th>Qty</th><th>Cost</th><th>Status</th><th>Tracking</th></tr></thead>
+                      <tbody>
+                        {group.items.map((o: any) => (
+                          <tr key={o.item_key}>
+                            <td>
+                              {o.image_url ? (
+                                <img src={o.image_url} alt={o.product_name} className="w-9 h-9 rounded object-cover border border-gray-200" />
+                              ) : (
+                                <div className="w-9 h-9 rounded bg-gray-100 flex items-center justify-center border border-gray-200">
+                                  <Package className="w-4 h-4 text-gray-300" />
+                                </div>
+                              )}
+                            </td>
+                            <td>{o.product_name}</td>
+                            <td className="font-mono text-xs">{o.sku || "—"}</td>
+                            <td>{o.quantity}</td>
+                            <td>${o.base_cost.toFixed(2)}</td>
+                            <td><FulfillBadge status={o.fulfill_status} /></td>
+                            <td className="text-xs text-gray-500">{o.tracking_number || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {tab === "invoices" && (
-        <div className="card table-wrapper">
-          <table>
-            <thead><tr><th>Invoice #</th><th>Period</th><th>Total</th><th>Status</th><th>Paid At</th><th></th></tr></thead>
-            <tbody>
-              {invoices.length === 0 ? (
-                <tr><td colSpan={6} className="text-center py-6 text-gray-400">No invoices.</td></tr>
-              ) : invoices.map((inv: any) => (
-                <tr key={inv.id}>
-                  <td className="font-mono text-xs">{inv.invoice_number}</td>
-                  <td className="text-xs text-gray-500">
-                    {new Date(inv.period_start).toLocaleDateString()} — {new Date(inv.period_end).toLocaleDateString()}
-                  </td>
-                  <td>${parseFloat(inv.total_amount).toFixed(2)}</td>
-                  <td><InvoiceBadge status={inv.status} /></td>
-                  <td className="text-xs text-gray-500">{inv.paid_at ? new Date(inv.paid_at).toLocaleDateString() : "—"}</td>
-                  <td>
-                    {inv.status !== "paid" && (
-                      <button className="text-xs text-blue-600 hover:underline" onClick={() => markPaidMut.mutate(inv.id)}>Mark Paid</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div>
+          <div className="flex justify-end mb-3">
+            <button className="btn-primary" onClick={() => setShowGenerateInvoice(true)}>
+              <Plus className="w-4 h-4" /> Generate Invoice from Orders
+            </button>
+          </div>
+          <div className="card table-wrapper">
+            <table>
+              <thead><tr><th>Invoice #</th><th>Period</th><th>Total</th><th>Status</th><th>Paid At</th><th></th></tr></thead>
+              <tbody>
+                {invoices.length === 0 ? (
+                  <tr><td colSpan={6} className="text-center py-6 text-gray-400">No invoices.</td></tr>
+                ) : invoices.map((inv: any) => (
+                  <tr key={inv.id}>
+                    <td className="font-mono text-xs">{inv.invoice_number}</td>
+                    <td className="text-xs text-gray-500">
+                      {new Date(inv.period_start).toLocaleDateString()} — {new Date(inv.period_end).toLocaleDateString()}
+                    </td>
+                    <td>${parseFloat(inv.total_amount).toFixed(2)}</td>
+                    <td><InvoiceBadge status={inv.status} /></td>
+                    <td className="text-xs text-gray-500">{inv.paid_at ? new Date(inv.paid_at).toLocaleDateString() : "—"}</td>
+                    <td>
+                      {inv.status !== "paid" && (
+                        <button className="text-xs text-blue-600 hover:underline" onClick={() => markPaidMut.mutate(inv.id)}>Mark Paid</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
+      )}
+
+      {showGenerateInvoice && (
+        <GenerateInvoiceModal
+          supplierId={sid}
+          onClose={() => setShowGenerateInvoice(false)}
+          onCreated={() => {
+            qc.invalidateQueries({ queryKey: ["supplier-invoices", sid] });
+            setShowGenerateInvoice(false);
+          }}
+        />
+      )}
+
+      {showSendOrders && supplier && (
+        <SendOrdersModal
+          supplierId={sid}
+          supplier={supplier}
+          selectedOrderIds={Array.from(selectedOrderIds)}
+          onClose={() => setShowSendOrders(false)}
+          onDone={() => {
+            setShowSendOrders(false);
+            setSelectedOrderIds(new Set());
+            qc.invalidateQueries({ queryKey: ["supplier-invoices", sid] });
+          }}
+        />
       )}
 
       {showEdit && <SupplierModal supplier={supplier} onClose={() => setShowEdit(false)} />}
+
+      {showAddProduct && (
+        <ProductFormModal
+          supplierId={sid}
+          onClose={() => setShowAddProduct(false)}
+        />
+      )}
+
+      {editingProduct && (
+        <ProductFormModal
+          supplierId={sid}
+          existing={editingProduct}
+          onClose={() => setEditingProduct(null)}
+        />
+      )}
     </div>
   );
 }
 
-function StockRow({ item, onUpdate }: { item: any; onUpdate: (psId: number, stock: number) => void }) {
-  const [val, setVal] = useState(String(item.stock));
+function printAndMarkShipped(orderId: number, labeledItems: any[], qc: any, supplierId: number) {
+  const byLabel = new Map<number, any[]>();
+  for (const li of labeledItems) {
+    if (!li.label_id) continue;
+    const arr = byLabel.get(li.label_id) || [];
+    arr.push(li);
+    byLabel.set(li.label_id, arr);
+  }
+  for (const [labelId, items] of byLabel) {
+    const sample = items[0];
+    const url = sample.label_has_pdf
+      ? `/api/v1/orders/${orderId}/labels/${labelId}/download`
+      : sample.label_url;
+    if (url) {
+      const win = window.open(url, "_blank");
+      if (win) {
+        try {
+          win.focus();
+          setTimeout(() => { try { win.print(); } catch {} }, 800);
+        } catch {}
+      }
+    }
+    fetch(`/api/v1/orders/${orderId}/labels/${labelId}/mark-printed`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+        "Content-Type": "application/json",
+      },
+    })
+      .then((r) => {
+        if (r.ok) {
+          toast.success("Marked as shipped");
+          qc.invalidateQueries({ queryKey: ["supplier-orders", supplierId] });
+          qc.invalidateQueries({ queryKey: ["order", orderId] });
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+function groupOrders(items: any[]) {
+  const map = new Map<number, any>();
+  for (const li of items) {
+    let g = map.get(li.order_id);
+    if (!g) {
+      g = {
+        order_id: li.order_id,
+        external_order_id: li.external_order_id,
+        marketplace: li.marketplace,
+        ordered_at: li.ordered_at,
+        buyer_name: li.buyer_name,
+        order_status: li.order_status,
+        items: [],
+      };
+      map.set(li.order_id, g);
+    }
+    g.items.push(li);
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    const da = a.ordered_at ? Date.parse(a.ordered_at) : 0;
+    const db = b.ordered_at ? Date.parse(b.ordered_at) : 0;
+    return db - da;
+  });
+}
+
+function CatalogRow({ item, onEdit, onDelete }: { item: any; onEdit: () => void; onDelete: () => void }) {
+  const total = item.stock_quantity + item.pending_quantity + item.sold_quantity;
   return (
     <tr>
-      <td>{item.product_id}</td>
-      <td className="font-mono text-xs">{item.supplier_sku || "—"}</td>
-      <td>${item.cost.toFixed(2)}</td>
+      <td className="font-medium">{item.name}</td>
+      <td className="font-mono text-xs text-gray-500">{item.sku}</td>
+      <td>${parseFloat(item.unit_price).toFixed(2)}</td>
       <td>
-        <input type="number" className="input w-20 text-center" value={val} onChange={(e) => setVal(e.target.value)} />
+        <span className={item.stock_quantity === 0 ? "text-red-500 font-medium" : "text-gray-800"}>
+          {item.stock_quantity}
+        </span>
       </td>
-      <td>{item.lead_time_days}</td>
       <td>
-        <button className="text-xs text-blue-600 hover:underline" onClick={() => onUpdate(item.product_supplier_id, parseInt(val))}>Save</button>
+        <span className={item.pending_quantity > 0 ? "text-yellow-700 font-medium" : "text-gray-500"}>
+          {item.pending_quantity}
+        </span>
+      </td>
+      <td>
+        <span className={item.sold_quantity > 0 ? "text-green-700 font-medium" : "text-gray-500"}>
+          {item.sold_quantity}
+        </span>
+      </td>
+      <td className="text-gray-600">{total}</td>
+      <td>
+        <div className="flex items-center gap-2">
+          <button className="p-1 hover:text-blue-600 text-gray-400" onClick={onEdit}><PencilIcon className="w-4 h-4" /></button>
+          <button className="p-1 hover:text-red-500 text-gray-400" onClick={onDelete}><Trash2 className="w-4 h-4" /></button>
+        </div>
       </td>
     </tr>
   );
 }
 
+function ProductFormModal({
+  supplierId,
+  existing,
+  onClose,
+}: {
+  supplierId: number;
+  existing?: any;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const isEdit = !!existing;
+  const [form, setForm] = useState({
+    name: existing?.name ?? "",
+    sku: existing?.sku ?? "",
+    unit_price: existing?.unit_price ? String(existing.unit_price) : "0",
+    stock_quantity: existing?.stock_quantity != null ? String(existing.stock_quantity) : "0",
+    weight: existing?.weight != null ? String(existing.weight) : "",
+    length: existing?.length != null ? String(existing.length) : "",
+    width: existing?.width != null ? String(existing.width) : "",
+    height: existing?.height != null ? String(existing.height) : "",
+  });
+
+  const mut = useMutation({
+    mutationFn: (data: object) =>
+      isEdit
+        ? suppliersApi.updateProduct(supplierId, existing.id, data)
+        : suppliersApi.createProduct(supplierId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supplier-catalog", supplierId] });
+      toast.success(isEdit ? "Updated" : "Product added");
+      onClose();
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
+  });
+
+  const f = (k: string) => (e: any) => setForm((p) => ({ ...p, [k]: e.target.value }));
+
+  const handleSubmit = () => {
+    const parseOpt = (s: string) => (s === "" ? null : parseFloat(s) || 0);
+    mut.mutate({
+      name: form.name,
+      sku: form.sku,
+      unit_price: parseFloat(form.unit_price) || 0,
+      stock_quantity: parseInt(form.stock_quantity) || 0,
+      weight: parseOpt(form.weight),
+      length: parseOpt(form.length),
+      width: parseOpt(form.width),
+      height: parseOpt(form.height),
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-md p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">{isEdit ? "Edit Product" : "Add Product to Catalog"}</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="label">Product Name *</label>
+            <input className="input" value={form.name} onChange={f("name")} placeholder="e.g. Red T-Shirt Size M" />
+          </div>
+          <div>
+            <label className="label">SKU *</label>
+            <input className="input" value={form.sku} onChange={f("sku")} placeholder="Supplier's internal SKU" />
+          </div>
+          <div>
+            <label className="label">Unit Price ($)</label>
+            <input className="input" type="number" step="0.01" min="0" value={form.unit_price} onChange={f("unit_price")} />
+          </div>
+          <div>
+            <label className="label">Stock Quantity</label>
+            <input className="input" type="number" min="0" value={form.stock_quantity} onChange={f("stock_quantity")} />
+          </div>
+          <div className="border-t border-gray-100 pt-3 mt-1">
+            <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Per-unit shipping dimensions</div>
+            <p className="text-xs text-gray-400 mb-2">Used to auto-estimate parcel size when buying labels. Leave blank if unknown.</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="label">Weight (oz)</label>
+                <input className="input" type="number" step="0.01" min="0" value={form.weight} onChange={f("weight")} />
+              </div>
+              <div>
+                <label className="label">Length (in)</label>
+                <input className="input" type="number" step="0.1" min="0" value={form.length} onChange={f("length")} />
+              </div>
+              <div>
+                <label className="label">Width (in)</label>
+                <input className="input" type="number" step="0.1" min="0" value={form.width} onChange={f("width")} />
+              </div>
+              <div>
+                <label className="label">Height (in)</label>
+                <input className="input" type="number" step="0.1" min="0" value={form.height} onChange={f("height")} />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button
+            className="btn-primary"
+            disabled={!form.name || !form.sku || mut.isPending}
+            onClick={handleSubmit}
+          >
+            {isEdit ? "Save" : "Add"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GenerateInvoiceModal({ supplierId, onClose, onCreated }: { supplierId: number; onClose: () => void; onCreated: () => void }) {
+  const [items, setItems] = useState<any[]>([]);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const createMut = useMutation({
+    mutationFn: (data: object) => suppliersApi.createInvoiceFromOrders(supplierId, data),
+    onSuccess: () => { toast.success("Invoice created"); onCreated(); },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Error creating invoice"),
+  });
+
+  useEffect(() => {
+    suppliersApi.previewInvoiceFromOrders(supplierId)
+      .then((data: any) => {
+        const rows = (data.items || []).map((it: any) => ({
+          ...it,
+          unit_cost_input: parseFloat(it.unit_cost).toFixed(2),
+        }));
+        setItems(rows);
+        setSelected(new Set(rows.map((r: any) => r.order_line_item_id)));
+        setLoading(false);
+      })
+      .catch(() => { setError("Failed to load fulfilled orders."); setLoading(false); });
+  }, [supplierId]);
+
+  const updateCost = (id: number, val: string) => {
+    setItems((prev) => prev.map((it) => it.order_line_item_id === id ? { ...it, unit_cost_input: val } : it));
+  };
+
+  const toggleItem = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const selectedItems = items.filter((it) => selected.has(it.order_line_item_id));
+  const total = selectedItems.reduce((s, it) => {
+    const unit = parseFloat(it.unit_cost_input) || 0;
+    return s + unit * it.quantity;
+  }, 0);
+
+  const handleSubmit = () => {
+    if (selectedItems.length === 0) { toast.error("Select at least one item"); return; }
+    createMut.mutate({
+      notes: notes || undefined,
+      items: selectedItems.map((it) => {
+        const unit = parseFloat(it.unit_cost_input) || 0;
+        return {
+          order_line_item_id: it.order_line_item_id,
+          description: `${it.product_name}${it.sku ? ` (${it.sku})` : ""} — Order #${it.order_id}`,
+          quantity: it.quantity,
+          unit_amount: unit,
+          total_amount: +(unit * it.quantity).toFixed(2),
+        };
+      }),
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-3xl p-6 max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Generate Invoice from Fulfilled Orders</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        {loading && <p className="text-gray-400 text-sm py-8 text-center">Loading…</p>}
+        {error && <p className="text-red-500 text-sm py-4">{error}</p>}
+
+        {!loading && !error && (
+          <>
+            {items.length === 0 ? (
+              <p className="text-gray-400 text-sm py-8 text-center">No uninvoiced fulfilled orders for this supplier.</p>
+            ) : (
+              <div className="overflow-auto flex-1 mb-4">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-left text-xs text-gray-500">
+                      <th className="pb-2 pr-2 w-8">
+                        <input
+                          type="checkbox"
+                          checked={selected.size === items.length}
+                          onChange={() => setSelected(selected.size === items.length ? new Set() : new Set(items.map((i) => i.order_line_item_id)))}
+                        />
+                      </th>
+                      <th className="pb-2 pr-2">Order</th>
+                      <th className="pb-2 pr-2">Product</th>
+                      <th className="pb-2 pr-2">SKU</th>
+                      <th className="pb-2 pr-2 text-center">Qty</th>
+                      <th className="pb-2 pr-2 text-right">Unit Cost ($)</th>
+                      <th className="pb-2 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((it) => {
+                      const unit = parseFloat(it.unit_cost_input) || 0;
+                      const rowTotal = unit * it.quantity;
+                      return (
+                        <tr key={it.order_line_item_id} className="border-b border-gray-100 last:border-0">
+                          <td className="py-2 pr-2">
+                            <input type="checkbox" checked={selected.has(it.order_line_item_id)} onChange={() => toggleItem(it.order_line_item_id)} />
+                          </td>
+                          <td className="py-2 pr-2 text-xs text-gray-500">
+                            #{it.order_id}{it.order_external_id ? <><br /><span className="font-mono">{it.order_external_id}</span></> : ""}
+                          </td>
+                          <td className="py-2 pr-2">{it.product_name}</td>
+                          <td className="py-2 pr-2 font-mono text-xs text-gray-500">{it.sku || "—"}</td>
+                          <td className="py-2 pr-2 text-center">{it.quantity}</td>
+                          <td className="py-2 pr-2">
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              className="input text-right w-24"
+                              value={it.unit_cost_input}
+                              onChange={(e) => updateCost(it.order_line_item_id, e.target.value)}
+                            />
+                          </td>
+                          <td className="py-2 text-right font-medium">${rowTotal.toFixed(2)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="border-t border-gray-200 pt-4 space-y-3">
+              <div>
+                <label className="label">Notes (optional)</label>
+                <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. June 2026 fulfillment" />
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-500">{selectedItems.length} item(s) selected</span>
+                <span className="font-semibold">Total: ${total.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button className="btn-secondary" onClick={onClose}>Cancel</button>
+                <button
+                  className="btn-primary"
+                  disabled={selectedItems.length === 0 || createMut.isPending}
+                  onClick={handleSubmit}
+                >
+                  {createMut.isPending ? "Creating…" : "Create Invoice"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FulfillBadge({ status }: { status: string }) {
-  const map: Record<string, string> = { unfulfilled: "badge-gray", pending: "badge-yellow", shipped: "badge-blue", delivered: "badge-green", cancelled: "badge-red" };
+  const map: Record<string, string> = { unfulfilled: "badge-gray", pending: "badge-yellow", drop_off: "badge-blue", shipped: "badge-green", delivered: "badge-green", cancelled: "badge-red" };
   return <span className={map[status] || "badge-gray"}>{status}</span>;
 }
 
 function InvoiceBadge({ status }: { status: string }) {
   const map: Record<string, string> = { pending: "badge-yellow", sent: "badge-blue", paid: "badge-green", overdue: "badge-red" };
   return <span className={map[status] || "badge-gray"}>{status}</span>;
+}
+
+function SendOrdersModal({
+  supplierId,
+  supplier,
+  selectedOrderIds,
+  onClose,
+  onDone,
+}: {
+  supplierId: number;
+  supplier: any;
+  selectedOrderIds: number[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [notes, setNotes] = useState("");
+  const [result, setResult] = useState<any>(null);
+
+  const mut = useMutation({
+    mutationFn: (data: object) => suppliersApi.sendOrders(supplierId, data),
+    onSuccess: (data) => {
+      setResult(data);
+      if (data.email_sent) {
+        toast.success(`Sent! Invoice ${data.invoice_number} emailed to ${supplier.email}`);
+      } else {
+        toast(`Invoice ${data.invoice_number} created.${data.email_error ? " Email failed — see result." : ""}`, { icon: "⚠️" });
+      }
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to send orders"),
+  });
+
+  const handleSend = () => {
+    mut.mutate({ order_ids: selectedOrderIds, notes: notes.trim() || undefined });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="card w-full max-w-lg p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Send Orders to Supplier</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        {!result ? (
+          <>
+            <div className="space-y-3 mb-5">
+              <div className="rounded-lg bg-blue-50 border border-blue-200 p-3 text-sm space-y-1">
+                <div><span className="font-medium">Supplier:</span> {supplier.name}</div>
+                <div className="flex items-center gap-1.5">
+                  <Mail className="w-3.5 h-3.5 text-blue-500" />
+                  {supplier.email ? (
+                    <span className="text-blue-700">{supplier.email}</span>
+                  ) : (
+                    <span className="text-amber-600 font-medium">No email — invoice will be created but not sent</span>
+                  )}
+                </div>
+                <div><span className="font-medium">Orders selected:</span> {selectedOrderIds.length}</div>
+              </div>
+
+              <div className="text-sm text-gray-600 space-y-1">
+                <p>This will:</p>
+                <ul className="list-disc list-inside text-gray-500 space-y-0.5 text-xs ml-1">
+                  <li>Merge all shipping labels for the selected orders into one PDF</li>
+                  <li>Create an invoice/purchase order document</li>
+                  <li>Email both attachments to the supplier</li>
+                </ul>
+              </div>
+
+              <div>
+                <label className="label">Notes (optional)</label>
+                <input
+                  className="input"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="e.g. Please ship by Friday"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary" onClick={onClose}>Cancel</button>
+              <button
+                className="btn-primary"
+                disabled={mut.isPending}
+                onClick={handleSend}
+              >
+                {mut.isPending ? "Sending…" : <><Send className="w-4 h-4" /> Send Orders</>}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="rounded-lg bg-gray-50 border border-gray-200 p-4 space-y-2 text-sm mb-4">
+              <div className="flex items-center gap-2">
+                {result.email_sent ? (
+                  <span className="text-green-600 font-medium">✓ Email sent to {supplier.email}</span>
+                ) : (
+                  <span className="text-amber-600 font-medium">⚠ Email not sent</span>
+                )}
+              </div>
+              {result.email_error && (
+                <p className="text-red-600 text-xs font-mono bg-red-50 rounded px-2 py-1">{result.email_error}</p>
+              )}
+              <div className="text-gray-600 space-y-0.5">
+                <div>Invoice: <span className="font-mono font-medium">{result.invoice_number}</span></div>
+                <div>Orders: {result.orders_count} · Items: {result.items_count} · Total: <strong>${result.total_amount.toFixed(2)}</strong></div>
+                {result.label_pages > 0 && <div>Label pages included: {result.label_pages}</div>}
+                {result.label_pages === 0 && <div className="text-amber-600 text-xs">No shipping labels found for these orders</div>}
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button className="btn-primary" onClick={onDone}>Done</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }

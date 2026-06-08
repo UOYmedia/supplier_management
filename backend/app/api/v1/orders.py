@@ -229,7 +229,7 @@ async def assign_supplier_to_line_item(
         if product:
             li.product_id = product.id
 
-    # Upsert ProductComponent (product → supplier catalog item) — reusable for all
+    # Upsert ProductComponent (product -> supplier catalog item) - reusable for all
     # future orders that carry the same product_id.
     if li.product_id:
         comp_res = await db.execute(
@@ -274,7 +274,7 @@ async def assign_supplier_to_line_item(
                 ps_link.is_preferred = True
 
     # Always create/upsert OrderFulfillmentItem for this specific line item,
-    # whether or not product_id exists — this is what the supplier sees immediately.
+    # whether or not product_id exists - this is what the supplier sees immediately.
     fi_res = await db.execute(
         select(OrderFulfillmentItem).where(
             OrderFulfillmentItem.order_line_item_id == li.id,
@@ -336,7 +336,7 @@ async def create_label(order_id: int, body: ShippingLabelCreate, db: AsyncSessio
             li.label_id = label.id
             if body.tracking_number:
                 li.tracking_number = body.tracking_number
-            # Label bought → move to pending (awaiting shipment by supplier)
+            # Label bought -> move to pending (awaiting shipment by supplier)
             if li.fulfill_status == FulfillStatus.unfulfilled:
                 li.fulfill_status = FulfillStatus.pending
 
@@ -468,7 +468,26 @@ async def upload_label_pdf(
     if raw[:5] != b"%PDF-":
         raise HTTPException(400, "Please upload a PDF file")
 
-    label.label_data = base64.b64encode(raw).decode()
+    # Apply catalog overlay so the PDF shows item name + qty at the bottom
+    order = await _get_or_404(order_id, db)
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.order_id == order_id,
+            OrderLineItem.label_id == label_id,
+        )
+    )
+    lis = li_res.scalars().all()
+    pack_items: list = []
+    for li in lis:
+        pack_items.extend(await _catalog_items_for_line_item(li, db))
+    from app.integrations.pdf_labels import LabelEntry, build_batch_label_pdf
+    entry = LabelEntry(
+        order_label=(order.external_order_id or f"Order #{order_id}"),
+        ship_to=None, tracking_number=label.tracking_number,
+        label_pdf=raw, items=pack_items,
+    )
+    pdf = build_batch_label_pdf([entry])
+    label.label_data = base64.b64encode(pdf).decode()
     await db.commit()
     await db.refresh(label)
     return label
@@ -582,6 +601,159 @@ async def regenerate_label(
     return label
 
 
+@router.get("/{order_id}/labels/{label_id}/download")
+async def download_label(order_id: int, label_id: int, db: AsyncSession = Depends(get_db)):
+    """Serve the stored label PDF for printing."""
+    from fastapi.responses import Response, RedirectResponse
+    label = await db.get(ShippingLabel, label_id)
+    if not label:
+        raise HTTPException(404, "Label not found")
+    if label.label_data:
+        pdf = base64.b64decode(label.label_data)
+        return Response(content=pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f"inline; filename=label_{label_id}.pdf"})
+    if label.label_url:
+        return RedirectResponse(url=label.label_url)
+    raise HTTPException(404, "No PDF data for this label")
+
+
+@router.post("/{order_id}/labels/manual", response_model=ShippingLabelOut, status_code=201)
+async def create_manual_label(
+    order_id: int,
+    carrier: str = File(...),
+    service: str = File(""),
+    tracking_number: str = File(""),
+    cost: str = File("0"),
+    supplier_id: int = File(...),
+    line_item_ids: list[int] = File(...),
+    label_file: UploadFile | None = File(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a label record from manually-provided data, optionally with a PDF file.
+    The catalog overlay (item name + qty) is applied to any uploaded PDF."""
+    from fastapi import Form
+    order = await _get_or_404(order_id, db)
+    label = ShippingLabel(
+        supplier_id=supplier_id,
+        carrier=carrier,
+        service=service or None,
+        tracking_number=tracking_number or None,
+        cost=float(cost) if cost else 0,
+    )
+    db.add(label)
+    await db.flush()
+
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.order_id == order_id,
+            OrderLineItem.id.in_(line_item_ids),
+        )
+    )
+    for li in li_res.scalars().all():
+        li.label_id = label.id
+        if tracking_number:
+            li.tracking_number = tracking_number
+
+    if label_file:
+        raw = await label_file.read()
+        if raw:
+            pack_items: list = []
+            for li_id in line_item_ids:
+                li = await db.get(OrderLineItem, li_id)
+                if li:
+                    pack_items.extend(await _catalog_items_for_line_item(li, db))
+            from app.integrations.pdf_labels import LabelEntry, build_label_from_png, build_batch_label_pdf
+            if raw[:5] == b"%PDF-":
+                from app.integrations.pdf_labels import LABEL_W, LABEL_H
+                entry = LabelEntry(
+                    order_label=(order.external_order_id or f"Order #{order_id}"),
+                    ship_to=None, tracking_number=tracking_number or None,
+                    label_pdf=raw, items=pack_items,
+                )
+                pdf = build_batch_label_pdf([entry])
+            else:
+                entry = LabelEntry(
+                    order_label=(order.external_order_id or f"Order #{order_id}"),
+                    ship_to=None, tracking_number=tracking_number or None,
+                    label_pdf=None, items=pack_items,
+                )
+                pdf = build_label_from_png(raw, entry)
+            label.label_data = base64.b64encode(pdf).decode()
+
+    await db.commit()
+    await db.refresh(label)
+    return label
+
+
+@router.patch("/{order_id}/labels/{label_id}/with-file", response_model=ShippingLabelOut)
+async def update_label_with_file(
+    order_id: int,
+    label_id: int,
+    carrier: str = File(""),
+    service: str = File(""),
+    tracking_number: str = File(""),
+    cost: str = File(""),
+    label_file: UploadFile | None = File(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a label record and optionally replace the PDF, applying catalog overlay."""
+    order = await _get_or_404(order_id, db)
+    label = await db.get(ShippingLabel, label_id)
+    if not label:
+        raise HTTPException(404, "Label not found")
+
+    if carrier:
+        label.carrier = carrier
+    if service:
+        label.service = service or None
+    if tracking_number:
+        label.tracking_number = tracking_number or None
+        li_res = await db.execute(
+            select(OrderLineItem).where(
+                OrderLineItem.order_id == order_id,
+                OrderLineItem.label_id == label_id,
+            )
+        )
+        for li in li_res.scalars().all():
+            li.tracking_number = tracking_number
+    if cost:
+        label.cost = float(cost)
+
+    if label_file:
+        raw = await label_file.read()
+        if raw:
+            li_res = await db.execute(
+                select(OrderLineItem).where(
+                    OrderLineItem.order_id == order_id,
+                    OrderLineItem.label_id == label_id,
+                )
+            )
+            lis = li_res.scalars().all()
+            pack_items: list = []
+            for li in lis:
+                pack_items.extend(await _catalog_items_for_line_item(li, db))
+            from app.integrations.pdf_labels import LabelEntry, build_label_from_png, build_batch_label_pdf
+            if raw[:5] == b"%PDF-":
+                entry = LabelEntry(
+                    order_label=(order.external_order_id or f"Order #{order_id}"),
+                    ship_to=None, tracking_number=label.tracking_number,
+                    label_pdf=raw, items=pack_items,
+                )
+                pdf = build_batch_label_pdf([entry])
+            else:
+                entry = LabelEntry(
+                    order_label=(order.external_order_id or f"Order #{order_id}"),
+                    ship_to=None, tracking_number=label.tracking_number,
+                    label_pdf=None, items=pack_items,
+                )
+                pdf = build_label_from_png(raw, entry)
+            label.label_data = base64.b64encode(pdf).decode()
+
+    await db.commit()
+    await db.refresh(label)
+    return label
+
+
 async def _push_shopify_tracking(order: Order, db: AsyncSession) -> dict:
     """Internal helper — push tracking back to Shopify via FulfillmentOrders API.
     Returns dict with synced/errors/tracking_number. Caller decides whether to
@@ -631,7 +803,7 @@ async def _push_shopify_tracking(order: Order, db: AsyncSession) -> dict:
     except Exception as e:
         err_str = str(e)
         if "403" in err_str:
-            return {"error": "Shopify connection needs re-authorization: the current token is missing fulfillment scopes (read_fulfillments / write_fulfillments). Go to Marketplace → your Shopify connection → Re-authorize to fix this."}
+            return {"error": "Shopify connection needs re-authorization: the current token is missing fulfillment scopes (read_fulfillments / write_fulfillments). Go to Marketplace -> your Shopify connection -> Re-authorize to fix this."}
         return {"error": f"get_fulfillment_orders failed: {e}"}
 
     open_fos = [fo for fo in fulfillment_orders if fo.get("status") in ("open", "in_progress")]
@@ -826,7 +998,7 @@ async def _get_or_404(order_id: int, db: AsyncSession) -> Order:
 
 
 async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> list:
-    """Resolve catalog name+qty for a line item via OFI → ProductComponent → SupplierProduct."""
+    """Resolve catalog name+qty for a line item via OFI -> ProductComponent -> SupplierProduct."""
     from app.integrations.pdf_labels import PackItem
     # Prefer OFI (already resolved and persisted)
     fi_res = await db.execute(

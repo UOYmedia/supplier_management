@@ -121,6 +121,11 @@ export const ordersApi = {
   labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,
   parcelEstimate: (orderId: number, params?: object) => api.get(`/orders/${orderId}/parcel-estimate`, { params }).then((r) => r.data),
   syncTracking: (orderId: number) => api.post(`/orders/${orderId}/sync-tracking`).then((r) => r.data),
+  markShipped: (orderId: number, data: object) => api.post(`/orders/${orderId}/mark-shipped`, data).then((r) => r.data),
+  createManualLabel: (orderId: number, formData: FormData) =>
+    api.post(`/orders/${orderId}/labels/manual`, formData, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data),
+  updateLabelWithFile: (orderId: number, labelId: number, formData: FormData) =>
+    api.patch(`/orders/${orderId}/labels/${labelId}/with-file`, formData, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data),
 };
 
 // Marketplace
@@ -169,12 +174,12 @@ export const reportsApi = {
 
 // EasyPost (admin)
 export const easypostApi = {
-  getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/rates`, data).then((r) => r.data),
-  buyLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/buy`, data).then((r) => r.data),
+  getRates: (data: { order_id: number; [key: string]: any }) => api.post(`/orders/${data.order_id}/easypost/rates`, data).then((r) => r.data),
+  buyLabel: (data: { order_id: number; [key: string]: any }) => api.post(`/orders/${data.order_id}/easypost/buy`, data).then((r) => r.data),
 };
 
 // Amazon Shipping (admin)
 export const amazonShippingApi = {
-  getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon-shipping/rates`, data).then((r) => r.data),
-  buyLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon-shipping/buy`, data).then((r) => r.data),
+  getRates: (data: { order_id: number; [key: string]: any }) => api.post(`/orders/${data.order_id}/amazon-shipping/rates`, data).then((r) => r.data),
+  createLabel: (data: { order_id: number; [key: string]: any }) => api.post(`/orders/${data.order_id}/amazon-shipping/buy`, data).then((r) => r.data),
 };

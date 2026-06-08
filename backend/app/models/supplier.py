@@ -39,7 +39,6 @@ class Supplier(Base):
     order_line_items: Mapped[list["OrderLineItem"]] = relationship(back_populates="supplier")
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="supplier", cascade="all, delete-orphan")
     shipping_labels: Mapped[list["ShippingLabel"]] = relationship(back_populates="supplier")
-    supplier_products: Mapped[list["SupplierProduct"]] = relationship(back_populates="supplier", cascade="all, delete-orphan")
 
 
 class SupplierProduct(Base):
@@ -96,25 +95,3 @@ class InvoiceLineItem(Base):
 
     invoice: Mapped["Invoice"] = relationship(back_populates="line_items")
     order_line_item: Mapped["OrderLineItem | None"] = relationship()
-
-
-class SupplierProduct(Base):
-    """Supplier's product catalog item."""
-    __tablename__ = "supplier_products"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id", ondelete="CASCADE"))
-    name: Mapped[str] = mapped_column(String(255))
-    short_name: Mapped[str | None] = mapped_column(String(100))
-    sku: Mapped[str] = mapped_column(String(100))
-    unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
-    stock_quantity: Mapped[int] = mapped_column(Integer, default=0)
-    weight: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))   # oz
-    length: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))   # in
-    width: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
-    height: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
-    image_url: Mapped[str | None] = mapped_column(String(500))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-
-    supplier: Mapped["Supplier"] = relationship(back_populates="supplier_products")

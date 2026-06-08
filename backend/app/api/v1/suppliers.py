@@ -420,10 +420,20 @@ async def delete_supplier_product(supplier_id: int, sp_id: int, db: AsyncSession
 async def supplier_orders(
     supplier_id: int,
     skip: int = 0,
-    limit: int = 50,
+    limit: int = 200,
+    status: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     await _get_or_404(supplier_id, db)
+    q = select(OrderLineItem).where(OrderLineItem.supplier_id == supplier_id)
+    if status == "unfulfilled":
+        q = q.where(OrderLineItem.fulfill_status == FulfillStatus.unfulfilled)
+    elif status == "pending":
+        q = q.where(OrderLineItem.fulfill_status == FulfillStatus.pending)
+    elif status == "drop_off":
+        q = q.where(OrderLineItem.fulfill_status == FulfillStatus.drop_off)
+    elif status == "shipped":
+        q = q.where(OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]))
     result = await db.execute(
         select(OrderLineItem)
         .where(OrderLineItem.supplier_id == supplier_id)
@@ -704,6 +714,260 @@ async def update_invoice(supplier_id: int, invoice_id: int, body: InvoiceUpdate,
     inv_dict = {c.name: getattr(invoice, c.name) for c in invoice.__table__.columns}
     inv_dict["line_items"] = [{c.name: getattr(li, c.name) for c in li.__table__.columns} for li in li_list]
     return InvoiceOut(**inv_dict)
+
+
+class SendOrdersRequest(BaseModel):
+    order_ids: list[int]
+    notes: str | None = None
+
+
+@router.post("/{supplier_id}/send-orders")
+async def send_orders_to_supplier(
+    supplier_id: int,
+    body: SendOrdersRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Build merged label PDF + invoice PDF and email them to the supplier."""
+    import httpx
+    from collections import defaultdict
+    from app.integrations.pdf_labels import (
+        PackItem, LabelEntry, decode_label_data, concat_label_pdfs,
+        build_label_from_png, build_batch_label_pdf,
+    )
+    from app.api.v1.orders import _catalog_items_for_line_item
+    from app.integrations.invoice_pdf import build_send_order_pdf
+    from app.integrations.email_service import send_email
+
+    supplier = await _get_or_404(supplier_id, db)
+    if not body.order_ids:
+        raise HTTPException(400, "No orders selected")
+
+    ord_res = await db.execute(select(Order).where(Order.id.in_(body.order_ids)))
+    orders_map: dict[int, Order] = {o.id: o for o in ord_res.scalars().all()}
+
+    li_res = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.supplier_id == supplier_id,
+            OrderLineItem.order_id.in_(body.order_ids),
+        ).order_by(OrderLineItem.order_id)
+    )
+    all_lis = list(li_res.scalars().all())
+    if not all_lis:
+        raise HTTPException(404, "No line items found for the selected orders and this supplier")
+
+    order_invoice_rows: list[dict] = []
+
+    for li in all_lis:
+        order = orders_map.get(li.order_id)
+        ext_id = order.external_order_id if order else None
+
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )
+        fis = list(fi_res.scalars().all())
+        if fis:
+            for fi in fis:
+                sp = await db.get(SupplierProduct, fi.supplier_product_id)
+                if sp:
+                    order_invoice_rows.append({
+                        "order_id": li.order_id,
+                        "external_order_id": ext_id,
+                        "catalog_name": sp.name,
+                        "sku": sp.sku,
+                        "quantity": fi.quantity,
+                        "unit_cost": float(sp.unit_price),
+                        "total": float(sp.unit_price) * fi.quantity,
+                    })
+            continue
+
+        if li.product_id:
+            comp_res = await db.execute(
+                select(ProductComponent)
+                .join(SupplierProduct, ProductComponent.supplier_product_id == SupplierProduct.id)
+                .where(
+                    ProductComponent.product_id == li.product_id,
+                    SupplierProduct.supplier_id == supplier_id,
+                )
+            )
+            comps = list(comp_res.scalars().all())
+            if comps:
+                for comp in comps:
+                    sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                    if sp:
+                        qty = comp.quantity * li.quantity
+                        order_invoice_rows.append({
+                            "order_id": li.order_id,
+                            "external_order_id": ext_id,
+                            "catalog_name": sp.name,
+                            "sku": sp.sku,
+                            "quantity": qty,
+                            "unit_cost": float(sp.unit_price),
+                            "total": float(sp.unit_price) * qty,
+                        })
+                continue
+
+        order_invoice_rows.append({
+            "order_id": li.order_id,
+            "external_order_id": ext_id,
+            "catalog_name": li.product_name or "Unknown",
+            "sku": li.sku,
+            "quantity": li.quantity,
+            "unit_cost": float(li.base_cost),
+            "total": float(li.base_cost) * li.quantity,
+        })
+
+    total_amount = round(sum(r["total"] for r in order_invoice_rows), 2)
+
+    labeled_by_label: dict[int, list] = defaultdict(list)
+    for li in all_lis:
+        if li.label_id:
+            labeled_by_label[li.label_id].append(li)
+
+    pdf_pages: list[bytes] = []
+    for label_id, label_lis in labeled_by_label.items():
+        label = await db.get(ShippingLabel, label_id)
+        if not label or label.supplier_id != supplier_id:
+            continue
+
+        if label.label_data:
+            pdf = decode_label_data(label.label_data)
+            if pdf:
+                pdf_pages.append(pdf)
+                continue
+
+        if not label.label_url:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=20) as http:
+                r = await http.get(label.label_url)
+            if not r.is_success:
+                continue
+            content = r.content
+        except Exception:
+            continue
+
+        pack_items: list[PackItem] = []
+        for li in label_lis:
+            pack_items.extend(await _catalog_items_for_line_item(li, db))
+
+        order = orders_map.get(label_lis[0].order_id)
+        entry = LabelEntry(
+            order_label=(order.external_order_id if order else f"Label #{label_id}"),
+            ship_to=None,
+            tracking_number=label.tracking_number,
+            label_pdf=None,
+            items=pack_items,
+        )
+        try:
+            if content[:8] == b"\x89PNG\r\n\x1a\n":
+                pdf_pages.append(build_label_from_png(content, entry))
+            else:
+                entry.label_pdf = content
+                pdf_pages.append(build_batch_label_pdf([entry]))
+        except Exception:
+            continue
+
+    label_pdf_bytes = concat_label_pdfs(pdf_pages) if pdf_pages else None
+    label_pages = len(pdf_pages)
+
+    now = datetime.now(timezone.utc)
+    inv_number = f"INV-{supplier_id}-{now.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+    invoice = Invoice(
+        supplier_id=supplier_id,
+        invoice_number=inv_number,
+        period_start=now,
+        period_end=now,
+        total_amount=Decimal(str(total_amount)),
+        status="sent",
+        notes=body.notes or f"Send-orders for {len(body.order_ids)} order(s)",
+    )
+    db.add(invoice)
+    await db.flush()
+
+    for row in order_invoice_rows:
+        desc = f"Order #{row['order_id']}"
+        if row.get("external_order_id"):
+            desc += f" ({row['external_order_id']})"
+        desc += f": {row['catalog_name']}"
+        if row.get("sku"):
+            desc += f" [{row['sku']}]"
+        db.add(InvoiceLineItem(
+            invoice_id=invoice.id,
+            order_line_item_id=None,
+            description=desc,
+            quantity=row["quantity"],
+            unit_amount=Decimal(str(round(row["unit_cost"], 2))),
+            total_amount=Decimal(str(round(row["total"], 2))),
+        ))
+
+    await db.commit()
+
+    invoice_pdf_bytes = build_send_order_pdf(
+        invoice_number=inv_number,
+        invoice_date=now,
+        supplier_name=supplier.name,
+        supplier_email=supplier.email,
+        order_items=order_invoice_rows,
+        total_amount=total_amount,
+        notes=body.notes,
+    )
+
+    email_sent = False
+    email_error = None
+    if supplier.email:
+        try:
+            order_count = len(body.order_ids)
+            safe_inv = inv_number.replace("/", "-")
+            attachments: list[tuple[str, bytes, str]] = [
+                (f"{safe_inv}.pdf", invoice_pdf_bytes, "application/pdf"),
+            ]
+            if label_pdf_bytes:
+                attachments.append(("shipping_labels.pdf", label_pdf_bytes, "application/pdf"))
+
+            order_rows_html = "".join(
+                f"<tr><td>#{oid}</td><td>{orders_map[oid].external_order_id or ''}</td></tr>"
+                for oid in body.order_ids
+                if oid in orders_map
+            )
+            html_body = f"""
+<html><body style="font-family:Arial,sans-serif;color:#1f2937">
+<h2 style="color:#1e40af">New Purchase Order — {inv_number}</h2>
+<p>Dear {supplier.name},</p>
+<p>Please find attached a new purchase order for <strong>{order_count}</strong> order(s)
+totalling <strong>${total_amount:.2f}</strong>.</p>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:14px">
+  <tr style="background:#1e40af;color:white"><th>Order #</th><th>Reference</th></tr>
+  {order_rows_html}
+</table>
+{'<p>Shipping labels are attached — please print and affix them to each package.</p>' if label_pdf_bytes else ''}
+<p>Please fulfill and ship the items at your earliest convenience.</p>
+{f'<p><em>Note: {body.notes}</em></p>' if body.notes else ''}
+<p>Thank you,<br>Supplier Management</p>
+</body></html>"""
+
+            await send_email(
+                to=supplier.email,
+                subject=f"New Orders — {inv_number} ({order_count} order{'s' if order_count != 1 else ''})",
+                html_body=html_body,
+                attachments=attachments,
+            )
+            email_sent = True
+        except Exception as exc:
+            email_error = str(exc)
+    else:
+        email_error = "Supplier has no email address — invoice created but not sent."
+
+    return {
+        "success": True,
+        "invoice_id": invoice.id,
+        "invoice_number": inv_number,
+        "orders_count": len(body.order_ids),
+        "items_count": len(order_invoice_rows),
+        "total_amount": total_amount,
+        "label_pages": label_pages,
+        "email_sent": email_sent,
+        "email_error": email_error,
+    }
 
 
 async def _get_or_404(supplier_id: int, db: AsyncSession) -> Supplier:

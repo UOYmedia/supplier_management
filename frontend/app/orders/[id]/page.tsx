@@ -1042,6 +1042,7 @@ function LabelModal({ orderId, supplierId, lineItemIds, isAmazonOrder, amazonOrd
   isAmazonOrder: boolean;
   amazonOrderId?: string | null;
   onClose: () => void;
+  onSwitchToEasyPost: () => void;
 }) {
   const [provider, setProvider] = useState<"amazon" | "easypost">(isAmazonOrder ? "amazon" : "easypost");
 

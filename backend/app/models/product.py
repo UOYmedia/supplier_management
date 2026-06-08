@@ -59,3 +59,16 @@ class ProductSupplier(Base):
 
     product: Mapped["Product"] = relationship(back_populates="product_suppliers")
     supplier: Mapped["Supplier"] = relationship(back_populates="product_suppliers")
+
+
+class ProductComponent(Base):
+    """Bill-of-materials: one product is made up of N supplier catalog items."""
+    __tablename__ = "product_components"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    supplier_product_id: Mapped[int] = mapped_column(ForeignKey("supplier_products.id", ondelete="CASCADE"))
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+
+    product: Mapped["Product"] = relationship()
+    supplier_product: Mapped["SupplierProduct"] = relationship()

@@ -70,6 +70,7 @@ export const suppliersApi = {
   updateStock: (id: number, psId: number, stock: number) =>
     api.patch(`/suppliers/${id}/inventory/${psId}`, null, { params: { stock } }).then((r) => r.data),
   orders: (id: number, params?: object) => api.get(`/suppliers/${id}/orders`, { params }).then((r) => r.data),
+  sendOrders: (id: number, data: object) => api.post(`/suppliers/${id}/send-orders`, data).then((r) => r.data),
   invoices: (id: number) => api.get(`/suppliers/${id}/invoices`).then((r) => r.data),
   createInvoice: (id: number, data: object) => api.post(`/suppliers/${id}/invoices`, data).then((r) => r.data),
   updateInvoice: (id: number, invId: number, data: object) => api.patch(`/suppliers/${id}/invoices/${invId}`, data).then((r) => r.data),

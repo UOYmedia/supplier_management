@@ -105,8 +105,9 @@ export default function OrderDetailPage() {
 
   const isAmazonOrder = order.marketplace === "amazon";
   const supplierGroups: Record<number, { name: string; items: any[] }> = {};
+  const unassignedItems: any[] = [];
   for (const li of order.line_items || []) {
-    if (!li.supplier_id) continue;
+    if (!li.supplier_id) { unassignedItems.push(li); continue; }
     if (!supplierGroups[li.supplier_id]) supplierGroups[li.supplier_id] = { name: li.supplier_name || `Supplier ${li.supplier_id}`, items: [] };
     supplierGroups[li.supplier_id].items.push(li);
   }
@@ -143,6 +144,51 @@ export default function OrderDetailPage() {
           </div>
         )}
       </div>
+
+      {/* Unassigned Items */}
+      {unassignedItems.length > 0 && (
+        <div className="card p-4 space-y-3 border-amber-200">
+          <div className="flex items-center gap-2">
+            <UserPlus className="w-4 h-4 text-amber-500" />
+            <h3 className="font-medium text-amber-700">Unassigned Items</h3>
+            <span className="text-xs text-amber-500">({unassignedItems.length} item{unassignedItems.length > 1 ? "s" : ""} need a supplier)</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-gray-500 border-b">
+                  <th className="pb-2">Product</th>
+                  <th className="pb-2">SKU</th>
+                  <th className="pb-2">Qty</th>
+                  <th className="pb-2">Cost</th>
+                  <th className="pb-2">Status</th>
+                  <th className="pb-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {unassignedItems.map((li: any) => (
+                  <LineItemRow
+                    key={li.id}
+                    li={li}
+                    suppliers={suppliers}
+                    onUpdate={(data) => updateLIMut.mutate({ liId: li.id, data })}
+                    onAssignSupplier={() => setAssigningItem(li.id)}
+                    onQuickAssign={(s) => quickAssignMut.mutate({
+                      liId: li.id,
+                      data: {
+                        supplier_id: s.supplier_id,
+                        supplier_product_id: s.supplier_product_id,
+                        units: s.units,
+                        create_product_supplier: true,
+                      },
+                    })}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Supplier Groups */}
       {Object.entries(supplierGroups).map(([sid, group]) => {

@@ -49,6 +49,14 @@ export const productsApi = {
   addComponent: (id: number, data: object) => api.post(`/products/${id}/components`, data).then((r) => r.data),
   updateComponent: (id: number, compId: number, data: object) => api.patch(`/products/${id}/components/${compId}`, data).then((r) => r.data),
   removeComponent: (id: number, compId: number) => api.delete(`/products/${id}/components/${compId}`),
+  listMappings: (params?: object) => api.get("/products/mappings", { params }).then((r) => r.data),
+  createMapping: (data: object) => api.post("/products/mappings", data).then((r) => r.data),
+  deleteMapping: (componentId: number) => api.delete(`/products/mappings/${componentId}`),
+  importMappingsCsv: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return api.post("/products/mappings/import/csv", fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+  },
 };
 
 // Suppliers
@@ -62,6 +70,7 @@ export const suppliersApi = {
   updateStock: (id: number, psId: number, stock: number) =>
     api.patch(`/suppliers/${id}/inventory/${psId}`, null, { params: { stock } }).then((r) => r.data),
   orders: (id: number, params?: object) => api.get(`/suppliers/${id}/orders`, { params }).then((r) => r.data),
+  sendOrders: (id: number, data: object) => api.post(`/suppliers/${id}/send-orders`, data).then((r) => r.data),
   invoices: (id: number) => api.get(`/suppliers/${id}/invoices`).then((r) => r.data),
   createInvoice: (id: number, data: object) => api.post(`/suppliers/${id}/invoices`, data).then((r) => r.data),
   updateInvoice: (id: number, invId: number, data: object) => api.patch(`/suppliers/${id}/invoices/${invId}`, data).then((r) => r.data),
@@ -121,7 +130,14 @@ export const marketplaceApi = {
   updateConnection: (id: number, data: object) => api.patch(`/marketplace/connections/${id}`, data).then((r) => r.data),
   deleteConnection: (id: number) => api.delete(`/marketplace/connections/${id}`),
   testConnection: (id: number) => api.post(`/marketplace/connections/${id}/test`).then((r) => r.data),
-  syncOrders: (id: number) => api.post(`/marketplace/connections/${id}/sync-orders`).then((r) => r.data),
+  debugConnection: (id: number) => api.post(`/marketplace/connections/${id}/debug`).then((r) => r.data),
+  syncOrders: (id: number, opts?: { forceRefresh?: boolean; createdAfter?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.forceRefresh) params.set("force_refresh", "true");
+    if (opts?.createdAfter) params.set("created_after", opts.createdAfter);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return api.post(`/marketplace/connections/${id}/sync-orders${qs}`).then((r) => r.data);
+  },
   syncProducts: (id: number) => api.post(`/marketplace/connections/${id}/sync-products`).then((r) => r.data),
   listListings: (params?: object) => api.get("/marketplace/listings", { params }).then((r) => r.data),
   createListing: (data: object) => api.post("/marketplace/listings", data).then((r) => r.data),

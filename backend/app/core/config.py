@@ -20,7 +20,21 @@ class Settings(BaseSettings):
     SHOPIFY_API_SECRET: str = ""
     BACKEND_URL: str = "http://localhost:8000"
 
+    EASYPOST_API_KEY: str = ""
+    EASYPOST_CARRIER_ACCOUNT_IDS: str = ""
+    EASYPOST_WEBHOOK_SECRET: str = ""
+
     FRONTEND_URL: str = "http://localhost:3000"
+
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD: str = "admin"
+
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""
+    SMTP_FROM_NAME: str = "Supplier Management"
 
 
 @lru_cache

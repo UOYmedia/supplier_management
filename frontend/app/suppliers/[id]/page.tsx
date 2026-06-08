@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { suppliersApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { ArrowLeft, Download, Package, Pencil, Plus, Printer, Trash2, Truck, Upload, X, Pencil as PencilIcon } from "lucide-react";
+import { ArrowLeft, Download, Mail, Package, Pencil, Plus, Printer, Send, Trash2, Truck, Upload, X, Pencil as PencilIcon } from "lucide-react";
 import Link from "next/link";
 import { SupplierModal } from "../supplier-modal";
 import { OrderStatusBadge } from "../../orders/order-status-badge";
@@ -63,6 +63,9 @@ export default function SupplierDetailPage() {
   });
 
   const [showGenerateInvoice, setShowGenerateInvoice] = useState(false);
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Set<number>>(new Set());
+  const [orderStatusFilter, setOrderStatusFilter] = useState("all");
+  const [showSendOrders, setShowSendOrders] = useState(false);
 
   const markPaidMut = useMutation({
     mutationFn: (invId: number) => suppliersApi.updateInvoice(sid, invId, { status: "paid", paid_at: new Date().toISOString() }),
@@ -176,7 +179,6 @@ export default function SupplierDetailPage() {
               </tbody>
             </table>
           </div>
-          {/* Summary row */}
           {catalog.length > 0 && (
             <div className="mt-3 flex gap-6 text-sm text-gray-500 px-1">
               <span>Total products: <strong className="text-gray-800">{catalog.length}</strong></span>
@@ -185,84 +187,6 @@ export default function SupplierDetailPage() {
               <span>Total sold: <strong className="text-green-700">{catalog.reduce((s: number, i: any) => s + i.sold_quantity, 0)}</strong></span>
             </div>
           )}
-        </div>
-      )}
-
-      {tab === "orders" && (
-        <div>
-          {orders.length === 0 ? (
-            <div className="card p-6 text-center text-gray-400">No orders.</div>
-          ) : groupOrders(orders).map((group: any) => {
-            const unshipped = group.items.filter((i: any) => i.fulfill_status === "unfulfilled" || i.fulfill_status === "pending" || i.fulfill_status === "drop_off");
-            const needsLabel = Array.from(new Map(unshipped.filter((i: any) => !i.label_id).map((i: any) => [i.order_line_item_id, i])).values());
-            const labeled = group.items.filter((i: any) => i.label_id);
-            const uniqueLIs = Array.from(new Map(group.items.map((i: any) => [i.order_line_item_id, i])).values());
-            const subtotal = uniqueLIs.reduce((s: number, i: any) => s + i.base_cost * i.li_quantity, 0);
-            return (
-              <div key={group.order_id} className="card mb-4">
-                <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Link href={`/orders/${group.order_id}`} className="text-blue-600 hover:underline font-semibold text-sm">
-                        Order #{group.order_id}
-                      </Link>
-                      {group.external_order_id && <span className="font-mono text-xs text-gray-400">{group.external_order_id}</span>}
-                      {group.marketplace && <span className="text-xs text-gray-400 capitalize">{group.marketplace}</span>}
-                      {group.order_status && <OrderStatusBadge status={group.order_status} />}
-                    </div>
-                    <div className="text-xs text-gray-500 mt-0.5">
-                      {group.items.length} item(s) · {group.buyer_name || "—"} · {group.ordered_at ? new Date(group.ordered_at).toLocaleDateString() : "—"} · supplier subtotal ${subtotal.toFixed(2)}
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    {labeled.length > 0 && (
-                      <button
-                        type="button"
-                        className="btn-primary text-xs py-1 whitespace-nowrap"
-                        onClick={() => printAndMarkShipped(group.order_id, labeled, qc, sid)}
-                      >
-                        <Printer className="w-3 h-3" /> Print Label
-                      </button>
-                    )}
-                    {needsLabel.length > 0 && (
-                      <Link
-                        href={`/orders/${group.order_id}?buy_label_supplier=${sid}`}
-                        className="btn-secondary text-xs py-1 whitespace-nowrap"
-                      >
-                        <Truck className="w-3 h-3" /> Buy Label ({needsLabel.length})
-                      </Link>
-                    )}
-                  </div>
-                </div>
-                <div className="table-wrapper">
-                  <table>
-                    <thead><tr><th className="w-12"></th><th>Catalog Product</th><th>Supplier SKU</th><th>Qty</th><th>Cost</th><th>Status</th><th>Tracking</th></tr></thead>
-                    <tbody>
-                      {group.items.map((o: any) => (
-                        <tr key={o.item_key}>
-                          <td>
-                            {o.image_url ? (
-                              <img src={o.image_url} alt={o.product_name} className="w-9 h-9 rounded object-cover border border-gray-200" />
-                            ) : (
-                              <div className="w-9 h-9 rounded bg-gray-100 flex items-center justify-center border border-gray-200">
-                                <Package className="w-4 h-4 text-gray-300" />
-                              </div>
-                            )}
-                          </td>
-                          <td>{o.product_name}</td>
-                          <td className="font-mono text-xs">{o.sku || "—"}</td>
-                          <td>{o.quantity}</td>
-                          <td>${o.base_cost.toFixed(2)}</td>
-                          <td><FulfillBadge status={o.fulfill_status} /></td>
-                          <td className="text-xs text-gray-500">{o.tracking_number || "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            );
-          })}
         </div>
       )}
 
@@ -290,7 +214,6 @@ export default function SupplierDetailPage() {
 
         return (
           <div>
-            {/* Toolbar */}
             <div className="flex items-center gap-3 mb-3 flex-wrap">
               <label className="flex items-center gap-1.5 cursor-pointer select-none text-sm text-gray-600">
                 <input
@@ -461,6 +384,20 @@ export default function SupplierDetailPage() {
         />
       )}
 
+      {showSendOrders && (
+        <SendOrdersModal
+          supplierId={sid}
+          supplier={supplier}
+          selectedOrderIds={Array.from(selectedOrderIds)}
+          onClose={() => setShowSendOrders(false)}
+          onDone={() => {
+            setShowSendOrders(false);
+            setSelectedOrderIds(new Set());
+            qc.invalidateQueries({ queryKey: ["supplier-orders", sid] });
+          }}
+        />
+      )}
+
       {showEdit && <SupplierModal supplier={supplier} onClose={() => setShowEdit(false)} />}
 
       {showAddProduct && (
@@ -482,7 +419,6 @@ export default function SupplierDetailPage() {
 }
 
 function printAndMarkShipped(orderId: number, labeledItems: any[], qc: any, supplierId: number) {
-  // Group items by label_id so we hit each label once
   const byLabel = new Map<number, any[]>();
   for (const li of labeledItems) {
     if (!li.label_id) continue;
@@ -504,7 +440,6 @@ function printAndMarkShipped(orderId: number, labeledItems: any[], qc: any, supp
         } catch {}
       }
     }
-    // Flip items to shipped server-side
     fetch(`/api/v1/orders/${orderId}/labels/${labelId}/mark-printed`, {
       method: "POST",
       headers: {

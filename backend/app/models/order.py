@@ -18,6 +18,7 @@ class OrderStatus(str, enum.Enum):
 class FulfillStatus(str, enum.Enum):
     unfulfilled = "unfulfilled"
     pending = "pending"
+    drop_off = "drop_off"
     shipped = "shipped"
     delivered = "delivered"
     cancelled = "cancelled"
@@ -80,10 +81,30 @@ class ShippingLabel(Base):
     carrier: Mapped[str] = mapped_column(String(50))
     service: Mapped[str | None] = mapped_column(String(100))
     tracking_number: Mapped[str | None] = mapped_column(String(255))
+    shipment_id: Mapped[str | None] = mapped_column(String(255))
     label_url: Mapped[str | None] = mapped_column(String(500))
+    label_data: Mapped[str | None] = mapped_column(Text)  # base64-encoded PDF bytes
     cost: Mapped[Decimal] = mapped_column(Numeric(8, 2), default=0)
     from_address: Mapped[dict | None] = mapped_column(JSON)
     to_address: Mapped[dict | None] = mapped_column(JSON)
     purchased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     supplier: Mapped["Supplier"] = relationship(back_populates="shipping_labels")
+
+
+class OrderFulfillmentItem(Base):
+    """Per-catalog-item fulfillment record linking a line item to a supplier product."""
+    __tablename__ = "order_fulfillment_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_line_item_id: Mapped[int] = mapped_column(ForeignKey("order_line_items.id", ondelete="CASCADE"))
+    supplier_product_id: Mapped[int] = mapped_column(ForeignKey("supplier_products.id"))
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    fulfill_status: Mapped[FulfillStatus] = mapped_column(SAEnum(FulfillStatus), default=FulfillStatus.unfulfilled)
+    tracking_number: Mapped[str | None] = mapped_column(String(255))
+    label_id: Mapped[int | None] = mapped_column(ForeignKey("shipping_labels.id"))
+    fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    order_line_item: Mapped["OrderLineItem"] = relationship()
+    supplier_product: Mapped["SupplierProduct"] = relationship()
+    label: Mapped["ShippingLabel | None"] = relationship(foreign_keys=[label_id])

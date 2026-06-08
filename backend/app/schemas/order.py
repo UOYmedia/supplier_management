@@ -117,3 +117,17 @@ class ShippingLabelOut(BaseModel):
     label_url: str | None
     cost: Decimal
     purchased_at: datetime
+
+
+class ShippingLabelUpdate(BaseModel):
+    carrier: str | None = None
+    service: str | None = None
+    tracking_number: str | None = None
+    label_url: str | None = None
+    cost: Decimal | None = None
+
+
+class MarkShippedBody(BaseModel):
+    line_item_ids: list[int] = []
+    supplier_id: int | None = None
+    tracking_number: str | None = None

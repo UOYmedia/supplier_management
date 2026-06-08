@@ -102,6 +102,7 @@ class AmazonSync(MarketplaceSyncer):
                         order_id=order.id,
                         product_id=listing_obj.product_id if listing_obj else None,
                         listing_id=listing_obj.id if listing_obj else None,
+                        external_line_item_id=item.get("OrderItemId"),
                         product_name=item.get("Title", ""),
                         sku=item.get("SellerSKU"),
                         quantity=int(item.get("QuantityOrdered", 1)),

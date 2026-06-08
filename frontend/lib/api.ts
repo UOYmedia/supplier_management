@@ -174,6 +174,6 @@ export const easypostApi = {
 
 // Amazon Shipping (admin)
 export const amazonShippingApi = {
-  getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon-shipping/rates`, data).then((r) => r.data),
-  buyLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon-shipping/buy`, data).then((r) => r.data),
+  getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon/rates`, data).then((r) => r.data),
+  buyLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon/buy`, data).then((r) => r.data),
 };

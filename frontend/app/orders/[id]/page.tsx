@@ -1351,7 +1351,13 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
       toast.success("Label purchased — items moved to Pending");
       onClose();
     },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Purchase failed"),
+    onError: (e: any) => {
+      const msg = e.response?.data?.detail || "Purchase failed";
+      const hint = typeof msg === "string" && (msg.includes("malformed") || msg.includes("invalid") || msg.includes("expired"))
+        ? " — go back and refresh rates, then try again"
+        : "";
+      toast.error(msg + hint);
+    },
   });
 
   const pf = (k: string) => (e: any) => setParcel((p) => ({ ...p, [k]: e.target.value }));
@@ -1481,7 +1487,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 <button
                   className="btn-primary flex items-center gap-1.5"
-                  disabled={!selectedRate || buyMut.isPending}
+                  disabled={!selectedRate || !shipmentId || buyMut.isPending}
                   onClick={() => buyMut.mutate()}
                 >
                   {buyMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />}

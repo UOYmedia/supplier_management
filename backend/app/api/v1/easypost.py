@@ -253,6 +253,9 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
             await db.commit()
             raise HTTPException(422, "Label already exists for these items")
 
+    if not body.shipment_id or not body.rate_id:
+        raise HTTPException(400, "shipment_id and rate_id are required — refresh rates and try again")
+
     try:
         bought = await ep.buy_shipment(body.shipment_id, body.rate_id)
     except EasyPostError as e:

@@ -21,6 +21,7 @@ export default function OrderDetailPage() {
   const [editingOrderInfo, setEditingOrderInfo] = useState(false);
   const [assigningItem, setAssigningItem] = useState<number | null>(null);
   const [autoOpenedForSupplier, setAutoOpenedForSupplier] = useState<number | null>(null);
+  const [confirmRefund, setConfirmRefund] = useState<{ labelId: number } | null>(null);
 
   const { data: order } = useQuery({ queryKey: ["order", oid], queryFn: () => ordersApi.get(oid), throwOnError: false });
   const { data: labels = [] } = useQuery({ queryKey: ["labels", oid], queryFn: () => ordersApi.listLabels(oid), throwOnError: false });
@@ -73,6 +74,20 @@ export default function OrderDetailPage() {
       toast.success(n > 0 ? `Synced ${n} fulfillment(s) to Shopify` : "No new fulfillments to sync");
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Shopify sync failed"),
+  });
+
+  const refundLabelMut = useMutation({
+    mutationFn: (labelId: number) => easypostApi.refundLabel(oid, { label_id: labelId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["labels", oid] });
+      qc.invalidateQueries({ queryKey: ["order", oid] });
+      toast.success("Label cancelled — refund submitted to EasyPost");
+      setConfirmRefund(null);
+    },
+    onError: (e: any) => {
+      toast.error(e.response?.data?.detail || "Refund failed");
+      setConfirmRefund(null);
+    },
   });
 
   // Auto-open Buy Label modal when navigated from supplier orders tab
@@ -272,6 +287,8 @@ export default function OrderDetailPage() {
         );
         const needsLabel = unshipped.filter((li: any) => !li.tracking_number);
         const itemsWithLabel = (items as any[]).filter((li: any) => li.label_id);
+        const groupLabelId: number | null = itemsWithLabel.length > 0 ? itemsWithLabel[0].label_id : null;
+        const isGroupRefunded = !!(labels as any[]).find((l: any) => l.id === groupLabelId)?.refunded_at;
 
         return (
           <div key={supplierId} className="card mb-4">
@@ -285,12 +302,28 @@ export default function OrderDetailPage() {
               </div>
               <div className="flex gap-2">
                 {itemsWithLabel.length > 0 && (
-                  <button
-                    className="btn-primary text-xs py-1"
-                    onClick={() => printLabelsForGroup(itemsWithLabel)}
-                  >
-                    <Printer className="w-3 h-3" /> Print Label
-                  </button>
+                  <>
+                    <button
+                      className="btn-primary text-xs py-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={() => printLabelsForGroup(itemsWithLabel)}
+                      disabled={isGroupRefunded}
+                    >
+                      <Printer className="w-3 h-3" /> Print Label
+                    </button>
+                    {isGroupRefunded ? (
+                      <span className="text-xs font-medium px-2 py-1 bg-red-50 text-red-600 rounded border border-red-200">
+                        Refunded
+                      </span>
+                    ) : (
+                      <button
+                        className="text-xs py-1 px-2 rounded bg-red-600 hover:bg-red-700 text-white flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={() => setConfirmRefund({ labelId: groupLabelId! })}
+                        disabled={refundLabelMut.isPending}
+                      >
+                        Cancel Label
+                      </button>
+                    )}
+                  </>
                 )}
                 {sid !== null && needsLabel.length > 0 && (
                   <button
@@ -439,6 +472,34 @@ export default function OrderDetailPage() {
           onSave={(data) => updateOrderMut.mutate(data)}
           saving={updateOrderMut.isPending}
         />
+      )}
+
+      {confirmRefund !== null && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 shadow-xl max-w-sm w-full mx-4">
+            <h3 className="text-base font-semibold mb-2">Cancel this label?</h3>
+            <p className="text-sm text-gray-600 mb-5">
+              Are you sure you want to cancel this label? EasyPost will be requested to refund and all associated line items will be cancelled.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                className="btn-secondary text-sm"
+                onClick={() => setConfirmRefund(null)}
+                disabled={refundLabelMut.isPending}
+              >
+                No
+              </button>
+              <button
+                className="text-sm px-4 py-2 rounded bg-red-600 hover:bg-red-700 text-white flex items-center gap-2 disabled:opacity-60"
+                onClick={() => refundLabelMut.mutate(confirmRefund.labelId)}
+                disabled={refundLabelMut.isPending}
+              >
+                {refundLabelMut.isPending && <Loader2 className="w-3 h-3 animate-spin" />}
+                Confirm Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

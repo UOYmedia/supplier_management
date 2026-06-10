@@ -972,7 +972,7 @@ async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> l
         for fi in fis:
             sp = await db.get(SupplierProduct, fi.supplier_product_id)
             if sp:
-                items.append(PackItem(name=sp.short_name or li.product_name or sp.name, sku=sp.sku, quantity=fi.quantity))
+                items.append(PackItem(name=sp.short_name or sp.name or li.product_name, sku=sp.sku, quantity=fi.quantity))
         if items:
             return items
     if li.product_id:
@@ -984,7 +984,7 @@ async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> l
             for comp in comps:
                 sp = await db.get(SupplierProduct, comp.supplier_product_id)
                 if sp:
-                    items.append(PackItem(name=sp.short_name or li.product_name or sp.name, sku=sp.sku,
+                    items.append(PackItem(name=sp.short_name or sp.name or li.product_name, sku=sp.sku,
                                           quantity=li.quantity * comp.quantity))
             if items:
                 return items

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timezone
@@ -79,6 +79,137 @@ async def create_order(body: OrderCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(order)
     return await _order_out(order, db)
+
+
+@router.get("/bulk-labels")
+async def bulk_labels(
+    date: str = Query(..., description="Date in YYYY-MM-DD format"),
+    supplier_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download purchased labels for a given date merged per supplier.
+    supplier_id specified → single PDF. Omitted → zip of all suppliers."""
+    import io as _io
+    import zipfile
+    import httpx
+    from collections import defaultdict
+    from app.integrations.pdf_labels import (
+        decode_label_data, concat_label_pdfs,
+        LabelEntry, PackItem, build_label_from_png,
+    )
+
+    try:
+        d = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Invalid date — use YYYY-MM-DD.")
+    start = d.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    end = d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+
+    q = select(ShippingLabel).where(
+        ShippingLabel.purchased_at >= start,
+        ShippingLabel.purchased_at <= end,
+    ).order_by(ShippingLabel.supplier_id)
+    if supplier_id is not None:
+        q = q.where(ShippingLabel.supplier_id == supplier_id)
+
+    labels = (await db.execute(q)).scalars().all()
+    if not labels:
+        detail = f"No labels purchased on {date}"
+        if supplier_id:
+            detail += f" for supplier {supplier_id}"
+        raise HTTPException(404, detail)
+
+    date_label = start.strftime("%b").upper() + " " + str(start.day)
+
+    async def _pdf_for_label(label: ShippingLabel) -> bytes | None:
+        if label.label_data:
+            return decode_label_data(label.label_data)
+        if not label.label_url:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=20) as http:
+                r = await http.get(label.label_url)
+            if not r.is_success:
+                return None
+            content = r.content
+            if content[:5] == b"%PDF-":
+                return content
+            # PNG — rebuild with catalog overlay
+            li_res = await db.execute(select(OrderLineItem).where(OrderLineItem.label_id == label.id))
+            lis = li_res.scalars().all()
+            pack_items: list[PackItem] = []
+            for li in lis:
+                pack_items.extend(await _catalog_items_for_line_item(li, db))
+            order = await db.get(Order, lis[0].order_id) if lis else None
+            sup = await db.get(Supplier, label.supplier_id)
+
+            def _an(addr: dict | None) -> str | None:
+                return (addr.get("name") or addr.get("Name")) if addr else None
+
+            entry = LabelEntry(
+                order_label=(order.external_order_id if order else f"Label #{label.id}"),
+                ship_to=_an(order.shipping_address) if order else None,
+                tracking_number=label.tracking_number,
+                label_pdf=None,
+                items=pack_items,
+                supplier_name=sup.name if sup else None,
+            )
+            return build_label_from_png(content, entry)
+        except Exception:
+            return None
+
+    async def _supplier_pdf(sup_labels: list) -> tuple[bytes | None, int]:
+        label_ids = [lbl.id for lbl in sup_labels]
+        oid_res = await db.execute(
+            select(OrderLineItem.order_id)
+            .where(OrderLineItem.label_id.in_(label_ids))
+            .distinct()
+        )
+        n_orders = len(oid_res.scalars().all())
+        pages = []
+        for lbl in sup_labels:
+            pdf = await _pdf_for_label(lbl)
+            if pdf:
+                pages.append(pdf)
+        return (concat_label_pdfs(pages) if pages else None), n_orders
+
+    by_sup: dict[int, list] = defaultdict(list)
+    for lbl in labels:
+        by_sup[lbl.supplier_id].append(lbl)
+
+    if supplier_id is not None:
+        sup = await db.get(Supplier, supplier_id)
+        sup_name = (sup.name if sup else str(supplier_id)).upper()
+        pdf, n_orders = await _supplier_pdf(list(by_sup.get(supplier_id, [])))
+        if not pdf:
+            raise HTTPException(404, "No printable label data found for this supplier/date")
+        fname = f"{date_label} – {n_orders} ORDERS – {sup_name}.pdf"
+        return Response(
+            content=pdf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    zip_buf = _io.BytesIO()
+    total = 0
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for sid, sup_labels in by_sup.items():
+            sup = await db.get(Supplier, sid)
+            sup_name = (sup.name if sup else str(sid)).upper()
+            pdf, n_orders = await _supplier_pdf(sup_labels)
+            if not pdf:
+                continue
+            fname = f"{date_label} – {n_orders} ORDERS – {sup_name}.pdf"
+            zf.writestr(fname, pdf)
+            total += 1
+    if total == 0:
+        raise HTTPException(404, "No printable label data found for any supplier on this date")
+    zip_buf.seek(0)
+    return Response(
+        content=zip_buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{date_label} – labels.zip"'},
+    )
 
 
 @router.get("/{order_id}", response_model=OrderOut)

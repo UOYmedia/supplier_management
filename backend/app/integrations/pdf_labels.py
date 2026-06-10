@@ -40,6 +40,16 @@ def _clip(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+def _smart_clip(text: str, n: int) -> str:
+    """Preserve start (product identity) and end (size/variety), clip the middle."""
+    text = text or ""
+    if len(text) <= n:
+        return text
+    head = (n * 2) // 3
+    tail = n - head - 1
+    return text[:head] + "…" + text[len(text) - tail:]
+
+
 def _draw_overlay(c: canvas.Canvas, entry: "LabelEntry") -> None:
     """Draw catalog strip in the bottom OVERLAY_H area of an already-sized canvas."""
     from datetime import datetime
@@ -81,7 +91,7 @@ def _draw_overlay(c: canvas.Canvas, entry: "LabelEntry") -> None:
         c.setFont("Helvetica-Bold", 9)
         c.drawString(MARGIN, y, str(it.quantity))
         c.setFont("Helvetica", 9)
-        c.drawString(MARGIN + 0.3 * inch, y, _clip(name, 42))
+        c.drawString(MARGIN + 0.3 * inch, y, _smart_clip(name, 38))
         y -= 0.22 * inch
 
 

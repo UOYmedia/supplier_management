@@ -1,9 +1,9 @@
 "use client";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ordersApi } from "@/lib/api";
+import { ordersApi, suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, ChevronRight, RefreshCw, X, Trash2 } from "lucide-react";
+import { Plus, ChevronRight, RefreshCw, X, Trash2, Printer } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { OrderStatusBadge } from "./order-status-badge";
@@ -24,6 +24,7 @@ export default function OrdersPage() {
   const [status, setStatus] = useState("");
   const [marketplace, setMarketplace] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [showBulkPrint, setShowBulkPrint] = useState(false);
 
   const { data: orders = [], isLoading, refetch } = useQuery({
     queryKey: ["orders", status, marketplace],
@@ -36,6 +37,7 @@ export default function OrdersPage() {
         <h1 className="page-title">Orders</h1>
         <div className="flex gap-2">
           <button className="btn-secondary" onClick={() => refetch()}><RefreshCw className="w-4 h-4" />Refresh</button>
+          <button className="btn-secondary" onClick={() => setShowBulkPrint(true)}><Printer className="w-4 h-4" />Bulk Print</button>
           <button className="btn-primary" onClick={() => setShowCreate(true)}><Plus className="w-4 h-4" />Create Order</button>
         </div>
       </div>
@@ -87,9 +89,104 @@ export default function OrdersPage() {
       </div>
 
       {showCreate && <CreateOrderModal onClose={() => setShowCreate(false)} />}
+      {showBulkPrint && <BulkPrintModal onClose={() => setShowBulkPrint(false)} />}
     </div>
   );
 }
+
+function BulkPrintModal({ onClose }: { onClose: () => void }) {
+  const today = new Date().toISOString().split("T")[0];
+  const [date, setDate] = useState(today);
+  const [supplierId, setSupplierId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const { data: suppliers = [] } = useQuery({
+    queryKey: ["suppliers"],
+    queryFn: () => suppliersApi.list(),
+  });
+
+  const handleDownload = async () => {
+    setLoading(true);
+    try {
+      const params: { date: string; supplier_id?: number } = { date };
+      if (supplierId !== null) params.supplier_id = supplierId;
+
+      const blob = await ordersApi.bulkLabels(params);
+
+      const d = new Date(date + "T12:00:00");
+      const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+      const dateLabel = `${mon} ${d.getDate()}`;
+
+      let filename: string;
+      if (supplierId !== null) {
+        const sup = (suppliers as any[]).find((s) => s.id === supplierId);
+        filename = `${dateLabel} – ${sup?.name?.toUpperCase() ?? "SUPPLIER"}.pdf`;
+      } else {
+        filename = `${dateLabel} – labels.zip`;
+      }
+
+      const mimeType = supplierId !== null ? "application/pdf" : "application/zip";
+      const url = URL.createObjectURL(new Blob([blob], { type: mimeType }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      onClose();
+    } catch (e: any) {
+      const status = e.response?.status;
+      toast.error(status === 404 ? "No labels found for this date/supplier" : "Download failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="card w-full max-w-sm p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="font-semibold text-lg">Bulk Print Labels</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="label">Date</label>
+            <input
+              type="date"
+              className="input"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="label">Supplier</label>
+            <select
+              className="input"
+              value={supplierId ?? ""}
+              onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">All suppliers (zip)</option>
+              {(suppliers as any[]).map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-6">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={handleDownload} disabled={loading || !date}>
+            {loading ? "Preparing…" : "Download"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function CreateOrderModal({ onClose }: { onClose: () => void }) {
   const router = useRouter();

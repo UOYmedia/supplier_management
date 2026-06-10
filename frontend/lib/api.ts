@@ -120,6 +120,8 @@ export const ordersApi = {
   labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,
   parcelEstimate: (orderId: number, params?: object) => api.get(`/orders/${orderId}/parcel-estimate`, { params }).then((r) => r.data),
   syncTracking: (orderId: number) => api.post(`/orders/${orderId}/sync-tracking`).then((r) => r.data),
+  bulkLabels: (params: { date: string; supplier_id?: number }) =>
+    api.get("/orders/bulk-labels", { params, responseType: "blob" }).then((r) => r.data),
 };
 
 // Marketplace

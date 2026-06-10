@@ -32,6 +32,7 @@ class LabelEntry:
     tracking_number: str | None
     label_pdf: bytes | None   # decoded label PDF bytes (may be None)
     items: list[PackItem] = field(default_factory=list)
+    supplier_name: str | None = None
 
 
 def _clip(text: str, n: int) -> str:
@@ -39,25 +40,48 @@ def _clip(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def _draw_overlay(c: canvas.Canvas, items: list[PackItem]) -> None:
+def _draw_overlay(c: canvas.Canvas, entry: "LabelEntry") -> None:
     """Draw catalog strip in the bottom OVERLAY_H area of an already-sized canvas."""
+    from datetime import datetime
+
     c.setFillColorRGB(1, 1, 1)
     c.rect(0, 0, LABEL_W, OVERLAY_H, fill=1, stroke=0)
     c.setStrokeColorRGB(0.4, 0.4, 0.4)
     c.setLineWidth(0.6)
     c.line(MARGIN, OVERLAY_H - 0.05 * inch, LABEL_W - MARGIN, OVERLAY_H - 0.05 * inch)
+
     y = OVERLAY_H - 0.22 * inch
-    for it in items:
+
+    if entry.order_label or entry.ship_to:
+        header_parts = []
+        if entry.order_label:
+            header_parts.append(entry.order_label)
+        if entry.ship_to:
+            header_parts.append(f"→ {entry.ship_to}")
+        c.setFont("Helvetica", 7)
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(MARGIN, y, _clip("  ".join(header_parts), 52))
+        y -= 0.18 * inch
+
+    date_str = ""
+    if (entry.supplier_name or "").upper() == "JOE":
+        now = datetime.now()
+        date_str = now.strftime("%b").upper() + " " + str(now.day)
+
+    for it in entry.items:
         if y < 0.06 * inch:
             c.setFont("Helvetica-Oblique", 7)
             c.setFillColorRGB(0.5, 0.5, 0.5)
             c.drawString(MARGIN, y, "…more items")
             break
+        name = (it.name or "").upper()
+        if date_str:
+            name = f"{name} – {date_str}"
         c.setFillColorRGB(0, 0, 0)
         c.setFont("Helvetica-Bold", 9)
-        c.drawString(MARGIN, y, f"x{it.quantity}")
+        c.drawString(MARGIN, y, str(it.quantity))
         c.setFont("Helvetica", 9)
-        c.drawString(MARGIN + 0.3 * inch, y, _clip(it.name, 36))
+        c.drawString(MARGIN + 0.3 * inch, y, _clip(name, 42))
         y -= 0.22 * inch
 
 
@@ -81,7 +105,7 @@ def build_label_from_png(png_bytes: bytes, entry: LabelEntry) -> bytes:
         preserveAspectRatio=True,
         anchor="c",
     )
-    _draw_overlay(c, entry.items)
+    _draw_overlay(c, entry)
     c.showPage()
     c.save()
     return buf.getvalue()
@@ -109,7 +133,7 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
     for entry in entries:
         buf = io.BytesIO()
         c = canvas.Canvas(buf, pagesize=(LABEL_W, LABEL_H))
-        _draw_overlay(c, entry.items)
+        _draw_overlay(c, entry)
         c.showPage()
         c.save()
         overlay_page = PdfReader(io.BytesIO(buf.getvalue())).pages[0]

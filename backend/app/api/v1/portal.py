@@ -376,6 +376,7 @@ async def portal_batch_labels(
             tracking_number=label.tracking_number,
             label_pdf=None,
             items=pack_items,
+            supplier_name=supplier.name,
         )
 
         try:
@@ -674,6 +675,7 @@ async def portal_easypost_buy(
                 tracking_number=tracking,
                 label_pdf=None,
                 items=pack_items,
+                supplier_name=supplier.name,
             )
             label_data = base64.b64encode(build_label_from_png(base64.b64decode(carrier_png_b64), entry)).decode()
         elif carrier_png_b64:

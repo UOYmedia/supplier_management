@@ -532,6 +532,7 @@ async def regenerate_label(
         raise HTTPException(400, "This label has no EasyPost shipment or stored URL to regenerate from — upload a PDF manually instead.")
 
     # Build pack items using catalog lookup
+    supplier = await db.get(Supplier, label.supplier_id) if label.supplier_id else None
     order = await _get_or_404(order_id, db)
     lis_result = await db.execute(
         select(OrderLineItem).where(
@@ -564,6 +565,7 @@ async def regenerate_label(
             tracking_number=label.tracking_number,
             label_pdf=None,
             items=pack_items,
+            supplier_name=supplier.name if supplier else None,
         )
         combined_pdf = build_label_from_png(raw_png_bytes, entry)
     else:
@@ -573,6 +575,7 @@ async def regenerate_label(
             tracking_number=label.tracking_number,
             label_pdf=raw_pdf_bytes,
             items=pack_items,
+            supplier_name=supplier.name if supplier else None,
         )
         combined_pdf = build_batch_label_pdf([entry])
 
@@ -838,7 +841,7 @@ async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> l
         for fi in fis:
             sp = await db.get(SupplierProduct, fi.supplier_product_id)
             if sp:
-                items.append(PackItem(name=sp.short_name or sp.name, sku=sp.sku, quantity=fi.quantity))
+                items.append(PackItem(name=li.product_name or sp.short_name or sp.name, sku=sp.sku, quantity=fi.quantity))
         if items:
             return items
     if li.product_id:
@@ -850,7 +853,7 @@ async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> l
             for comp in comps:
                 sp = await db.get(SupplierProduct, comp.supplier_product_id)
                 if sp:
-                    items.append(PackItem(name=sp.short_name or sp.name, sku=sp.sku,
+                    items.append(PackItem(name=li.product_name or sp.short_name or sp.name, sku=sp.sku,
                                           quantity=li.quantity * comp.quantity))
             if items:
                 return items

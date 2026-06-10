@@ -1,9 +1,10 @@
 """
 EasyPost shipping endpoints.
 
-POST /orders/{order_id}/easypost/rates  -- create shipment, return all carrier rates
-POST /orders/{order_id}/easypost/buy    -- buy a rate, save ShippingLabel
-GET  /orders/{order_id}/events          -- order event log (EasyPost debug history)
+POST /orders/{order_id}/easypost/rates   -- create shipment, return all carrier rates
+POST /orders/{order_id}/easypost/buy     -- buy a rate, save ShippingLabel
+POST /orders/{order_id}/easypost/refund  -- void a purchased label, cancel line items
+GET  /orders/{order_id}/events           -- order event log (EasyPost debug history)
 """
 import base64
 from datetime import datetime, timezone
@@ -71,6 +72,10 @@ class BuyRequest(BaseModel):
     shipment_id: str
     rate_id: str
     line_item_ids: list[int] = []
+
+
+class RefundRequest(BaseModel):
+    label_id: int
 
 
 class OrderEventOut(BaseModel):
@@ -387,6 +392,73 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
                    "service": selected_rate.get("service"),
                    "cost": str(cost_val),
                    "line_item_ids": li_ids,
+               })
+
+    await db.commit()
+    await db.refresh(label)
+    return label
+
+
+@router.post("/{order_id}/easypost/refund", response_model=ShippingLabelOut)
+async def refund_label(order_id: int, body: RefundRequest, db: AsyncSession = Depends(get_db)):
+    """Void a purchased EasyPost label and cancel its associated line items.
+
+    Submits a refund request to EasyPost, marks the label as refunded, detaches
+    it from all line items, and recalculates the order status.
+    """
+    ep = _require_easypost()
+
+    order = await db.get(Order, order_id)
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    label = await db.get(ShippingLabel, body.label_id)
+    if not label:
+        raise HTTPException(404, "Shipping label not found")
+
+    if not label.shipment_id:
+        raise HTTPException(422, "This label has no EasyPost shipment ID and cannot be refunded")
+
+    if label.refunded_at is not None:
+        raise HTTPException(409, "This label has already been refunded")
+
+    try:
+        refund = await ep.refund_shipment(label.shipment_id)
+    except EasyPostError as e:
+        await _log(db, order_id, "easypost_refund", str(e), level="error",
+                   payload={"label_id": label.id, "shipment_id": label.shipment_id,
+                            "http_status": e.status})
+        await db.commit()
+        raise HTTPException(e.status, str(e))
+    except Exception as e:
+        await _log(db, order_id, "easypost_refund", str(e), level="error",
+                   payload={"label_id": label.id, "shipment_id": label.shipment_id})
+        await db.commit()
+        raise HTTPException(500, f"Unexpected error: {e}")
+
+    label.refunded_at = datetime.now(timezone.utc)
+
+    li_result = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.order_id == order_id,
+            OrderLineItem.label_id == label.id,
+        )
+    )
+    line_items = li_result.scalars().all()
+    for li in line_items:
+        li.label_id = None
+        li.fulfill_status = FulfillStatus.cancelled
+
+    await _recalculate_order_status(order, db)
+
+    await _log(db, order_id, "easypost_refund",
+               f"Label {label.id} (shipment {label.shipment_id}) refund submitted -- "
+               f"{len(line_items)} line item(s) cancelled",
+               payload={
+                   "label_id": label.id,
+                   "shipment_id": label.shipment_id,
+                   "refund_status": refund.get("status") if isinstance(refund, dict) else None,
+                   "cancelled_line_item_ids": [li.id for li in line_items],
                })
 
     await db.commit()

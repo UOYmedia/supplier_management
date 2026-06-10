@@ -151,6 +151,11 @@ class EasyPostClient:
             "tracker": {"tracking_code": tracking_code, "carrier": carrier}
         })
 
+    async def refund_shipment(self, shipment_id: str) -> dict:
+        """Request a postage refund for a purchased shipment.
+        EasyPost returns a refund object; status is typically 'submitted' initially."""
+        return await self._post(f"/shipments/{shipment_id}/refunds", {})
+
 
 def supplier_to_ep_address(supplier) -> dict:
     """Convert Supplier ORM object to EasyPost address dict."""

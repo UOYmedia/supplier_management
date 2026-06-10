@@ -138,6 +138,7 @@ class ShippingLabelOut(BaseModel):
     shipment_id: str | None = None
     cost: Decimal
     purchased_at: datetime
+    refunded_at: datetime | None = None
     has_label_data: bool = False
 
     @classmethod

@@ -22,6 +22,7 @@ export default function OrderDetailPage() {
   const [assigningItem, setAssigningItem] = useState<number | null>(null);
   const [autoOpenedForSupplier, setAutoOpenedForSupplier] = useState<number | null>(null);
   const [confirmRefund, setConfirmRefund] = useState<{ labelId: number } | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const { data: order } = useQuery({ queryKey: ["order", oid], queryFn: () => ordersApi.get(oid), throwOnError: false });
   const { data: labels = [] } = useQuery({ queryKey: ["labels", oid], queryFn: () => ordersApi.listLabels(oid), throwOnError: false });
@@ -108,6 +109,11 @@ export default function OrderDetailPage() {
       setAutoOpenedForSupplier(sid);
     }
   }, [order, searchParams, autoOpenedForSupplier]);
+
+  useEffect(() => {
+    const user = JSON.parse(localStorage.getItem("admin_user") || "{}");
+    setIsAdmin(user.role === "admin");
+  }, []);
 
   if (!order) return <div className="p-6 text-gray-400">Loading…</div>;
 
@@ -314,7 +320,7 @@ export default function OrderDetailPage() {
                       <span className="text-xs font-medium px-2 py-1 bg-red-50 text-red-600 rounded border border-red-200">
                         Refunded
                       </span>
-                    ) : (
+                    ) : isAdmin ? (
                       <button
                         className="text-xs py-1 px-2 rounded bg-red-600 hover:bg-red-700 text-white flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                         onClick={() => setConfirmRefund({ labelId: groupLabelId! })}
@@ -322,7 +328,7 @@ export default function OrderDetailPage() {
                       >
                         Cancel Label
                       </button>
-                    )}
+                    ) : null}
                   </>
                 )}
                 {sid !== null && needsLabel.length > 0 && (

@@ -484,8 +484,8 @@ function OrderSummaryWidget({
         const name = li.product_name || "Unknown";
         const prev = map.get(name) ?? { qty: 0, cost: 0 };
         map.set(name, {
-          qty: prev.qty + li.quantity,
-          cost: prev.cost + parseFloat(li.base_cost || "0") * li.quantity,
+          qty: prev.qty + (Number(li.quantity) || 0),
+          cost: prev.cost + (Number(li.base_cost ?? 0) || 0) * (Number(li.quantity) || 0),
         });
       }
     }

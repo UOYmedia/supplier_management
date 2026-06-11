@@ -73,7 +73,10 @@ async def lifespan(app: FastAPI):
 
     sync_task = asyncio.create_task(_auto_sync_loop())
     scheduler.start()
-    asyncio.create_task(fill_short_names())
+    async def _delayed_fill():
+        await asyncio.sleep(30)  # wait 30s for DB to be ready
+        await fill_short_names()
+    asyncio.create_task(_delayed_fill())
     yield
     sync_task.cancel()
     try:

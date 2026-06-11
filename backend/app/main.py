@@ -6,6 +6,7 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.api.v1.router import api_router
+from app.core.scheduler import scheduler, fill_short_names
 import app.models  # ensure all models are imported before create_all
 
 
@@ -71,6 +72,8 @@ async def lifespan(app: FastAPI):
         print(f"WARNING: DB init failed: {e}", flush=True)
 
     sync_task = asyncio.create_task(_auto_sync_loop())
+    scheduler.start()
+    asyncio.create_task(fill_short_names())
     yield
     sync_task.cancel()
     try:
@@ -78,6 +81,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     print("Auto-sync: stopped", flush=True)
+    scheduler.shutdown(wait=False)
 
 
 async def _seed_admin():

@@ -422,6 +422,20 @@ async def refund_label(order_id: int, body: RefundRequest, db: AsyncSession = De
     if label.refunded_at is not None:
         raise HTTPException(409, "This label has already been refunded")
 
+    # Guard: block refund if any line items are already shipped/delivered
+    shipped_check = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.order_id == order_id,
+            OrderLineItem.label_id == label.id,
+            OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
+        )
+    )
+    if shipped_check.scalars().first():
+        raise HTTPException(
+            422,
+            "Cannot cancel this label — one or more items have already been shipped or delivered",
+        )
+
     try:
         refund = await ep.refund_shipment(label.shipment_id)
     except EasyPostError as e:
@@ -436,7 +450,20 @@ async def refund_label(order_id: int, body: RefundRequest, db: AsyncSession = De
         await db.commit()
         raise HTTPException(500, f"Unexpected error: {e}")
 
+    # Fix: check EasyPost refund status before committing any DB changes
+    refund_status = refund.get("status") if isinstance(refund, dict) else None
+    if refund_status == "rejected":
+        await _log(db, order_id, "easypost_refund",
+                   f"EasyPost rejected refund for label {label.id} — no changes made",
+                   level="error",
+                   payload={"label_id": label.id, "shipment_id": label.shipment_id,
+                            "refund_response": refund})
+        await db.commit()
+        raise HTTPException(422, "EasyPost rejected the refund request")
+
     label.refunded_at = datetime.now(timezone.utc)
+    label.label_data = None
+    label.label_url = None
 
     li_result = await db.execute(
         select(OrderLineItem).where(
@@ -452,12 +479,12 @@ async def refund_label(order_id: int, body: RefundRequest, db: AsyncSession = De
     await _recalculate_order_status(order, db)
 
     await _log(db, order_id, "easypost_refund",
-               f"Label {label.id} (shipment {label.shipment_id}) refund submitted -- "
-               f"{len(line_items)} line item(s) cancelled",
+               f"Label {label.id} (shipment {label.shipment_id}) refund {refund_status} — "
+               f"{len(line_items)} line item(s) cancelled, label data cleared",
                payload={
                    "label_id": label.id,
                    "shipment_id": label.shipment_id,
-                   "refund_status": refund.get("status") if isinstance(refund, dict) else None,
+                   "refund_status": refund_status,
                    "cancelled_line_item_ids": [li.id for li in line_items],
                })
 

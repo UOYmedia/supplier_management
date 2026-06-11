@@ -295,6 +295,9 @@ export default function OrderDetailPage() {
         const itemsWithLabel = (items as any[]).filter((li: any) => li.label_id);
         const groupLabelId: number | null = itemsWithLabel.length > 0 ? itemsWithLabel[0].label_id : null;
         const isGroupRefunded = !!(labels as any[]).find((l: any) => l.id === groupLabelId)?.refunded_at;
+        const isGroupShipped = (items as any[]).some((li: any) =>
+          li.fulfill_status === "shipped" || li.fulfill_status === "delivered"
+        );
 
         return (
           <div key={supplierId} className="card mb-4">
@@ -320,7 +323,7 @@ export default function OrderDetailPage() {
                       <span className="text-xs font-medium px-2 py-1 bg-red-50 text-red-600 rounded border border-red-200">
                         Refunded
                       </span>
-                    ) : isAdmin ? (
+                    ) : isGroupShipped ? null : isAdmin ? (
                       <button
                         className="text-xs py-1 px-2 rounded bg-red-600 hover:bg-red-700 text-white flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                         onClick={() => setConfirmRefund({ labelId: groupLabelId! })}

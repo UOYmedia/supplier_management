@@ -52,6 +52,7 @@ class OrderLineItemOut(BaseModel):
     label_id: int | None
     fulfilled_at: datetime | None
     supplier_name: str | None = None
+    catalog_name: str | None = None
     mapping_suggestion: dict | None = None
 
 

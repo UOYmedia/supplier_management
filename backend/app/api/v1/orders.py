@@ -1058,6 +1058,18 @@ async def _line_item_out(li: OrderLineItem, db: AsyncSession) -> OrderLineItemOu
     data = {c.name: getattr(li, c.name) for c in li.__table__.columns}
     data["supplier_name"] = sup.name if sup else None
 
+    catalog_name = None
+    if li.supplier_id:
+        fi_res = await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id).limit(1)
+        )
+        fi = fi_res.scalars().first()
+        if fi:
+            sp = await db.get(SupplierProduct, fi.supplier_product_id)
+            if sp:
+                catalog_name = sp.short_name or sp.name
+    data["catalog_name"] = catalog_name
+
     mapping_suggestion = None
     if not li.supplier_id:
         from sqlalchemy import func as sqlfunc

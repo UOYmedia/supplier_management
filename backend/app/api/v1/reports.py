@@ -4,8 +4,8 @@ from sqlalchemy import select, func, and_
 from datetime import datetime, timezone
 from app.core.database import get_db
 from app.models.order import Order, OrderLineItem, OrderStatus
-from app.models.product import Product, ProductSupplier
-from app.models.supplier import Supplier
+from app.models.product import Product, ProductSupplier, ProductComponent
+from app.models.supplier import Supplier, SupplierProduct
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -27,9 +27,11 @@ async def business_summary(
     total_revenue = sum(float(o.total) for o in orders)
     order_count = len(orders)
 
-    li_q = select(OrderLineItem)
-    if from_date or to_date:
-        li_q = li_q.join(Order).where(q.whereclause) if q.whereclause is not None else li_q
+    li_q = select(OrderLineItem).join(Order, Order.id == OrderLineItem.order_id)
+    if from_date:
+        li_q = li_q.where(Order.ordered_at >= from_date)
+    if to_date:
+        li_q = li_q.where(Order.ordered_at <= to_date)
     li_result = await db.execute(li_q)
     line_items = li_result.scalars().all()
 
@@ -82,14 +84,29 @@ async def inventory_alert(threshold: int = Query(5), db: AsyncSession = Depends(
         .where(ProductSupplier.stock <= threshold)
     )
     rows = result.all()
-    return [
-        {
-            "product_id": r[1].id,
-            "product_name": r[1].name,
-            "sku": r[1].sku,
-            "supplier_id": r[2].id,
-            "supplier_name": r[2].name,
-            "stock": r[0].stock,
-        }
-        for r in rows
-    ]
+
+    output = []
+    for ps, product, supplier in rows:
+        sp_res = await db.execute(
+            select(SupplierProduct)
+            .join(ProductComponent, ProductComponent.supplier_product_id == SupplierProduct.id)
+            .where(
+                ProductComponent.product_id == product.id,
+                SupplierProduct.supplier_id == supplier.id,
+            )
+            .limit(1)
+        )
+        sp = sp_res.scalar_one_or_none()
+        display_name = (sp.short_name or sp.name) if sp else product.name
+
+        output.append({
+            "product_id": product.id,
+            "product_name": product.name,
+            "display_name": display_name,
+            "sku": product.sku,
+            "supplier_id": supplier.id,
+            "supplier_name": supplier.name,
+            "stock": ps.stock,
+        })
+
+    return output

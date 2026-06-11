@@ -21,6 +21,8 @@ async def list_orders(
     marketplace: str | None = Query(None),
     status: str | None = Query(None),
     supplier_id: int | None = Query(None),
+    from_date: datetime | None = Query(None),
+    to_date: datetime | None = Query(None),
     skip: int = 0,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
@@ -32,7 +34,12 @@ async def list_orders(
         q = q.where(Order.status == status)
     if supplier_id:
         q = q.where(Order.line_items.any(OrderLineItem.supplier_id == supplier_id))
-    result = await db.execute(q.order_by(Order.ordered_at.desc()).offset(skip).limit(limit))
+    if from_date:
+        q = q.where(Order.ordered_at >= from_date)
+    if to_date:
+        q = q.where(Order.ordered_at <= to_date)
+    effective_limit = 500 if (from_date or to_date) else limit
+    result = await db.execute(q.order_by(Order.ordered_at.desc()).offset(skip).limit(effective_limit))
     orders = result.scalars().all()
     return [await _order_out(o, db) for o in orders]
 

@@ -481,7 +481,10 @@ function OrderSummaryWidget({
     const map = new Map<string, { qty: number; cost: number }>();
     for (const order of orders as any[]) {
       for (const li of (order.line_items ?? [])) {
-        const name = li.catalog_name || li.product_name || "Unknown";
+        const name = li.catalog_name
+          || li.mapping_suggestion?.catalog_name
+          || li.product_name?.split(",")[0].trim()
+          || "Unknown";
         const prev = map.get(name) ?? { qty: 0, cost: 0 };
         map.set(name, {
           qty: prev.qty + (Number(li.quantity) || 0),

@@ -122,6 +122,7 @@ export const ordersApi = {
   syncTracking: (orderId: number) => api.post(`/orders/${orderId}/sync-tracking`).then((r) => r.data),
   bulkLabels: (params: { date: string; supplier_id?: number }) =>
     api.get("/orders/bulk-labels", { params, responseType: "blob" }).then((r) => r.data),
+  listDelayed: () => api.get("/orders/delayed").then((r) => r.data),
 };
 
 // Marketplace

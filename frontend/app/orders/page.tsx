@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, ChevronRight, RefreshCw, X, Trash2, Printer } from "lucide-react";
+import { Plus, ChevronRight, RefreshCw, X, Trash2, Printer, AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { OrderStatusBadge } from "./order-status-badge";
@@ -25,11 +25,23 @@ export default function OrdersPage() {
   const [marketplace, setMarketplace] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showBulkPrint, setShowBulkPrint] = useState(false);
+  const [showDelayed, setShowDelayed] = useState(false);
 
-  const { data: orders = [], isLoading, refetch } = useQuery({
+  const { data: regularOrders = [], isLoading: regularLoading, refetch: refetchRegular } = useQuery({
     queryKey: ["orders", status, marketplace],
     queryFn: () => ordersApi.list({ status: status || undefined, marketplace: marketplace || undefined }),
   });
+
+  const { data: delayedOrders = [], isLoading: delayedLoading, refetch: refetchDelayed } = useQuery({
+    queryKey: ["orders", "delayed"],
+    queryFn: () => ordersApi.listDelayed(),
+    refetchInterval: 5 * 60 * 1000,
+  });
+
+  const orders = showDelayed ? (delayedOrders as any[]) : (regularOrders as any[]);
+  const isLoading = showDelayed ? delayedLoading : regularLoading;
+  const refetch = showDelayed ? refetchDelayed : refetchRegular;
+  const urgentCount = (delayedOrders as any[]).filter((o) => o.status === "urgent").length;
 
   return (
     <div>
@@ -43,49 +55,125 @@ export default function OrdersPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-3 mb-4">
-        <select className="input w-40" value={status} onChange={(e) => setStatus(e.target.value)}>
+      <div className="flex items-center gap-3 mb-4">
+        <select
+          className="input w-40"
+          value={status}
+          disabled={showDelayed}
+          onChange={(e) => setStatus(e.target.value)}
+        >
           {STATUSES.map((s) => <option key={s} value={s}>{s || "All statuses"}</option>)}
         </select>
-        <select className="input w-40" value={marketplace} onChange={(e) => setMarketplace(e.target.value)}>
+        <select
+          className="input w-40"
+          value={marketplace}
+          disabled={showDelayed}
+          onChange={(e) => setMarketplace(e.target.value)}
+        >
           {MARKETS.map((m) => <option key={m} value={m}>{m || "All channels"}</option>)}
         </select>
+        <button
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors ${
+            showDelayed
+              ? "bg-red-50 border-red-400 text-red-700"
+              : "bg-white border-gray-300 text-gray-700 hover:border-gray-400"
+          }`}
+          onClick={() => setShowDelayed((v) => !v)}
+        >
+          <AlertTriangle className="w-4 h-4" />
+          Delayed
+          {urgentCount > 0 && (
+            <span className="ml-0.5 bg-red-500 text-white text-xs font-bold rounded-full px-1.5 py-0.5 min-w-[20px] text-center leading-none">
+              {urgentCount}
+            </span>
+          )}
+        </button>
       </div>
 
       <div className="card table-wrapper">
-        <table>
-          <thead><tr>
-            <th>Order ID</th><th>Channel</th><th>Buyer</th><th>Total</th><th>Status</th><th>Items</th><th>Date</th><th></th>
-          </tr></thead>
-          <tbody>
-            {isLoading ? (
-              <tr><td colSpan={8} className="text-center py-8 text-gray-400">Loading…</td></tr>
-            ) : orders.length === 0 ? (
-              <tr><td colSpan={8} className="text-center py-8 text-gray-400">No orders found.</td></tr>
-            ) : orders.map((o: any) => (
-              <tr key={o.id}>
-                <td>
-                  <div className="font-medium">#{o.id}</div>
-                  {o.external_order_id && <div className="text-xs text-gray-400 font-mono">{o.external_order_id}</div>}
-                </td>
-                <td><span className="capitalize badge-gray">{o.marketplace}</span></td>
-                <td>
-                  <div>{o.buyer_name || "—"}</div>
-                  <div className="text-xs text-gray-400">{o.buyer_email}</div>
-                </td>
-                <td className="font-medium">${parseFloat(o.total).toFixed(2)} <span className="text-xs text-gray-400">{o.currency}</span></td>
-                <td><OrderStatusBadge status={o.status} /></td>
-                <td>{o.line_items?.length ?? 0}</td>
-                <td className="text-xs text-gray-500">{new Date(o.ordered_at).toLocaleDateString()}</td>
-                <td>
-                  <Link href={`/orders/${o.id}`} className="p-1 hover:bg-gray-100 rounded text-gray-500">
-                    <ChevronRight className="w-4 h-4" />
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {showDelayed ? (
+          <table>
+            <thead><tr>
+              <th>Order</th><th>Supplier</th><th>Label Date</th><th>Days Delayed</th><th>Delay Status</th><th></th>
+            </tr></thead>
+            <tbody>
+              {isLoading ? (
+                <tr><td colSpan={6} className="text-center py-8 text-gray-400">Loading…</td></tr>
+              ) : orders.length === 0 ? (
+                <tr><td colSpan={6} className="text-center py-8 text-gray-400">No delayed orders.</td></tr>
+              ) : orders.map((o: any) => (
+                <tr
+                  key={`${o.order_id}-${o.purchased_at}`}
+                  className={o.status === "urgent" ? "bg-red-50 hover:bg-red-100" : "bg-yellow-50 hover:bg-yellow-100"}
+                >
+                  <td>
+                    <div className="font-medium">#{o.order_id}</div>
+                    {o.order_name && o.order_name !== `#${o.order_id}` && (
+                      <div className="text-xs text-gray-400 font-mono">{o.order_name}</div>
+                    )}
+                  </td>
+                  <td>{o.supplier_name || "—"}</td>
+                  <td className="text-xs text-gray-600">{new Date(o.purchased_at).toLocaleDateString()}</td>
+                  <td>
+                    <span className={`font-semibold ${o.status === "urgent" ? "text-red-600" : "text-yellow-600"}`}>
+                      {o.days_delayed}d
+                    </span>
+                  </td>
+                  <td>
+                    {o.status === "urgent" ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+                        <AlertTriangle className="w-3 h-3" />URGENT
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">
+                        <AlertTriangle className="w-3 h-3" />WARNING
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <Link href={`/orders/${o.order_id}`} className="p-1 hover:bg-gray-100 rounded text-gray-500">
+                      <ChevronRight className="w-4 h-4" />
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <table>
+            <thead><tr>
+              <th>Order ID</th><th>Channel</th><th>Buyer</th><th>Total</th><th>Status</th><th>Items</th><th>Date</th><th></th>
+            </tr></thead>
+            <tbody>
+              {isLoading ? (
+                <tr><td colSpan={8} className="text-center py-8 text-gray-400">Loading…</td></tr>
+              ) : orders.length === 0 ? (
+                <tr><td colSpan={8} className="text-center py-8 text-gray-400">No orders found.</td></tr>
+              ) : orders.map((o: any) => (
+                <tr key={o.id}>
+                  <td>
+                    <div className="font-medium">#{o.id}</div>
+                    {o.external_order_id && <div className="text-xs text-gray-400 font-mono">{o.external_order_id}</div>}
+                  </td>
+                  <td><span className="capitalize badge-gray">{o.marketplace}</span></td>
+                  <td>
+                    <div>{o.buyer_name || "—"}</div>
+                    <div className="text-xs text-gray-400">{o.buyer_email}</div>
+                  </td>
+                  <td className="font-medium">${parseFloat(o.total).toFixed(2)} <span className="text-xs text-gray-400">{o.currency}</span></td>
+                  <td><OrderStatusBadge status={o.status} /></td>
+                  <td>{o.line_items?.length ?? 0}</td>
+                  <td className="text-xs text-gray-500">{new Date(o.ordered_at).toLocaleDateString()}</td>
+                  <td>
+                    <Link href={`/orders/${o.id}`} className="p-1 hover:bg-gray-100 rounded text-gray-500">
+                      <ChevronRight className="w-4 h-4" />
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {showCreate && <CreateOrderModal onClose={() => setShowCreate(false)} />}

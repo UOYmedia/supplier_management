@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import datetime, timezone
+from sqlalchemy import select, exists as sa_exists
+from datetime import datetime, timezone, timedelta
 import base64
 from app.core.database import get_db
 from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus, OrderFulfillmentItem
@@ -210,6 +210,61 @@ async def bulk_labels(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{date_label} – labels.zip"'},
     )
+
+
+@router.get("/delayed")
+async def list_delayed_orders(db: AsyncSession = Depends(get_db)):
+    """Orders where a shipping label was purchased 3+ days ago but line items are still 'shipped' (not delivered)."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=3)
+
+    has_shipped_items = sa_exists().where(
+        OrderLineItem.label_id == ShippingLabel.id,
+        OrderLineItem.fulfill_status == FulfillStatus.shipped,
+    )
+
+    labels_res = await db.execute(
+        select(ShippingLabel)
+        .where(
+            ShippingLabel.purchased_at <= cutoff,
+            has_shipped_items,
+        )
+        .order_by(ShippingLabel.purchased_at.asc())
+    )
+    labels = labels_res.scalars().all()
+
+    result = []
+    for label in labels:
+        li_res = await db.execute(
+            select(OrderLineItem)
+            .where(
+                OrderLineItem.label_id == label.id,
+                OrderLineItem.fulfill_status == FulfillStatus.shipped,
+            )
+            .limit(1)
+        )
+        li = li_res.scalar_one_or_none()
+        if not li:
+            continue
+
+        order = await db.get(Order, li.order_id)
+        if not order:
+            continue
+        supplier = await db.get(Supplier, label.supplier_id) if label.supplier_id else None
+
+        days = (now - label.purchased_at).days
+        status = "urgent" if days >= 5 else "warning"
+
+        result.append({
+            "order_id": order.id,
+            "order_name": order.order_name or order.external_order_id or f"#{order.id}",
+            "supplier_name": supplier.name if supplier else None,
+            "purchased_at": label.purchased_at.isoformat(),
+            "days_delayed": days,
+            "status": status,
+        })
+
+    return result
 
 
 @router.get("/{order_id}", response_model=OrderOut)

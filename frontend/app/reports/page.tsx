@@ -93,6 +93,15 @@ export default function ReportsPage() {
     queryFn: () => ordersApi.list({ from_date: fromISO, to_date: toISO_ }),
   });
 
+  const getRawName = (li: any) => {
+    const raw = li.catalog_name
+      || li.mapping_suggestion?.catalog_name
+      || li.product_name
+      || "Unknown"
+    const cleaned = raw.replace(/^\([^)]*\)\s*/g, "").trim()
+    return cleaned.split(/[,|]/)[0].trim() || "Unknown"
+  }
+
   const groups = useMemo(() => {
     const map = new Map<string, {
       supplier: string;
@@ -103,10 +112,7 @@ export default function ReportsPage() {
     }>();
     for (const order of orders as any[]) {
       for (const li of (order.line_items ?? [])) {
-        const name = li.catalog_name
-          || li.mapping_suggestion?.catalog_name
-          || li.product_name?.split(/[,|]/)[0].trim()
-          || "Unknown";
+        const name = getRawName(li);
         const qty = Number(li.quantity) || 0;
         const unitCost = Number(li.base_cost ?? 0) || 0;
         const prev = map.get(name);

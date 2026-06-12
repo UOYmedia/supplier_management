@@ -62,6 +62,15 @@ function fmtDateLabel(period: Period, from: Date, to: Date): string {
 
 function toISO(d: Date) { return d.toISOString(); }
 
+const getRawName = (li: any): string => {
+  const raw = li.catalog_name
+    || li.mapping_suggestion?.catalog_name
+    || li.product_name
+    || "Unknown"
+  const cleaned = raw.replace(/\s*\([^)]*\)/g, "").trim()
+  return cleaned.split(/[,|]/)[0].trim() || "Unknown"
+}
+
 export default function ReportsPage() {
   const [period, setPeriod] = useState<Period>("today");
   const [customFrom, setCustomFrom] = useState("");
@@ -93,14 +102,7 @@ export default function ReportsPage() {
     queryFn: () => ordersApi.list({ from_date: fromISO, to_date: toISO_ }),
   });
 
-  const getRawName = (li: any) => {
-    const raw = li.catalog_name
-      || li.mapping_suggestion?.catalog_name
-      || li.product_name
-      || "Unknown"
-    const cleaned = raw.replace(/^\([^)]*\)\s*/g, "").trim()
-    return cleaned.split(/[,|]/)[0].trim() || "Unknown"
-  }
+
 
   const groups = useMemo(() => {
     const map = new Map<string, {

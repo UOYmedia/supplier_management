@@ -16,9 +16,15 @@ from app.schemas.supplier_product import (
 )
 import csv
 import io
+import re
 import uuid
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
+from pydantic import BaseModel
+
+
+class _ShortNameBody(BaseModel):
+    short_name: str
 
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
 
@@ -412,6 +418,41 @@ async def delete_supplier_product(supplier_id: int, sp_id: int, db: AsyncSession
     sp = await _get_sp_or_404(supplier_id, sp_id, db)
     await db.delete(sp)
     await db.commit()
+
+
+@router.get("/supplier-products/{sp_id}/suggest-name")
+async def suggest_short_name(sp_id: int, db: AsyncSession = Depends(get_db)):
+    sp = await db.get(SupplierProduct, sp_id)
+    if not sp:
+        raise HTTPException(404, "Supplier product not found")
+    title = sp.name
+    parts = re.split(r'[|,]', title)
+    base = parts[0].strip()
+    size_match = re.search(r'\d+[\.\-]?\d*\s*(?:inch|in|")', title, re.IGNORECASE)
+    size = size_match.group(0).strip() if size_match else ""
+    words = base.split()[:4]
+    short = " ".join(words)
+    suggestions = []
+    if size:
+        suggestions.append(f"{short} {size}".strip())
+    suggestions.append(short)
+    suggestions.append(" ".join(base.split()[:3]))
+    seen = []
+    for s in suggestions:
+        if s not in seen:
+            seen.append(s)
+    suggestions = seen[:3]
+    return {"suggestions": suggestions}
+
+
+@router.patch("/supplier-products/{sp_id}/short-name")
+async def update_short_name(sp_id: int, body: _ShortNameBody, db: AsyncSession = Depends(get_db)):
+    sp = await db.get(SupplierProduct, sp_id)
+    if not sp:
+        raise HTTPException(404, "Supplier product not found")
+    sp.short_name = body.short_name
+    await db.commit()
+    return {"id": sp_id, "short_name": sp.short_name}
 
 
 # --- Supplier orders (only own line items) ---

@@ -2,7 +2,6 @@ import axios from "axios";
 
 export const api = axios.create({
   baseURL: "/api/v1",
-  headers: { "Content-Type": "application/json" },
 });
 
 // Attach admin JWT from localStorage on every request
@@ -39,7 +38,7 @@ export const productsApi = {
   importCsv: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return api.post("/products/import/csv", fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+    return api.post("/products/import/csv", fd).then((r) => r.data);
   },
   listSuppliers: (id: number) => api.get(`/products/${id}/suppliers`).then((r) => r.data),
   addSupplier: (id: number, data: object) => api.post(`/products/${id}/suppliers`, data).then((r) => r.data),
@@ -55,7 +54,7 @@ export const productsApi = {
   importMappingsCsv: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return api.post("/products/mappings/import/csv", fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+    return api.post("/products/mappings/import/csv", fd).then((r) => r.data);
   },
 };
 
@@ -81,7 +80,7 @@ export const suppliersApi = {
   createInvoiceFromOrders: (id: number, data: object) => api.post(`/suppliers/${id}/invoices/create-from-orders`, data).then((r) => r.data),
   importCatalog: (id: number, file: File) => {
     const fd = new FormData(); fd.append("file", file);
-    return api.post(`/suppliers/${id}/products/import/csv`, fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+    return api.post(`/suppliers/${id}/products/import/csv`, fd).then((r) => r.data);
   },
   exportCatalog: (id: number, filename: string) =>
     api.get(`/suppliers/${id}/products/export.csv`, { responseType: "blob" }).then((r) => {

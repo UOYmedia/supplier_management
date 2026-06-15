@@ -113,7 +113,7 @@ export const ordersApi = {
   updateLabel: (orderId: number, labelId: number, data: object) => api.patch(`/orders/${orderId}/labels/${labelId}`, data).then((r) => r.data),
   uploadLabel: (orderId: number, labelId: number, file: File) => {
     const fd = new FormData(); fd.append("file", file);
-    return api.post(`/orders/${orderId}/labels/${labelId}/upload`, fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+    return api.post(`/orders/${orderId}/labels/${labelId}/upload`, fd).then((r) => r.data);
   },
   regenerateLabel: (orderId: number, labelId: number, size: string) =>
     api.post(`/orders/${orderId}/labels/${labelId}/regenerate`, null, { params: { size } }).then((r) => r.data),

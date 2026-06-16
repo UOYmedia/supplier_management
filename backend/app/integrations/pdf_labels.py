@@ -8,8 +8,7 @@ import base64
 import io
 from dataclasses import dataclass, field
 
-from pypdf import PdfReader, PdfWriter
-from pypdf.transformations import Transformation
+from pypdf import PdfReader, PdfWriter, Transformation
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 

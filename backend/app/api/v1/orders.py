@@ -656,14 +656,17 @@ async def upload_label_pdf(
         raise HTTPException(404, "Label not found")
 
     raw = await file.read()
+    print(f"upload_label_pdf: order={order_id} label={label_id} filename={file.filename!r} content_type={file.content_type!r} size={len(raw)}", flush=True)
     if not raw:
         raise HTTPException(400, "Uploaded file is empty")
     if raw[:5] != b"%PDF-":
-        raise HTTPException(400, "Please upload a PDF file")
+        print(f"upload_label_pdf: rejected — first 8 bytes = {raw[:8]!r}", flush=True)
+        raise HTTPException(400, f"Please upload a PDF file (got {raw[:4]!r})")
 
     label.label_data = base64.b64encode(raw).decode()
     await db.commit()
     await db.refresh(label)
+    print(f"upload_label_pdf: saved OK label_data len={len(label.label_data)}", flush=True)
     return label
 
 

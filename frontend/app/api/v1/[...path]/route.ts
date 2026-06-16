@@ -27,8 +27,10 @@ async function proxy(req: NextRequest, { params }: { params: { path: string[] } 
       const fwdHeaders: Record<string, string> = { "Content-Type": ct };
       if (auth) fwdHeaders["Authorization"] = auth;
       const bodyBuf = await req.arrayBuffer();
+      console.log(`[proxy] multipart upload ${req.method} ${targetUrl} body=${bodyBuf.byteLength}B`);
       const resp = await fetch(targetUrl, { method: req.method, headers: fwdHeaders, body: bodyBuf });
       const data = await resp.json().catch(() => null);
+      console.log(`[proxy] multipart response status=${resp.status} data=${JSON.stringify(data)?.slice(0, 200)}`);
       return NextResponse.json(data, { status: resp.status });
     }
     body = await req.text();

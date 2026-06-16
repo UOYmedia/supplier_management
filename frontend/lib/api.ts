@@ -111,8 +111,18 @@ export const ordersApi = {
   markLabelPrinted: (orderId: number, labelId: number) => api.post(`/orders/${orderId}/labels/${labelId}/mark-printed`).then((r) => r.data),
   updateLabel: (orderId: number, labelId: number, data: object) => api.patch(`/orders/${orderId}/labels/${labelId}`, data).then((r) => r.data),
   uploadLabel: (orderId: number, labelId: number, file: File) => {
-    const fd = new FormData(); fd.append("file", file);
-    return api.post(`/orders/${orderId}/labels/${labelId}/upload`, fd).then((r) => r.data);
+    return new Promise<any>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const b64 = result.includes(",") ? result.split(",")[1] : result;
+        api.post(`/orders/${orderId}/labels/${labelId}/upload-b64`, { data: b64 })
+          .then((r) => resolve(r.data))
+          .catch(reject);
+      };
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsDataURL(file);
+    });
   },
   regenerateLabel: (orderId: number, labelId: number, size: string) =>
     api.post(`/orders/${orderId}/labels/${labelId}/regenerate`, null, { params: { size } }).then((r) => r.data),

@@ -4,6 +4,10 @@ from pydantic import BaseModel, ConfigDict
 from app.models.order import OrderStatus, FulfillStatus
 
 
+class UploadLabelB64(BaseModel):
+    data: str  # base64-encoded PDF bytes
+
+
 class ShippingAddress(BaseModel):
     name: str | None = None
     line1: str | None = None

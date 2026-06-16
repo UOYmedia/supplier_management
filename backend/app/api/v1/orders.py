@@ -670,6 +670,31 @@ async def upload_label_pdf(
     return label
 
 
+@router.post("/{order_id}/labels/{label_id}/upload-b64", response_model=ShippingLabelOut)
+async def upload_label_pdf_b64(
+    order_id: int, label_id: int, body: "UploadLabelB64", db: AsyncSession = Depends(get_db)
+):
+    """Upload a PDF label as base64-encoded JSON — avoids multipart proxy issues."""
+    from app.schemas.order import UploadLabelB64 as _Schema
+    await _get_or_404(order_id, db)
+    label = await db.get(ShippingLabel, label_id)
+    if not label:
+        raise HTTPException(404, "Label not found")
+    try:
+        raw = base64.b64decode(body.data)
+    except Exception:
+        raise HTTPException(400, "Invalid base64 data")
+    if not raw:
+        raise HTTPException(400, "Uploaded file is empty")
+    if raw[:5] != b"%PDF-":
+        raise HTTPException(400, f"Please upload a PDF file (got {raw[:4]!r})")
+    label.label_data = base64.b64encode(raw).decode()
+    await db.commit()
+    await db.refresh(label)
+    print(f"upload_label_pdf_b64: saved OK order={order_id} label={label_id} size={len(raw)}", flush=True)
+    return label
+
+
 @router.post("/{order_id}/labels/{label_id}/regenerate", response_model=ShippingLabelOut)
 async def regenerate_label(
     order_id: int,

@@ -9,6 +9,7 @@ import io
 from dataclasses import dataclass, field
 
 from pypdf import PdfReader, PdfWriter
+from pypdf.transformations import Transformation
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 
@@ -74,7 +75,7 @@ def _draw_overlay(c: canvas.Canvas, entry: "LabelEntry") -> None:
         y -= 0.18 * inch
 
     date_str = ""
-    if (entry.supplier_name or "").upper() == "JOE":
+    if (entry.supplier_name or "").strip().upper() == "JOE":
         now = datetime.now()
         date_str = now.strftime("%b").upper() + " " + str(now.day)
 
@@ -152,7 +153,14 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
         if entry.label_pdf:
             try:
                 carrier = PdfReader(io.BytesIO(entry.label_pdf)).pages[0]
-                out_page.merge_page(carrier)
+                cw = float(carrier.mediabox.width)
+                ch = float(carrier.mediabox.height)
+                if cw and ch and (abs(cw - LABEL_W) > 1 or abs(ch - LABEL_H) > 1):
+                    # Scale carrier to fit 4×6 if its native size differs
+                    sx, sy = LABEL_W / cw, LABEL_H / ch
+                    out_page.merge_transformed_page(carrier, Transformation().scale(sx, sy))
+                else:
+                    out_page.merge_page(carrier)
             except Exception:
                 pass
         out_page.merge_page(overlay_page)

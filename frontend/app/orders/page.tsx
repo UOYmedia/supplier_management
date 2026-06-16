@@ -26,10 +26,12 @@ export default function OrdersPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [showBulkPrint, setShowBulkPrint] = useState(false);
   const [showDelayed, setShowDelayed] = useState(false);
+  const [page, setPage] = useState(0);
+  const limit = 50;
 
   const { data: regularOrders = [], isLoading: regularLoading, refetch: refetchRegular } = useQuery({
-    queryKey: ["orders", status, marketplace],
-    queryFn: () => ordersApi.list({ status: status || undefined, marketplace: marketplace || undefined }),
+    queryKey: ["orders", status, marketplace, page],
+    queryFn: () => ordersApi.list({ status: status || undefined, marketplace: marketplace || undefined, skip: page * limit, limit }),
   });
 
   const { data: delayedOrders = [], isLoading: delayedLoading, refetch: refetchDelayed } = useQuery({
@@ -42,6 +44,11 @@ export default function OrdersPage() {
   const isLoading = showDelayed ? delayedLoading : regularLoading;
   const refetch = showDelayed ? refetchDelayed : refetchRegular;
   const urgentCount = (delayedOrders as any[]).filter((o) => o.status === "urgent").length;
+
+  const hasMore = !showDelayed && (regularOrders as any[]).length === limit;
+  const startPage = Math.max(0, page - 2);
+  const endPage = hasMore ? page + 2 : page;
+  const pageNumbers = Array.from({ length: endPage - startPage + 1 }, (_, i) => startPage + i);
 
   return (
     <div>
@@ -60,7 +67,7 @@ export default function OrdersPage() {
           className="input w-40"
           value={status}
           disabled={showDelayed}
-          onChange={(e) => setStatus(e.target.value)}
+          onChange={(e) => { setStatus(e.target.value); setPage(0); }}
         >
           {STATUSES.map((s) => <option key={s} value={s}>{s || "All statuses"}</option>)}
         </select>
@@ -68,7 +75,7 @@ export default function OrdersPage() {
           className="input w-40"
           value={marketplace}
           disabled={showDelayed}
-          onChange={(e) => setMarketplace(e.target.value)}
+          onChange={(e) => { setMarketplace(e.target.value); setPage(0); }}
         >
           {MARKETS.map((m) => <option key={m} value={m}>{m || "All channels"}</option>)}
         </select>
@@ -78,7 +85,7 @@ export default function OrdersPage() {
               ? "bg-red-50 border-red-400 text-red-700"
               : "bg-white border-gray-300 text-gray-700 hover:border-gray-400"
           }`}
-          onClick={() => setShowDelayed((v) => !v)}
+          onClick={() => { setShowDelayed((v) => !v); setPage(0); }}
         >
           <AlertTriangle className="w-4 h-4" />
           Delayed
@@ -175,6 +182,33 @@ export default function OrdersPage() {
           </table>
         )}
       </div>
+
+      {!showDelayed && (
+        <div className="flex items-center justify-between mt-3 px-1">
+          <span className="text-sm text-gray-500">
+            {(regularOrders as any[]).length > 0
+              ? `Showing ${page * limit + 1}–${page * limit + (regularOrders as any[]).length}`
+              : !isLoading ? "No orders found" : ""}
+          </span>
+          <div className="flex items-center gap-1">
+            <button className="btn-secondary" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+              Previous
+            </button>
+            {pageNumbers.map((p) => (
+              <button
+                key={p}
+                className={p === page ? "btn-primary" : "btn-secondary"}
+                onClick={() => setPage(p)}
+              >
+                {p + 1}
+              </button>
+            ))}
+            <button className="btn-secondary" disabled={!hasMore} onClick={() => setPage((p) => p + 1)}>
+              Next
+            </button>
+          </div>
+        </div>
+      )}
 
       {showCreate && <CreateOrderModal onClose={() => setShowCreate(false)} />}
       {showBulkPrint && <BulkPrintModal onClose={() => setShowBulkPrint(false)} />}

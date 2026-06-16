@@ -129,19 +129,20 @@ async def bulk_labels(
     date_label = start.strftime("%b").upper() + " " + str(start.day)
 
     async def _pdf_for_label(label: ShippingLabel) -> bytes | None:
-        if label.label_data:
-            return decode_label_data(label.label_data)
-        if not label.label_url:
-            return None
         try:
-            async with httpx.AsyncClient(timeout=20) as http:
-                r = await http.get(label.label_url)
-            if not r.is_success:
+            raw: bytes | None = None
+            if label.label_data:
+                raw = decode_label_data(label.label_data)
+            elif label.label_url:
+                async with httpx.AsyncClient(timeout=20) as http:
+                    r = await http.get(label.label_url)
+                if r.is_success:
+                    raw = r.content
+            if not raw:
                 return None
-            content = r.content
-            if content[:5] == b"%PDF-":
-                return content
-            # PNG — rebuild with catalog overlay
+            if raw[:5] == b"%PDF-":
+                return raw
+            # Non-PDF bytes (e.g. PNG) — build label PDF with catalog overlay
             li_res = await db.execute(select(OrderLineItem).where(OrderLineItem.label_id == label.id))
             lis = li_res.scalars().all()
             pack_items: list[PackItem] = []
@@ -161,8 +162,10 @@ async def bulk_labels(
                 items=pack_items,
                 supplier_name=sup.name if sup else None,
             )
-            return build_label_from_png(content, entry)
-        except Exception:
+            return build_label_from_png(raw, entry)
+        except Exception as _e:
+            import traceback as _tb
+            print(f"bulk_labels: _pdf_for_label label={label.id} failed — {_e}\n{_tb.format_exc()}", flush=True)
             return None
 
     async def _supplier_pdf(sup_labels: list) -> tuple[bytes | None, int]:
@@ -189,7 +192,8 @@ async def bulk_labels(
         try:
             return concat_label_pdfs(pages), n_orders
         except Exception as e:
-            print(f"bulk_labels: concat_label_pdfs failed — {e}", flush=True)
+            import traceback as _tb
+            print(f"bulk_labels: concat_label_pdfs failed — {e}\n{_tb.format_exc()}", flush=True)
             raise
 
     by_sup: dict[int, list] = defaultdict(list)
@@ -213,26 +217,37 @@ async def bulk_labels(
             headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
 
-    zip_buf = _io.BytesIO()
-    total = 0
-    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for sid, sup_labels in by_sup.items():
-            sup = await db.get(Supplier, sid)
-            sup_name = (sup.name if sup else str(sid)).upper()
-            pdf, n_orders = await _supplier_pdf(sup_labels)
-            if not pdf:
-                continue
-            fname = f"{date_label} – {n_orders} ORDERS – {sup_name}.pdf"
-            zf.writestr(fname, pdf)
-            total += 1
-    if total == 0:
-        raise HTTPException(404, "No printable label data found for any supplier on this date")
-    zip_buf.seek(0)
-    return Response(
-        content=zip_buf.getvalue(),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{date_label} – labels.zip"'},
-    )
+    try:
+        zip_buf = _io.BytesIO()
+        total = 0
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for sid, sup_labels in by_sup.items():
+                sup = await db.get(Supplier, sid)
+                sup_name = (sup.name if sup else str(sid)).upper()
+                try:
+                    pdf, n_orders = await _supplier_pdf(sup_labels)
+                except Exception as e:
+                    print(f"bulk_labels: _supplier_pdf failed for supplier={sid} — {e}", flush=True)
+                    continue
+                if not pdf:
+                    continue
+                fname = f"{date_label} – {n_orders} ORDERS – {sup_name}.pdf"
+                zf.writestr(fname, pdf)
+                total += 1
+        if total == 0:
+            raise HTTPException(404, "No printable label data found for any supplier on this date")
+        zip_buf.seek(0)
+        return Response(
+            content=zip_buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{date_label} – labels.zip"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"bulk_labels: zip path crashed — {traceback.format_exc()}", flush=True)
+        raise HTTPException(500, f"Error building zip: {e}")
 
 
 @router.get("/delayed")

@@ -400,10 +400,10 @@ export default function OrderDetailPage() {
                 {l.has_label_data && (
                   <a
                     href={ordersApi.labelDownloadUrl(oid, l.id)}
-                    target="_blank"
+                    download={`label-${l.tracking_number || l.id}.pdf`}
                     className="flex items-center gap-1 text-blue-600 hover:underline text-xs"
                   >
-                    <Download className="w-3 h-3" /> Download PDF
+                    <Download className="w-3 h-3" /> Download
                   </a>
                 )}
                 {!l.has_label_data && l.label_url && (

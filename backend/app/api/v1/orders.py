@@ -184,7 +184,13 @@ async def bulk_labels(
                     f"has_data={bool(lbl.label_data)} has_url={bool(lbl.label_url)}",
                     flush=True,
                 )
-        return (concat_label_pdfs(pages) if pages else None), n_orders
+        if not pages:
+            return None, n_orders
+        try:
+            return concat_label_pdfs(pages), n_orders
+        except Exception as e:
+            print(f"bulk_labels: concat_label_pdfs failed — {e}", flush=True)
+            raise
 
     by_sup: dict[int, list] = defaultdict(list)
     for lbl in labels:
@@ -193,7 +199,11 @@ async def bulk_labels(
     if supplier_id is not None:
         sup = await db.get(Supplier, supplier_id)
         sup_name = (sup.name if sup else str(supplier_id)).upper()
-        pdf, n_orders = await _supplier_pdf(list(by_sup.get(supplier_id, [])))
+        try:
+            pdf, n_orders = await _supplier_pdf(list(by_sup.get(supplier_id, [])))
+        except Exception as e:
+            print(f"bulk_labels: _supplier_pdf crashed for supplier={supplier_id} date={date} — {e}", flush=True)
+            raise HTTPException(500, f"Error building label PDF: {e}")
         if not pdf:
             raise HTTPException(404, "No printable label data found for this supplier/date")
         fname = f"{date_label} – {n_orders} ORDERS – {sup_name}.pdf"

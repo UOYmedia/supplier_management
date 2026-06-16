@@ -291,7 +291,17 @@ function BulkPrintModal({ onClose }: { onClose: () => void }) {
       if (status === 404) {
         toast.error("No printable labels found — labels may have no PDF data yet. Try uploading or regenerating first.");
       } else {
-        toast.error(`Download failed (${status ?? "network error"})`);
+        // Try to extract detail from blob response
+        let detail = "";
+        try {
+          if (e.response?.data instanceof Blob) {
+            const text = await e.response.data.text();
+            detail = JSON.parse(text)?.detail || text;
+          } else {
+            detail = e.response?.data?.detail || "";
+          }
+        } catch {}
+        toast.error(`Download failed (${status ?? "network error"})${detail ? ": " + detail : ""}`);
       }
     } finally {
       setLoading(false);

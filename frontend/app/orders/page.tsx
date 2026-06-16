@@ -50,10 +50,12 @@ function OrdersPageInner() {
 
   const hasMore = !showDelayed && (regularOrders as any[]).length === limit;
 
-  // Smart pagination: always show page 1, window of page±1, ellipses for gaps
-  const windowStart = Math.max(0, page - 1);
-  const windowEnd = hasMore ? page + 1 : page;
+  // Smart pagination: always show page 1, 3-page window centered on current, ellipses for gaps
+  // hasMore  → extend window forward (page+1, pad to 3 if clamped at start)
+  // !hasMore → extend window backward (up to page-2, so last page shows N-2 N-1 N)
   type PageItem = { type: "page"; index: number } | { type: "ellipsis"; key: string };
+  const windowStart = hasMore ? Math.max(0, page - 1) : Math.max(0, page - 2);
+  const windowEnd   = hasMore ? Math.max(page + 1, windowStart + 2) : page;
   const pageItems: PageItem[] = [];
   if (windowStart > 0) {
     pageItems.push({ type: "page", index: 0 });

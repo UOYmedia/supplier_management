@@ -252,7 +252,7 @@ async def download_label(order_id: int, label_id: int, db: AsyncSession = Depend
             return Response(
                 content=pdf_bytes,
                 media_type="application/pdf",
-                headers={"Content-Disposition": f"attachment; filename=label_{label_id}.pdf"},
+                headers={"Content-Disposition": f"inline; filename=label_{label_id}.pdf"},
             )
         except Exception:
             raise HTTPException(500, "Failed to decode label data")

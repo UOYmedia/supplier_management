@@ -178,6 +178,12 @@ async def bulk_labels(
             pdf = await _pdf_for_label(lbl)
             if pdf:
                 pages.append(pdf)
+            else:
+                print(
+                    f"bulk_labels: label {lbl.id} skipped — "
+                    f"has_data={bool(lbl.label_data)} has_url={bool(lbl.label_url)}",
+                    flush=True,
+                )
         return (concat_label_pdfs(pages) if pages else None), n_orders
 
     by_sup: dict[int, list] = defaultdict(list)

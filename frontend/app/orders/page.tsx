@@ -288,7 +288,11 @@ function BulkPrintModal({ onClose }: { onClose: () => void }) {
       onClose();
     } catch (e: any) {
       const status = e.response?.status;
-      toast.error(status === 404 ? "No labels found for this date/supplier" : "Download failed");
+      if (status === 404) {
+        toast.error("No printable labels found — labels may have no PDF data yet. Try uploading or regenerating first.");
+      } else {
+        toast.error(`Download failed (${status ?? "network error"})`);
+      }
     } finally {
       setLoading(false);
     }

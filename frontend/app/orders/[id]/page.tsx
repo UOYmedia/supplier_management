@@ -856,6 +856,8 @@ function LineItemRow({ li, orderId, onUpdate, onAssignSupplier, onQuickAssign, s
   const [shortNameInput, setShortNameInput] = useState("");
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
 
   const isShipped = status === "shipped" || status === "delivered";
   const canReassign = !isShipped && !!li.supplier_id;
@@ -967,7 +969,7 @@ function LineItemRow({ li, orderId, onUpdate, onAssignSupplier, onQuickAssign, s
           </div>
         </td>
       </tr>
-      {editingShortName && createPortal(
+      {mounted && editingShortName && createPortal(
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
             <h3 className="font-semibold text-gray-800 mb-1">Set short name</h3>

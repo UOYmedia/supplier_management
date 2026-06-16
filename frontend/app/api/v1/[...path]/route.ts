@@ -24,10 +24,9 @@ async function proxy(req: NextRequest, { params }: { params: { path: string[] } 
   if (req.method !== "GET" && req.method !== "HEAD") {
     const ct = req.headers.get("content-type") || "";
     if (ct.includes("multipart/form-data")) {
-      const formData = await req.formData();
-      const fwdHeaders: Record<string, string> = {};
+      const fwdHeaders: Record<string, string> = { "Content-Type": ct };
       if (auth) fwdHeaders["Authorization"] = auth;
-      const resp = await fetch(targetUrl, { method: req.method, headers: fwdHeaders, body: formData });
+      const resp = await fetch(targetUrl, { method: req.method, headers: fwdHeaders, body: req.body, duplex: "half" } as RequestInit);
       const data = await resp.json().catch(() => null);
       return NextResponse.json(data, { status: resp.status });
     }

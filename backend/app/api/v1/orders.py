@@ -112,16 +112,30 @@ async def bulk_labels(
     start = d.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
     end = d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
 
-    q = select(ShippingLabel).where(
-        ShippingLabel.purchased_at >= start,
-        ShippingLabel.purchased_at <= end,
-    ).order_by(ShippingLabel.supplier_id)
+    # Only labels linked to processing orders (via OrderLineItem → Order)
+    processing_label_ids_q = (
+        select(OrderLineItem.label_id)
+        .join(Order, Order.id == OrderLineItem.order_id)
+        .where(
+            OrderLineItem.label_id.isnot(None),
+            Order.status == OrderStatus.processing,
+        )
+    )
+    q = (
+        select(ShippingLabel)
+        .where(
+            ShippingLabel.purchased_at >= start,
+            ShippingLabel.purchased_at <= end,
+            ShippingLabel.id.in_(processing_label_ids_q),
+        )
+        .order_by(ShippingLabel.supplier_id)
+    )
     if supplier_id is not None:
         q = q.where(ShippingLabel.supplier_id == supplier_id)
 
     labels = (await db.execute(q)).scalars().all()
     if not labels:
-        detail = f"No labels purchased on {date}"
+        detail = f"No processing orders with labels on {date}"
         if supplier_id:
             detail += f" for supplier {supplier_id}"
         raise HTTPException(404, detail)

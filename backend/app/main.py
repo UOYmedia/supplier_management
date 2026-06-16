@@ -129,6 +129,8 @@ async def _run_migrations():
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS length NUMERIC(10, 2)",
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS width NUMERIC(10, 2)",
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS height NUMERIC(10, 2)",
+        # shipping_labels: refund timestamp
+        "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ",
         # order_line_items: Amazon ASIN identifier
         "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS asin VARCHAR(20)",
         # convert native PostgreSQL ENUM columns to VARCHAR so asyncpg ::VARCHAR binding works

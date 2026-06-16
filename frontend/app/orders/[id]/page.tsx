@@ -662,7 +662,8 @@ function ManualLabelModal({ orderId, supplierId, lineItemIds, onClose, onDone }:
       toast.success("Manual label saved");
       onDone();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || "Error saving label");
+      const msg = e.response?.data?.detail || e.message || "Error saving label";
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -750,7 +751,8 @@ function EditLabelModal({ orderId, label, onClose, onDone }: {
       toast.success("Label updated");
       onDone();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || "Error updating label");
+      const msg = e.response?.data?.detail || e.message || "Error updating label";
+      toast.error(msg);
     } finally {
       setSaving(false);
     }

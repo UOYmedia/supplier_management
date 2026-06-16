@@ -394,7 +394,7 @@ export default function OrderDetailPage() {
                     rel="noopener noreferrer"
                     className="flex items-center gap-1 text-blue-600 hover:underline text-xs"
                   >
-                    <Download className="w-3 h-3" /> Download
+                    <ExternalLink className="w-3 h-3" /> Download
                   </a>
                 )}
                 {!l.has_label_data && l.label_url && (

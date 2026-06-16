@@ -267,8 +267,8 @@ export default function ReportsPage() {
             <span className="text-xs text-gray-500 font-medium">Ending Balance</span>
             <DollarSign className="w-4 h-4 text-green-500" />
           </div>
-          <div className={`text-2xl font-bold ${startNum > 0 ? (ending >= 0 ? "text-green-700" : "text-red-600") : "text-gray-300"}`}>
-            {startNum > 0
+          <div className={`text-2xl font-bold ${startingBalance.trim() ? (ending >= 0 ? "text-green-700" : "text-red-600") : "text-gray-300"}`}>
+            {startingBalance.trim()
               ? `$${ending.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
               : "—"}
           </div>
@@ -276,7 +276,7 @@ export default function ReportsPage() {
       </div>
 
       {/* Balance summary row */}
-      {startNum > 0 && (
+      {startingBalance.trim() && (
         <div className="card mb-4 px-5 py-3 flex items-center gap-3 text-sm flex-wrap">
           <span className="font-medium text-gray-700">
             Starting <span className="text-blue-600 font-bold">${startNum.toLocaleString()}</span>
@@ -342,7 +342,7 @@ export default function ReportsPage() {
       </div>
 
       {/* Ending balance display */}
-      {startNum > 0 && (
+      {startingBalance.trim() && (
         <div className={`card px-5 py-4 flex items-center justify-between ${
           ending >= 0 ? "border-green-200 bg-green-50" : "border-red-200 bg-red-50"
         }`}>

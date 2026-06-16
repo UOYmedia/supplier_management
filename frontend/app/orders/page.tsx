@@ -50,19 +50,22 @@ function OrdersPageInner() {
 
   const hasMore = !showDelayed && (regularOrders as any[]).length === limit;
 
-  // Smart pagination: always show page 1, 3-page window centered on current, ellipses for gaps
-  // hasMore  → extend window forward (page+1, pad to 3 if clamped at start)
-  // !hasMore → extend window backward (up to page-2, so last page shows N-2 N-1 N)
+  // Pagination: Prev | 1 | 2 | ... | page-1 | page | Next
+  // Always show 1 and 2; ellipsis when page > 3; no trailing ellipsis (Next handles that).
   type PageItem = { type: "page"; index: number } | { type: "ellipsis"; key: string };
-  const windowStart = hasMore ? Math.max(0, page - 1) : Math.max(0, page - 2);
-  const windowEnd   = hasMore ? Math.max(page + 1, windowStart + 2) : page;
   const pageItems: PageItem[] = [];
-  if (windowStart > 0) {
+  if (page <= 2) {
+    // Small page numbers: show 1 2 3 (cap at current page when no more data)
+    const end = hasMore ? 2 : page;
+    for (let i = 0; i <= end; i++) pageItems.push({ type: "page", index: i });
+  } else {
+    // Always show 1, 2, then gap, then page-1, page
     pageItems.push({ type: "page", index: 0 });
-    if (windowStart > 1) pageItems.push({ type: "ellipsis", key: "pre" });
+    pageItems.push({ type: "page", index: 1 });
+    if (page > 3) pageItems.push({ type: "ellipsis", key: "pre" });
+    pageItems.push({ type: "page", index: page - 1 });
+    pageItems.push({ type: "page", index: page });
   }
-  for (let i = windowStart; i <= windowEnd; i++) pageItems.push({ type: "page", index: i });
-  if (hasMore) pageItems.push({ type: "ellipsis", key: "post" });
 
   return (
     <div>

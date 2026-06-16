@@ -257,27 +257,25 @@ function BulkPrintModal({ onClose }: { onClose: () => void }) {
   });
 
   const handleDownload = async () => {
+    const params: { date: string; supplier_id?: number } = { date };
+    if (supplierId !== null) params.supplier_id = supplierId;
+
+    // Single supplier → open PDF inline in new tab
+    if (supplierId !== null) {
+      window.open(ordersApi.bulkLabelsUrl(params), "_blank");
+      onClose();
+      return;
+    }
+
+    // All suppliers → download zip
     setLoading(true);
     try {
-      const params: { date: string; supplier_id?: number } = { date };
-      if (supplierId !== null) params.supplier_id = supplierId;
-
       const blob = await ordersApi.bulkLabels(params);
-
       const d = new Date(date + "T12:00:00");
       const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
       const dateLabel = `${mon} ${d.getDate()}`;
-
-      let filename: string;
-      if (supplierId !== null) {
-        const sup = (suppliers as any[]).find((s) => s.id === supplierId);
-        filename = `${dateLabel} – ${sup?.name?.toUpperCase() ?? "SUPPLIER"}.pdf`;
-      } else {
-        filename = `${dateLabel} – labels.zip`;
-      }
-
-      const mimeType = supplierId !== null ? "application/pdf" : "application/zip";
-      const url = URL.createObjectURL(new Blob([blob], { type: mimeType }));
+      const filename = `${dateLabel} - labels.zip`;
+      const url = URL.createObjectURL(new Blob([blob], { type: "application/zip" }));
       const a = document.createElement("a");
       a.href = url;
       a.download = filename;
@@ -289,9 +287,8 @@ function BulkPrintModal({ onClose }: { onClose: () => void }) {
     } catch (e: any) {
       const status = e.response?.status;
       if (status === 404) {
-        toast.error("No printable labels found — labels may have no PDF data yet. Try uploading or regenerating first.");
+        toast.error("No printable labels found — labels may have no PDF data yet.");
       } else {
-        // Try to extract detail from blob response
         let detail = "";
         try {
           if (e.response?.data instanceof Blob) {
@@ -344,7 +341,7 @@ function BulkPrintModal({ onClose }: { onClose: () => void }) {
         <div className="flex justify-end gap-2 mt-6">
           <button className="btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn-primary" onClick={handleDownload} disabled={loading || !date}>
-            {loading ? "Preparing…" : "Download"}
+            {loading ? "Preparing…" : supplierId !== null ? "Open PDF" : "Download Zip"}
           </button>
         </div>
       </div>

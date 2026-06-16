@@ -131,8 +131,16 @@ async def _run_migrations():
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS height NUMERIC(10, 2)",
         # shipping_labels: refund timestamp
         "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ",
+        # order_line_items: label tracking fields
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS label_id INTEGER REFERENCES shipping_labels(id)",
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS tracking_number VARCHAR(255)",
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS fulfilled_at TIMESTAMPTZ",
         # order_line_items: Amazon ASIN identifier
         "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS asin VARCHAR(20)",
+        # order_fulfillment_items: label tracking fields
+        "ALTER TABLE order_fulfillment_items ADD COLUMN IF NOT EXISTS tracking_number VARCHAR(255)",
+        "ALTER TABLE order_fulfillment_items ADD COLUMN IF NOT EXISTS label_id INTEGER REFERENCES shipping_labels(id)",
+        "ALTER TABLE order_fulfillment_items ADD COLUMN IF NOT EXISTS fulfilled_at TIMESTAMPTZ",
         # convert native PostgreSQL ENUM columns to VARCHAR so asyncpg ::VARCHAR binding works
         # (older DBs had native ENUM types; models now use String(50))
         "ALTER TABLE order_fulfillment_items ALTER COLUMN fulfill_status TYPE VARCHAR(50) USING fulfill_status::text",

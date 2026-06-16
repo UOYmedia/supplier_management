@@ -137,14 +137,9 @@ export default function OrderDetailPage() {
     setShowLabel({ supplierId: sid, lineItemIds: ids });
   };
 
-  const printLabel = (url: string, filename?: string) => {
+  const printLabel = (url: string) => {
     if (!url) return;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename || "label.pdf";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    window.open(url, "_blank");
   };
 
   const printLabelsForGroup = (items: any[]) => {
@@ -159,7 +154,7 @@ export default function OrderDetailPage() {
       const url = lbl.has_label_data
         ? ordersApi.labelDownloadUrl(oid, lbl.id)
         : lbl.label_url;
-      if (url) printLabel(url, `label-${lbl.tracking_number || lbl.id}.pdf`);
+      if (url) printLabel(url);
       markPrintedMut.mutate(labelId);
     }
   };
@@ -395,7 +390,8 @@ export default function OrderDetailPage() {
                 {l.has_label_data && (
                   <a
                     href={ordersApi.labelDownloadUrl(oid, l.id)}
-                    download={`label-${l.tracking_number || l.id}.pdf`}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="flex items-center gap-1 text-blue-600 hover:underline text-xs"
                   >
                     <Download className="w-3 h-3" /> Download

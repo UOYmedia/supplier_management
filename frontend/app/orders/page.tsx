@@ -5,7 +5,7 @@ import { ordersApi, suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
 import { Plus, ChevronRight, RefreshCw, X, Trash2, Printer, AlertTriangle } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { OrderStatusBadge } from "./order-status-badge";
 
 const STATUSES = ["", "pending", "processing", "partially_fulfilled", "fulfilled", "cancelled"];
@@ -21,13 +21,16 @@ interface LineItemDraft {
 const emptyItem = (): LineItemDraft => ({ product_name: "", sku: "", quantity: 1, price: "" });
 
 export default function OrdersPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const page = Number(searchParams.get("page") || "0");
+  const limit = 50;
+
   const [status, setStatus] = useState("");
   const [marketplace, setMarketplace] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showBulkPrint, setShowBulkPrint] = useState(false);
   const [showDelayed, setShowDelayed] = useState(false);
-  const [page, setPage] = useState(0);
-  const limit = 50;
 
   const { data: regularOrders = [], isLoading: regularLoading, refetch: refetchRegular } = useQuery({
     queryKey: ["orders", status, marketplace, page],
@@ -46,9 +49,18 @@ export default function OrdersPage() {
   const urgentCount = (delayedOrders as any[]).filter((o) => o.status === "urgent").length;
 
   const hasMore = !showDelayed && (regularOrders as any[]).length === limit;
-  const startPage = Math.max(0, page - 2);
-  const endPage = hasMore ? page + 2 : page;
-  const pageNumbers = Array.from({ length: endPage - startPage + 1 }, (_, i) => startPage + i);
+
+  // Smart pagination: always show page 1, window of page±1, ellipses for gaps
+  const windowStart = Math.max(0, page - 1);
+  const windowEnd = hasMore ? page + 1 : page;
+  type PageItem = { type: "page"; index: number } | { type: "ellipsis"; key: string };
+  const pageItems: PageItem[] = [];
+  if (windowStart > 0) {
+    pageItems.push({ type: "page", index: 0 });
+    if (windowStart > 1) pageItems.push({ type: "ellipsis", key: "pre" });
+  }
+  for (let i = windowStart; i <= windowEnd; i++) pageItems.push({ type: "page", index: i });
+  if (hasMore) pageItems.push({ type: "ellipsis", key: "post" });
 
   return (
     <div>
@@ -67,7 +79,7 @@ export default function OrdersPage() {
           className="input w-40"
           value={status}
           disabled={showDelayed}
-          onChange={(e) => { setStatus(e.target.value); setPage(0); }}
+          onChange={(e) => { setStatus(e.target.value); router.replace("?page=0"); }}
         >
           {STATUSES.map((s) => <option key={s} value={s}>{s || "All statuses"}</option>)}
         </select>
@@ -75,7 +87,7 @@ export default function OrdersPage() {
           className="input w-40"
           value={marketplace}
           disabled={showDelayed}
-          onChange={(e) => { setMarketplace(e.target.value); setPage(0); }}
+          onChange={(e) => { setMarketplace(e.target.value); router.replace("?page=0"); }}
         >
           {MARKETS.map((m) => <option key={m} value={m}>{m || "All channels"}</option>)}
         </select>
@@ -85,7 +97,7 @@ export default function OrdersPage() {
               ? "bg-red-50 border-red-400 text-red-700"
               : "bg-white border-gray-300 text-gray-700 hover:border-gray-400"
           }`}
-          onClick={() => { setShowDelayed((v) => !v); setPage(0); }}
+          onClick={() => { setShowDelayed((v) => !v); router.replace("?page=0"); }}
         >
           <AlertTriangle className="w-4 h-4" />
           Delayed
@@ -191,19 +203,23 @@ export default function OrdersPage() {
               : !isLoading ? "No orders found" : ""}
           </span>
           <div className="flex items-center gap-1">
-            <button className="btn-secondary" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+            <button className="btn-secondary" disabled={page === 0} onClick={() => router.push(`?page=${page - 1}`)}>
               Previous
             </button>
-            {pageNumbers.map((p) => (
-              <button
-                key={p}
-                className={p === page ? "btn-primary" : "btn-secondary"}
-                onClick={() => setPage(p)}
-              >
-                {p + 1}
-              </button>
-            ))}
-            <button className="btn-secondary" disabled={!hasMore} onClick={() => setPage((p) => p + 1)}>
+            {pageItems.map((item) =>
+              item.type === "ellipsis" ? (
+                <span key={item.key} className="px-2 text-gray-400 select-none">…</span>
+              ) : (
+                <button
+                  key={item.index}
+                  className={item.index === page ? "btn-primary" : "btn-secondary"}
+                  onClick={() => router.push(`?page=${item.index}`)}
+                >
+                  {item.index + 1}
+                </button>
+              )
+            )}
+            <button className="btn-secondary" disabled={!hasMore} onClick={() => router.push(`?page=${page + 1}`)}>
               Next
             </button>
           </div>

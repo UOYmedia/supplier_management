@@ -87,27 +87,25 @@ export default function ReportsPage() {
   const toISO_ = toISO(to);
 
   useEffect(() => {
-    if (period === "today") {
-      // Load yesterday's ending balance from server
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yDate = yesterday.toISOString().split("T")[0];
-      reportsApi.getDailyBalance(yDate).then((data: any) => {
-        if (data?.ending_balance != null) {
-          setStartingBalance(String(data.ending_balance));
-          setBalanceAutoLoaded(true);
-        } else {
-          // Fallback to localStorage
-          const saved = typeof window !== "undefined" ? localStorage.getItem(LS_BALANCE_KEY) ?? "" : "";
-          setStartingBalance(saved);
-          setBalanceAutoLoaded(!!saved);
-        }
-      });
-    } else {
-      setStartingBalance("");
-      setBalanceAutoLoaded(false);
-    }
-  }, [period]);
+    // Always load ending balance of the day before the period's start date
+    const dayBefore = new Date(from);
+    dayBefore.setDate(dayBefore.getDate() - 1);
+    const prevDate = dayBefore.toISOString().split("T")[0];
+    reportsApi.getDailyBalance(prevDate).then((data: any) => {
+      if (data?.ending_balance != null) {
+        setStartingBalance(String(data.ending_balance));
+        setBalanceAutoLoaded(true);
+      } else if (period === "today") {
+        // Fallback to localStorage for today only
+        const saved = typeof window !== "undefined" ? localStorage.getItem(LS_BALANCE_KEY) ?? "" : "";
+        setStartingBalance(saved);
+        setBalanceAutoLoaded(!!saved);
+      } else {
+        setStartingBalance("");
+        setBalanceAutoLoaded(false);
+      }
+    });
+  }, [period, fromISO]);
 
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ["orders-report", fromISO, toISO_],

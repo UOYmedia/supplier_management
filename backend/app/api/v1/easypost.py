@@ -210,19 +210,28 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     this shipment_id was already purchased (prevents double-charging on retry)."""
     ep = _require_easypost()
 
-    order = await db.get(Order, order_id)
+    try:
+        order = await db.get(Order, order_id)
+    except Exception as e:
+        raise HTTPException(500, f"DB error loading order: {e}")
     if not order:
         raise HTTPException(404, "Order not found")
 
-    supplier = await db.get(Supplier, body.supplier_id)
+    try:
+        supplier = await db.get(Supplier, body.supplier_id)
+    except Exception as e:
+        raise HTTPException(500, f"DB error loading supplier: {e}")
     if not supplier:
         raise HTTPException(404, "Supplier not found")
 
     # Idempotency: if this shipment was already purchased, return the existing label
-    existing_label_res = await db.execute(
-        select(ShippingLabel).where(ShippingLabel.shipment_id == body.shipment_id)
-    )
-    existing_label = existing_label_res.scalar_one_or_none()
+    try:
+        existing_label_res = await db.execute(
+            select(ShippingLabel).where(ShippingLabel.shipment_id == body.shipment_id)
+        )
+        existing_label = existing_label_res.scalar_one_or_none()
+    except Exception as e:
+        raise HTTPException(500, f"DB error checking existing label: {e}")
     if existing_label:
         await _log(db, order_id, "easypost_buy",
                    f"Duplicate buy attempt for shipment {body.shipment_id} -- returning existing label {existing_label.id}",
@@ -234,23 +243,29 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     # Determine which line items to attach
     li_ids = body.line_item_ids
     if not li_ids:
-        auto = await db.execute(
-            select(OrderLineItem).where(
-                OrderLineItem.order_id == order_id,
-                OrderLineItem.supplier_id == body.supplier_id,
-                OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+        try:
+            auto = await db.execute(
+                select(OrderLineItem).where(
+                    OrderLineItem.order_id == order_id,
+                    OrderLineItem.supplier_id == body.supplier_id,
+                    OrderLineItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+                )
             )
-        )
-        li_ids = [li.id for li in auto.scalars().all()]
+            li_ids = [li.id for li in auto.scalars().all()]
+        except Exception as e:
+            raise HTTPException(500, f"DB error loading line items: {e}")
 
     # Guard: line items already have a different label
     if li_ids:
-        already_labelled = await db.execute(
-            select(OrderLineItem).where(
-                OrderLineItem.id.in_(li_ids),
-                OrderLineItem.label_id.isnot(None),
+        try:
+            already_labelled = await db.execute(
+                select(OrderLineItem).where(
+                    OrderLineItem.id.in_(li_ids),
+                    OrderLineItem.label_id.isnot(None),
+                )
             )
-        )
+        except Exception as e:
+            raise HTTPException(500, f"DB error checking label guard: {e}")
         if already_labelled.scalars().first():
             await _log(db, order_id, "easypost_buy",
                        "Buy blocked -- one or more line items already have a label",
@@ -305,11 +320,14 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     except (InvalidOperation, ValueError):
         cost_val = Decimal("0")
 
-    pack_items = []
-    for li_id in li_ids:
-        li_obj = await db.get(OrderLineItem, li_id)
-        if li_obj:
-            pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
+    try:
+        pack_items = []
+        for li_id in li_ids:
+            li_obj = await db.get(OrderLineItem, li_id)
+            if li_obj:
+                pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
+    except Exception as e:
+        raise HTTPException(500, f"DB error loading pack items: {e}")
 
     # fetch_label_pdf_b64 uses label_png_url only. Shipments created with PDF format
     # won't have label_png_url, so it returns None. Try to regenerate as PNG via the
@@ -354,49 +372,53 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
                    level="warn", payload={"shipment_id": body.shipment_id})
         label_data = None
 
-    label = ShippingLabel(
-        supplier_id=body.supplier_id,
-        carrier=selected_rate.get("carrier", "USPS"),
-        service=selected_rate.get("service", ""),
-        tracking_number=tracking,
-        shipment_id=bought.get("id") or body.shipment_id,
-        label_url=label_url,
-        label_data=label_data,
-        cost=cost_val,
-        from_address=bought.get("from_address"),
-        to_address=bought.get("to_address"),
-    )
-    db.add(label)
-    await db.flush()
-
-    for li_id in li_ids:
-        res = await db.execute(
-            select(OrderLineItem).where(OrderLineItem.id == li_id, OrderLineItem.order_id == order_id)
+    try:
+        label = ShippingLabel(
+            supplier_id=body.supplier_id,
+            carrier=selected_rate.get("carrier", "USPS"),
+            service=selected_rate.get("service", ""),
+            tracking_number=tracking,
+            shipment_id=bought.get("id") or body.shipment_id,
+            label_url=label_url,
+            label_data=label_data,
+            cost=cost_val,
+            from_address=bought.get("from_address"),
+            to_address=bought.get("to_address"),
         )
-        li = res.scalar_one_or_none()
-        if li:
-            li.label_id = label.id
-            li.tracking_number = tracking
-            if li.fulfill_status == FulfillStatus.unfulfilled:
-                li.fulfill_status = FulfillStatus.pending
+        db.add(label)
+        await db.flush()
 
-    await _recalculate_order_status(order, db)
+        for li_id in li_ids:
+            res = await db.execute(
+                select(OrderLineItem).where(OrderLineItem.id == li_id, OrderLineItem.order_id == order_id)
+            )
+            li = res.scalar_one_or_none()
+            if li:
+                li.label_id = label.id
+                li.tracking_number = tracking
+                if li.fulfill_status == FulfillStatus.unfulfilled:
+                    li.fulfill_status = FulfillStatus.pending
 
-    await _log(db, order_id, "easypost_buy",
-               f"Label purchased -- tracking {tracking}, carrier {selected_rate.get('carrier')}, cost ${cost_val}",
-               payload={
-                   "shipment_id": body.shipment_id,
-                   "label_id": label.id,
-                   "tracking_number": tracking,
-                   "carrier": selected_rate.get("carrier"),
-                   "service": selected_rate.get("service"),
-                   "cost": str(cost_val),
-                   "line_item_ids": li_ids,
-               })
+        await _recalculate_order_status(order, db)
 
-    await db.commit()
-    await db.refresh(label)
-    return label
+        await _log(db, order_id, "easypost_buy",
+                   f"Label purchased -- tracking {tracking}, carrier {selected_rate.get('carrier')}, cost ${cost_val}",
+                   payload={
+                       "shipment_id": body.shipment_id,
+                       "label_id": label.id,
+                       "tracking_number": tracking,
+                       "carrier": selected_rate.get("carrier"),
+                       "service": selected_rate.get("service"),
+                       "cost": str(cost_val),
+                       "line_item_ids": li_ids,
+                   })
+
+        await db.commit()
+        await db.refresh(label)
+        return label
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(500, f"DB error saving label: {e}")
 
 
 @router.post("/{order_id}/easypost/refund", response_model=ShippingLabelOut)

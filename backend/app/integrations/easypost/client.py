@@ -113,24 +113,21 @@ class EasyPostClient:
             params={"file_format": "png", "label_size": label_size},
         )
         pl = converted.get("postage_label") or {}
-        # Only use the explicit PNG URL — label_url may still point to a PDF even
-        # when file_format=png is requested (EasyPost doesn't always regenerate).
         png_url = pl.get("label_png_url")
-        # label_url (PDF or otherwise) is still useful for the ShippingLabel.label_url field.
         any_url = pl.get("label_url") or png_url
-        if not png_url:
-            return None, any_url
-        try:
-            async with httpx.AsyncClient(timeout=30) as http:
-                r = await http.get(png_url)
-                if not r.is_success:
-                    return None, any_url
-            # Validate PNG magic bytes so we never pass PDF bytes to ImageReader
-            if r.content[:8] != b'\x89PNG\r\n\x1a\n':
-                return None, any_url
-            return base64.b64encode(r.content).decode(), png_url
-        except Exception:
-            return None, any_url
+        # Try label_png_url first, fall back to label_url (EasyPost sometimes puts
+        # the PNG at label_url when file_format=png is requested)
+        for candidate_url in filter(None, [png_url, any_url if any_url != png_url else None]):
+            try:
+                async with httpx.AsyncClient(timeout=30) as http:
+                    r = await http.get(candidate_url)
+                    if not r.is_success:
+                        continue
+                if r.content[:8] == b'\x89PNG\r\n\x1a\n':
+                    return base64.b64encode(r.content).decode(), candidate_url
+            except Exception:
+                continue
+        return None, any_url
 
     async def list_webhooks(self) -> list[dict]:
         """Return all registered EasyPost webhooks for this account."""

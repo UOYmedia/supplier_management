@@ -344,17 +344,25 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
                    f"Label PNG regeneration failed (non-fatal): {regen_err}",
                    level="warn", payload={"shipment_id": body.shipment_id})
 
-    # If PNG still unavailable, try downloading the PDF label_url as fallback
+    # If PNG still unavailable, download label_url — could be PNG or PDF
     carrier_pdf_bytes: bytes | None = None
     if not carrier_png_b64 and label_url:
         try:
             import httpx as _httpx
             async with _httpx.AsyncClient(timeout=20) as _http:
                 _r = await _http.get(label_url)
-                if _r.is_success and _r.content[:5] == b"%PDF-":
+            if _r.is_success:
+                if _r.content[:8] == b'\x89PNG\r\n\x1a\n':
+                    carrier_png_b64 = base64.b64encode(_r.content).decode()
+                elif _r.content[:5] == b"%PDF-":
                     carrier_pdf_bytes = _r.content
-        except Exception:
-            pass
+                await _log(db, order_id, "easypost_buy",
+                           f"Label fallback download: {'PNG' if carrier_png_b64 else 'PDF' if carrier_pdf_bytes else 'unknown format'} from {label_url[:60]}",
+                           level="info", payload={"shipment_id": body.shipment_id})
+        except Exception as _dl_err:
+            await _log(db, order_id, "easypost_buy",
+                       f"Label fallback download failed: {_dl_err}",
+                       level="warn", payload={"shipment_id": body.shipment_id})
 
     def _ship_name(addr: dict | None) -> str | None:
         if not addr:

@@ -210,7 +210,7 @@ async def bulk_labels(
             raise HTTPException(500, f"Error building label PDF: {e}")
         if not pdf:
             raise HTTPException(404, "No printable label data found for this supplier/date")
-        fname = f"{date_label} – {n_orders} ORDERS – {sup_name}.pdf"
+        fname = f"{date_label} - {n_orders} ORDERS - {sup_name}.pdf"
         return Response(
             content=pdf,
             media_type="application/pdf",
@@ -231,7 +231,7 @@ async def bulk_labels(
                     continue
                 if not pdf:
                     continue
-                fname = f"{date_label} – {n_orders} ORDERS – {sup_name}.pdf"
+                fname = f"{date_label} - {n_orders} ORDERS - {sup_name}.pdf"
                 zf.writestr(fname, pdf)
                 total += 1
         if total == 0:
@@ -240,7 +240,7 @@ async def bulk_labels(
         return Response(
             content=zip_buf.getvalue(),
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{date_label} – labels.zip"'},
+            headers={"Content-Disposition": f'attachment; filename="{date_label} - labels.zip"'},
         )
     except HTTPException:
         raise

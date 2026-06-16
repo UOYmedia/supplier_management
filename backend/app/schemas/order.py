@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 from app.models.order import OrderStatus, FulfillStatus
 
 
@@ -144,11 +144,8 @@ class ShippingLabelOut(BaseModel):
     cost: Decimal
     purchased_at: datetime
     refunded_at: datetime | None = None
-    has_label_data: bool = False
 
-    @classmethod
-    def model_validate(cls, obj, *args, **kwargs):
-        instance = super().model_validate(obj, *args, **kwargs)
-        if hasattr(obj, "label_data"):
-            instance.has_label_data = bool(obj.label_data)
-        return instance
+    @computed_field  # type: ignore[misc]
+    @property
+    def has_label_data(self) -> bool:
+        return bool(self.label_data)

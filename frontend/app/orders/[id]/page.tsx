@@ -137,19 +137,14 @@ export default function OrderDetailPage() {
     setShowLabel({ supplierId: sid, lineItemIds: ids });
   };
 
-  const printLabel = (url: string) => {
+  const printLabel = (url: string, filename?: string) => {
     if (!url) return;
-    const win = window.open(url, "_blank");
-    if (!win) {
-      toast.error("Popup blocked — allow popups to print labels");
-      return;
-    }
-    try {
-      win.focus();
-      setTimeout(() => {
-        try { win.print(); } catch {}
-      }, 800);
-    } catch {}
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename || "label.pdf";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   const printLabelsForGroup = (items: any[]) => {
@@ -164,7 +159,7 @@ export default function OrderDetailPage() {
       const url = lbl.has_label_data
         ? ordersApi.labelDownloadUrl(oid, lbl.id)
         : lbl.label_url;
-      if (url) printLabel(url);
+      if (url) printLabel(url, `label-${lbl.tracking_number || lbl.id}.pdf`);
       markPrintedMut.mutate(labelId);
     }
   };

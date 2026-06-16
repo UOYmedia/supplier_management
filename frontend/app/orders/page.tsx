@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
@@ -20,7 +20,7 @@ interface LineItemDraft {
 
 const emptyItem = (): LineItemDraft => ({ product_name: "", sku: "", quantity: 1, price: "" });
 
-export default function OrdersPage() {
+function OrdersPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const page = Number(searchParams.get("page") || "0");
@@ -229,6 +229,14 @@ export default function OrdersPage() {
       {showCreate && <CreateOrderModal onClose={() => setShowCreate(false)} />}
       {showBulkPrint && <BulkPrintModal onClose={() => setShowBulkPrint(false)} />}
     </div>
+  );
+}
+
+export default function OrdersPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-gray-400">Loading...</div>}>
+      <OrdersPageInner />
+    </Suspense>
   );
 }
 

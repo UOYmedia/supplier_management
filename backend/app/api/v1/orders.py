@@ -130,6 +130,7 @@ async def bulk_labels(
 
     async def _pdf_for_label(label: ShippingLabel) -> bytes | None:
         try:
+            from app.integrations.pdf_labels import build_batch_label_pdf
             raw: bytes | None = None
             if label.label_data:
                 raw = decode_label_data(label.label_data)
@@ -140,9 +141,8 @@ async def bulk_labels(
                     raw = r.content
             if not raw:
                 return None
-            if raw[:5] == b"%PDF-":
-                return raw
-            # Non-PDF bytes (e.g. PNG) — build label PDF with catalog overlay
+
+            # Always build with overlay — fetch items for all label types
             li_res = await db.execute(select(OrderLineItem).where(OrderLineItem.label_id == label.id))
             lis = li_res.scalars().all()
             pack_items: list[PackItem] = []
@@ -158,11 +158,16 @@ async def bulk_labels(
                 order_label=(order.external_order_id if order else f"Label #{label.id}"),
                 ship_to=_an(order.shipping_address) if order else None,
                 tracking_number=label.tracking_number,
-                label_pdf=None,
+                label_pdf=raw if raw[:5] == b"%PDF-" else None,
                 items=pack_items,
                 supplier_name=sup.name if sup else None,
             )
-            return build_label_from_png(raw, entry)
+            if raw[:5] == b"%PDF-":
+                # PDF carrier — merge with overlay via build_batch_label_pdf
+                return build_batch_label_pdf([entry])
+            else:
+                # PNG/image carrier — draw overlay on top
+                return build_label_from_png(raw, entry)
         except Exception as _e:
             import traceback as _tb
             print(f"bulk_labels: _pdf_for_label label={label.id} failed — {_e}\n{_tb.format_exc()}", flush=True)

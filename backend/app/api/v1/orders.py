@@ -1109,3 +1109,67 @@ async def _order_out(order: Order, db: AsyncSession) -> OrderOut:
     data = {c.name: getattr(order, c.name) for c in order.__table__.columns}
     data["line_items"] = line_items
     return OrderOut(**data)
+
+
+async def _auto_assign_line_item(li: OrderLineItem, db: AsyncSession) -> bool:
+    """Auto-assign supplier product to a line item by matching li.sku → Product.sku → ProductComponent.
+
+    Returns True if assignment was made, False if skipped (no match or already assigned).
+    Idempotent: skips if li.supplier_id is already set.
+    """
+    if li.supplier_id or not li.sku:
+        return False
+
+    from sqlalchemy import func as sqlfunc
+
+    # Step 1: find Product by SKU (case-insensitive)
+    prod_res = await db.execute(
+        select(Product).where(sqlfunc.lower(sqlfunc.trim(Product.sku)) == li.sku.strip().lower())
+    )
+    product = prod_res.scalar_one_or_none()
+    if product and not li.product_id:
+        li.product_id = product.id
+    elif not product and not li.product_id:
+        return False
+
+    product_id = li.product_id
+
+    # Step 2: find ProductComponent for this product
+    comp_res = await db.execute(
+        select(ProductComponent).where(ProductComponent.product_id == product_id)
+    )
+    comp = comp_res.scalars().first()
+    if not comp:
+        return False
+
+    sp = await db.get(SupplierProduct, comp.supplier_product_id)
+    if not sp:
+        return False
+
+    # Step 3: assign supplier to line item
+    li.supplier_id = sp.supplier_id
+
+    # Step 4: upsert OrderFulfillmentItem
+    ofi_res = await db.execute(
+        select(OrderFulfillmentItem).where(
+            OrderFulfillmentItem.order_line_item_id == li.id,
+            OrderFulfillmentItem.supplier_product_id == comp.supplier_product_id,
+        )
+    )
+    ofi = ofi_res.scalar_one_or_none()
+    qty = li.quantity * comp.quantity
+    if ofi:
+        ofi.quantity = qty
+    else:
+        db.add(OrderFulfillmentItem(
+            order_line_item_id=li.id,
+            supplier_product_id=comp.supplier_product_id,
+            quantity=qty,
+        ))
+
+    print(
+        f"Auto-assigned line item {li.id} (sku={li.sku!r}) → "
+        f"supplier_product {sp.id} (supplier_id={sp.supplier_id})",
+        flush=True,
+    )
+    return True

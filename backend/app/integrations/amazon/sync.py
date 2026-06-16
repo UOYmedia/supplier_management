@@ -290,6 +290,14 @@ class AmazonSync(MarketplaceSyncer):
             except Exception as e:
                 print(f"Amazon sync_orders: fulfillment expansion failed for {ext_id} — {e}", flush=True)
 
+            # Auto-assign supplier_id via SKU → Product → ProductComponent
+            try:
+                from app.api.v1.orders import _auto_assign_line_item
+                for li in line_items:
+                    await _auto_assign_line_item(li, db)
+            except Exception as e:
+                print(f"Amazon sync_orders: auto-assign failed for {ext_id} — {e}", flush=True)
+
             await db.commit()  # commit per order so a later failure doesn't lose progress
             count += 1
 

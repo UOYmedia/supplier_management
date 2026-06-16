@@ -1200,3 +1200,29 @@ async def _auto_assign_line_item(li: OrderLineItem, db: AsyncSession) -> bool:
         flush=True,
     )
     return True
+
+
+@router.post("/backfill-auto-assign")
+async def backfill_auto_assign(db: AsyncSession = Depends(get_db)):
+    """Run _auto_assign_line_item for all unassigned line items across all orders.
+
+    Safe to run multiple times — idempotent per line item.
+    """
+    result = await db.execute(
+        select(OrderLineItem).where(
+            OrderLineItem.supplier_id.is_(None),
+            OrderLineItem.sku.isnot(None),
+            OrderLineItem.fulfill_status != FulfillStatus.shipped,
+        )
+    )
+    items = result.scalars().all()
+    assigned = 0
+    skipped = 0
+    for li in items:
+        ok = await _auto_assign_line_item(li, db)
+        if ok:
+            assigned += 1
+        else:
+            skipped += 1
+    await db.commit()
+    return {"assigned": assigned, "skipped": skipped, "total": len(items)}

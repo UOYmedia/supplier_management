@@ -180,6 +180,8 @@ export const reportsApi = {
   byMarketplace: () => api.get("/reports/by-marketplace").then((r) => r.data),
   bySupplier: () => api.get("/reports/by-supplier").then((r) => r.data),
   inventoryAlert: (threshold?: number) => api.get("/reports/inventory-alert", { params: { threshold } }).then((r) => r.data),
+  getDailyBalance: (date: string) => api.get("/reports/daily-balance", { params: { date } }).then((r) => r.data).catch(() => null),
+  saveDailyBalance: (date: string, ending_balance: number) => api.post("/reports/daily-balance", { date, ending_balance }).then((r) => r.data).catch(() => null),
 };
 
 // EasyPost (admin)

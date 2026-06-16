@@ -1,7 +1,7 @@
 "use client";
 import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ordersApi } from "@/lib/api";
+import { ordersApi, reportsApi } from "@/lib/api";
 import toast from "react-hot-toast";
 import { Copy, Check, ShoppingCart, TrendingDown, Wallet, DollarSign } from "lucide-react";
 
@@ -88,9 +88,21 @@ export default function ReportsPage() {
 
   useEffect(() => {
     if (period === "today") {
-      const saved = typeof window !== "undefined" ? localStorage.getItem(LS_BALANCE_KEY) ?? "" : "";
-      setStartingBalance(saved);
-      setBalanceAutoLoaded(!!saved);
+      // Load yesterday's ending balance from server
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yDate = yesterday.toISOString().split("T")[0];
+      reportsApi.getDailyBalance(yDate).then((data: any) => {
+        if (data?.ending_balance != null) {
+          setStartingBalance(String(data.ending_balance));
+          setBalanceAutoLoaded(true);
+        } else {
+          // Fallback to localStorage
+          const saved = typeof window !== "undefined" ? localStorage.getItem(LS_BALANCE_KEY) ?? "" : "";
+          setStartingBalance(saved);
+          setBalanceAutoLoaded(!!saved);
+        }
+      });
     } else {
       setStartingBalance("");
       setBalanceAutoLoaded(false);
@@ -151,6 +163,16 @@ export default function ReportsPage() {
   const ending = startNum - totalCOGS;
   const dateLabel = fmtDateLabel(period, from, to);
 
+  // Auto-save ending balance to server whenever it changes (debounced)
+  useEffect(() => {
+    if (!startingBalance.trim() || isLoading) return;
+    const todayDate = from.toISOString().split("T")[0];
+    const timer = setTimeout(() => {
+      reportsApi.saveDailyBalance(todayDate, ending);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [ending, startingBalance, from, isLoading]);
+
   const handleCopy = () => {
     const lines = [
       `${dateLabel} – ${orderCount} ORDER${orderCount !== 1 ? "S" : ""}`,
@@ -162,8 +184,14 @@ export default function ReportsPage() {
     navigator.clipboard.writeText(lines.join("\n"));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-    if (period === "today" && typeof window !== "undefined") {
-      localStorage.setItem(LS_BALANCE_KEY, ending.toFixed(2));
+    // Save today's ending balance to server so tomorrow auto-loads it
+    if (startingBalance.trim()) {
+      const todayDate = from.toISOString().split("T")[0];
+      reportsApi.saveDailyBalance(todayDate, ending);
+      // Also keep localStorage as fallback
+      if (typeof window !== "undefined") {
+        localStorage.setItem(LS_BALANCE_KEY, ending.toFixed(2));
+      }
     }
     toast.success("Copied to clipboard");
   };

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, suppliersApi, easypostApi, amazonShippingApi } from "@/lib/api";
 import { useParams, useSearchParams } from "next/navigation";
@@ -363,6 +364,7 @@ export default function OrderDetailPage() {
                     <LineItemRow
                       key={li.id}
                       li={li}
+                      orderId={oid}
                       suppliers={suppliers}
                       onUpdate={(data) => updateLIMut.mutate({ liId: li.id, data })}
                       onAssignSupplier={() => setAssigningItem(li.id)}
@@ -838,77 +840,173 @@ function groupBySupplier(items: any[]) {
   }, {} as Record<string, any[]>);
 }
 
-function LineItemRow({ li, onUpdate, onAssignSupplier, onQuickAssign, suppliers }: {
+function LineItemRow({ li, orderId, onUpdate, onAssignSupplier, onQuickAssign, suppliers }: {
   li: any;
+  orderId: number;
   onUpdate: (d: object) => void;
   onAssignSupplier: () => void;
   onQuickAssign: (suggestion: any) => void;
   suppliers: any[];
 }) {
+  const qc = useQueryClient();
   const [status, setStatus] = useState(li.fulfill_status);
   const [tracking, setTracking] = useState(li.tracking_number || "");
   const [baseCost, setBaseCost] = useState(String(li.base_cost));
+  const [editingShortName, setEditingShortName] = useState<{ id: number; name: string } | null>(null);
+  const [shortNameInput, setShortNameInput] = useState("");
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
 
   const isShipped = status === "shipped" || status === "delivered";
   const canReassign = !isShipped && !!li.supplier_id;
 
+  const openShortNameEditor = async (spId: number, spName: string) => {
+    setEditingShortName({ id: spId, name: spName });
+    setShortNameInput("");
+    setSuggestions([]);
+    setLoadingSuggestions(true);
+    try {
+      const res = await fetch(`/api/suppliers/supplier-products/${spId}/suggest-name`);
+      const data = await res.json();
+      setSuggestions(data.suggestions || []);
+      if (data.suggestions?.[0]) setShortNameInput(data.suggestions[0]);
+    } catch {
+      setSuggestions([]);
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  };
+
+  const saveShortName = async () => {
+    if (!editingShortName || !shortNameInput) return;
+    try {
+      await fetch(`/api/suppliers/supplier-products/${editingShortName.id}/short-name`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ short_name: shortNameInput }),
+      });
+      toast.success("Short name saved");
+      setEditingShortName(null);
+      qc.invalidateQueries({ queryKey: ["order", orderId] });
+    } catch {
+      toast.error("Save failed");
+    }
+  };
+
   return (
-    <tr>
-      <td className="font-medium">{li.product_name}</td>
-      <td className="font-mono text-xs text-gray-500">{li.sku || "—"}</td>
-      <td>{li.quantity}</td>
-      <td>${parseFloat(li.price).toFixed(2)}</td>
-      <td>
-        <input type="number" className="input w-20" value={baseCost} onChange={(e) => setBaseCost(e.target.value)}
-          onBlur={() => onUpdate({ base_cost: parseFloat(baseCost) })} step="0.01" />
-      </td>
-      <td>
-        <select className="input w-36 text-xs" value={status} onChange={(e) => {
-          setStatus(e.target.value);
-          onUpdate({ fulfill_status: e.target.value });
-        }}>
-          {FULFILL_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      </td>
-      <td>
-        {isShipped ? (
-          <span className="font-mono text-xs text-gray-600">{tracking || "—"}</span>
-        ) : (
-          <input className="input w-32 text-xs" placeholder="tracking…" value={tracking} onChange={(e) => setTracking(e.target.value)}
-            onBlur={() => tracking !== li.tracking_number && onUpdate({ tracking_number: tracking })} />
-        )}
-      </td>
-      <td>
-        <div className="flex flex-col gap-1 items-start">
-          {!li.supplier_id && li.mapping_suggestion && (
-            <button
-              onClick={() => onQuickAssign(li.mapping_suggestion)}
-              className="flex items-center gap-1 text-xs text-green-600 hover:text-green-800 font-medium whitespace-nowrap"
-              title={`Quick assign: ${li.mapping_suggestion.supplier_name} → ${li.mapping_suggestion.catalog_name}`}
-            >
-              <CheckCircle2 className="w-3 h-3" />
-              {li.mapping_suggestion.supplier_name}
-            </button>
+    <>
+      <tr>
+        <td className="font-medium">
+          <div className="flex items-center gap-1">
+            <span>{li.product_name}</span>
+            {li.supplier_product_id && (
+              <button
+                onClick={() => openShortNameEditor(li.supplier_product_id, li.product_name)}
+                className="text-gray-300 hover:text-blue-500 transition-colors flex-shrink-0"
+                title="Edit short name"
+              >
+                ✏️
+              </button>
+            )}
+          </div>
+          {li.catalog_short_name && (
+            <div className="text-xs text-blue-600">{li.catalog_short_name}</div>
           )}
-          {!li.supplier_id && (
-            <button
-              onClick={onAssignSupplier}
-              className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium whitespace-nowrap"
-            >
-              <UserPlus className="w-3 h-3" /> {li.mapping_suggestion ? "Change" : "Assign"}
-            </button>
+        </td>
+        <td className="font-mono text-xs text-gray-500">{li.sku || "—"}</td>
+        <td>{li.quantity}</td>
+        <td>${parseFloat(li.price).toFixed(2)}</td>
+        <td>
+          <input type="number" className="input w-20" value={baseCost} onChange={(e) => setBaseCost(e.target.value)}
+            onBlur={() => onUpdate({ base_cost: parseFloat(baseCost) })} step="0.01" />
+        </td>
+        <td>
+          <select className="input w-36 text-xs" value={status} onChange={(e) => {
+            setStatus(e.target.value);
+            onUpdate({ fulfill_status: e.target.value });
+          }}>
+            {FULFILL_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </td>
+        <td>
+          {isShipped ? (
+            <span className="font-mono text-xs text-gray-600">{tracking || "—"}</span>
+          ) : (
+            <input className="input w-32 text-xs" placeholder="tracking…" value={tracking} onChange={(e) => setTracking(e.target.value)}
+              onBlur={() => tracking !== li.tracking_number && onUpdate({ tracking_number: tracking })} />
           )}
-          {canReassign && (
-            <button
-              onClick={onAssignSupplier}
-              className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-700 whitespace-nowrap"
-            >
-              <Pencil className="w-3 h-3" /> Re-assign
-            </button>
-          )}
-        </div>
-      </td>
-    </tr>
+        </td>
+        <td>
+          <div className="flex flex-col gap-1 items-start">
+            {!li.supplier_id && li.mapping_suggestion && (
+              <button
+                onClick={() => onQuickAssign(li.mapping_suggestion)}
+                className="flex items-center gap-1 text-xs text-green-600 hover:text-green-800 font-medium whitespace-nowrap"
+                title={`Quick assign: ${li.mapping_suggestion.supplier_name} → ${li.mapping_suggestion.catalog_name}`}
+              >
+                <CheckCircle2 className="w-3 h-3" />
+                {li.mapping_suggestion.supplier_name}
+              </button>
+            )}
+            {!li.supplier_id && (
+              <button
+                onClick={onAssignSupplier}
+                className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium whitespace-nowrap"
+              >
+                <UserPlus className="w-3 h-3" /> {li.mapping_suggestion ? "Change" : "Assign"}
+              </button>
+            )}
+            {canReassign && (
+              <button
+                onClick={onAssignSupplier}
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-700 whitespace-nowrap"
+              >
+                <Pencil className="w-3 h-3" /> Re-assign
+              </button>
+            )}
+          </div>
+        </td>
+      </tr>
+      {editingShortName && createPortal(
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
+            <h3 className="font-semibold text-gray-800 mb-1">Set short name</h3>
+            <p className="text-xs text-gray-400 mb-4 truncate">{editingShortName.name}</p>
+            {loadingSuggestions ? (
+              <p className="text-xs text-gray-400 mb-3">Loading suggestions…</p>
+            ) : suggestions.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {suggestions.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setShortNameInput(s)}
+                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                      shortNameInput === s
+                        ? "bg-blue-500 text-white border-blue-500"
+                        : "border-gray-200 text-gray-600 hover:border-blue-400"
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+            <input
+              type="text"
+              value={shortNameInput}
+              onChange={(e) => setShortNameInput(e.target.value)}
+              placeholder="Enter short name…"
+              className="input w-full text-sm mb-4"
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditingShortName(null)} className="btn-secondary text-sm px-4">Cancel</button>
+              <button onClick={saveShortName} disabled={!shortNameInput} className="btn-primary text-sm px-4">Save</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
 

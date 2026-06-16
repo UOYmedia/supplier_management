@@ -387,22 +387,16 @@ export default function OrderDetailPage() {
                 {l.service && <span className="text-gray-500 text-xs">{l.service}</span>}
                 <span className="font-mono text-xs">{l.tracking_number || "—"}</span>
                 <span className="text-gray-500">${parseFloat(l.cost).toFixed(2)}</span>
-                {l.has_label_data && (
+                {(l.has_label_data || l.label_url) ? (
                   <a
-                    href={ordersApi.labelDownloadUrl(oid, l.id)}
+                    href={l.label_url || ordersApi.labelDownloadUrl(oid, l.id)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center gap-1 text-blue-600 hover:underline text-xs"
                   >
                     <ExternalLink className="w-3 h-3" /> Download
                   </a>
-                )}
-                {!l.has_label_data && l.label_url && (
-                  <a href={l.label_url} target="_blank" className="flex items-center gap-1 text-blue-600 hover:underline text-xs">
-                    <ExternalLink className="w-3 h-3" /> Download
-                  </a>
-                )}
-                {!l.has_label_data && !l.label_url && (
+                ) : (
                   <span className="text-xs text-amber-600">No PDF — upload one</span>
                 )}
                 <button

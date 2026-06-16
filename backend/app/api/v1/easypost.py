@@ -344,6 +344,18 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
                    f"Label PNG regeneration failed (non-fatal): {regen_err}",
                    level="warn", payload={"shipment_id": body.shipment_id})
 
+    # If PNG still unavailable, try downloading the PDF label_url as fallback
+    carrier_pdf_bytes: bytes | None = None
+    if not carrier_png_b64 and label_url:
+        try:
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=20) as _http:
+                _r = await _http.get(label_url)
+                if _r.is_success and _r.content[:5] == b"%PDF-":
+                    carrier_pdf_bytes = _r.content
+        except Exception:
+            pass
+
     def _ship_name(addr: dict | None) -> str | None:
         if not addr:
             return None
@@ -364,6 +376,16 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         elif carrier_png_b64:
             from app.integrations.pdf_labels import image_to_label_pdf
             label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
+        elif carrier_pdf_bytes and pack_items:
+            from app.integrations.pdf_labels import LabelEntry, build_batch_label_pdf
+            entry = LabelEntry(
+                order_label=(order.external_order_id or f"Order #{order_id}"),
+                ship_to=_ship_name(order.shipping_address),
+                tracking_number=tracking,
+                label_pdf=carrier_pdf_bytes,
+                items=pack_items,
+            )
+            label_data = base64.b64encode(build_batch_label_pdf([entry])).decode()
         else:
             label_data = None
     except Exception as pdf_err:

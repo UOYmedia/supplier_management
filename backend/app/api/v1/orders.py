@@ -10,7 +10,7 @@ from app.models.supplier import Supplier, SupplierProduct
 from app.schemas.order import (
     OrderCreate, OrderUpdate, OrderOut, OrderLineItemUpdate,
     OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut, ShippingLabelUpdate,
-    AssignSupplierBody, MarkShippedBody,
+    AssignSupplierBody, MarkShippedBody, UploadLabelB64,
 )
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -672,10 +672,9 @@ async def upload_label_pdf(
 
 @router.post("/{order_id}/labels/{label_id}/upload-b64", response_model=ShippingLabelOut)
 async def upload_label_pdf_b64(
-    order_id: int, label_id: int, body: "UploadLabelB64", db: AsyncSession = Depends(get_db)
+    order_id: int, label_id: int, body: UploadLabelB64, db: AsyncSession = Depends(get_db)
 ):
     """Upload a PDF label as base64-encoded JSON — avoids multipart proxy issues."""
-    from app.schemas.order import UploadLabelB64 as _Schema
     await _get_or_404(order_id, db)
     label = await db.get(ShippingLabel, label_id)
     if not label:

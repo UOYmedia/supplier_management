@@ -343,9 +343,9 @@ function printAndMarkShipped(orderId: number, labeledItems: any[], qc: any, supp
   }
   for (const [labelId, items] of byLabel) {
     const sample = items[0];
-    const url = sample.label_has_pdf
-      ? `/api/v1/orders/${orderId}/labels/${labelId}/download`
-      : sample.label_url;
+    const url = sample.label_url
+      ? sample.label_url
+      : `/api/v1/orders/${orderId}/labels/${labelId}/download`;
     if (url) {
       const win = window.open(url, "_blank");
       if (win) {

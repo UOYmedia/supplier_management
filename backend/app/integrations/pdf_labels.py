@@ -90,7 +90,7 @@ def _normalize_page_to_4x6(pdf_bytes: bytes) -> bytes:
         page.cropbox = pikepdf.Array([0, 0, LABEL_W_PT, LABEL_H_PT])
 
     out = io.BytesIO()
-    pdf.save(out, recompress_streams=False, preserve_pdfa=False)
+    pdf.save(out, compress_streams=False, preserve_pdfa=False)
     return out.getvalue()
 
 

@@ -7,6 +7,7 @@ supplier catalog). No extra pages — everything is on the carrier label itself.
 import base64
 import io
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from pypdf import PdfReader, PdfWriter, Transformation
 from reportlab.lib.units import inch
@@ -52,8 +53,6 @@ def _smart_clip(text: str, n: int) -> str:
 
 def _draw_overlay(c: canvas.Canvas, entry: "LabelEntry") -> None:
     """Draw catalog strip in the bottom OVERLAY_H area of an already-sized canvas."""
-    from datetime import datetime
-
     c.setFillColorRGB(1, 1, 1)
     c.rect(0, 0, LABEL_W, OVERLAY_H, fill=1, stroke=0)
     c.setStrokeColorRGB(0.4, 0.4, 0.4)
@@ -73,10 +72,8 @@ def _draw_overlay(c: canvas.Canvas, entry: "LabelEntry") -> None:
         c.drawString(MARGIN, y, _clip("  ".join(header_parts), 52))
         y -= 0.18 * inch
 
-    date_str = ""
-    if (entry.supplier_name or "").strip().upper() == "JOE":
-        now = datetime.now()
-        date_str = now.strftime("%b").upper() + " " + str(now.day)
+    now = datetime.now()
+    date_str = now.strftime("%b").upper() + " " + str(now.day)
 
     for it in entry.items:
         if y < 0.06 * inch:

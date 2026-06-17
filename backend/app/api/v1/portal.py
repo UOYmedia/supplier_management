@@ -334,35 +334,37 @@ async def portal_batch_labels(
 
     pdf_pages: list[bytes] = []
 
+    from app.api.v1.orders import _stamp_carrier_for_label
+
     for label_id, label_lis in label_to_lis.items():
         label = await db.get(ShippingLabel, label_id)
         if not label or label.supplier_id != supplier.id:
             continue
 
+        # Prefer stamping fresh from the pristine carrier PDF (label_url) so the
+        # product info + tight crop are applied even to older labels whose stored
+        # label_data predates the stamp. label_url is the clean carrier label, so
+        # this never double-stamps.
+        if label.label_url:
+            try:
+                async with httpx.AsyncClient(timeout=20) as http:
+                    r = await http.get(label.label_url)
+                if r.is_success and r.content:
+                    carrier = (r.content if r.content[:5] == b"%PDF-"
+                               else image_to_label_pdf(r.content))
+                    try:
+                        carrier = await _stamp_carrier_for_label(carrier, label, db)
+                    except Exception:
+                        pass
+                    pdf_pages.append(carrier)
+                    continue
+            except Exception:
+                pass  # fall back to stored label_data
+
         if label.label_data:
             pdf = decode_label_data(label.label_data)
             if pdf:
                 pdf_pages.append(pdf)
-                continue
-
-        if not label.label_url:
-            continue
-        try:
-            async with httpx.AsyncClient(timeout=20) as http:
-                r = await http.get(label.label_url)
-            if not r.is_success:
-                continue
-            content = r.content
-        except Exception:
-            continue
-
-        try:
-            if content[:5] == b"%PDF-":
-                pdf_pages.append(content)
-            else:
-                pdf_pages.append(image_to_label_pdf(content))
-        except Exception:
-            continue
 
     if not pdf_pages:
         raise HTTPException(404, "No printable labels found")

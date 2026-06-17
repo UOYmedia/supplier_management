@@ -141,14 +141,11 @@ async def bulk_labels(
 
     async def _pdf_for_label(label: ShippingLabel) -> bytes | None:
         try:
-            # Prefer label_data — the carrier label with product info stamped in
-            # at buy time (Qty + NAME + (size/pot) + date for JOE).
-            if label.label_data:
-                pdf = decode_label_data(label.label_data)
-                if pdf and pdf[:5] == b"%PDF-":
-                    return pdf
-            # Otherwise fetch the raw carrier PDF and stamp the product info now,
-            # so the printed label still carries the product name.
+            # Prefer stamping fresh from the pristine carrier PDF (label_url) so
+            # the product info (Qty + NAME + (size/pot) + date for JOE) is always
+            # on the label — even for older labels whose stored label_data was
+            # saved before the stamp existed. label_url is the clean carrier
+            # label, so this never double-stamps.
             if label.label_url:
                 async with httpx.AsyncClient(timeout=20) as http:
                     r = await http.get(label.label_url)
@@ -160,7 +157,7 @@ async def bulk_labels(
                     except Exception as _se:
                         print(f"bulk_labels: stamp failed label={label.id} — {_se}", flush=True)
                         return carrier
-            # Last resort: whatever label_data decodes to
+            # No usable label_url — fall back to stored label_data.
             if label.label_data:
                 return decode_label_data(label.label_data)
             return None

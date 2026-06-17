@@ -38,23 +38,15 @@ def _smart_clip(text: str, n: int) -> str:
     return text[:head] + "…" + text[len(text) - tail:]
 
 
-def stamp_label(carrier_pdf: bytes, entry: LabelEntry) -> bytes:
-    """Stamp product info into the native blank space at the bottom of the carrier label.
-
-    Uses pikepdf with compress_streams=False so all existing content streams
-    (including barcode images) are written byte-for-byte without re-encoding.
-    The text is appended as a new content stream — carrier content untouched.
+def _build_label_lines(entry: LabelEntry) -> list[str]:
+    """Build the stamp text lines: Qty + PR NAME + (size/pot if any) + (date for JOE).
+    e.g. "2 PERSIMMON 1-2 FT - MAY 12"
     """
-    import pikepdf
-
-    # Build text lines
     date_str = ""
     if (entry.supplier_name or "").strip().upper() == "JOE":
         now = datetime.now()
         date_str = now.strftime("%b").upper() + " " + str(now.day)
 
-    # Format: Qty + PR NAME + (size/pot if any) + (date for supplier JOE)
-    # e.g. "2 PERSIMMON 1-2 FT - MAY 12"
     lines: list[str] = []
     for it in entry.items:
         parts = [str(it.quantity), (it.name or "").upper()]
@@ -68,16 +60,67 @@ def stamp_label(carrier_pdf: bytes, entry: LabelEntry) -> bytes:
     # Fallback: order_label when no catalog items
     if not lines and entry.order_label:
         lines.append(_smart_clip(entry.order_label.upper(), 55))
+    return lines
 
-    if not lines:
-        return carrier_pdf
 
-    # Build raw PDF content stream with absolute Tm positioning
+def _overlay_pypdf(carrier_pdf: bytes, lines: list[str]) -> bytes:
+    """Stamp the lines into the bottom-left blank strip via a reportlab overlay.
+
+    pypdf's page merge keeps the carrier's content streams and image XObjects
+    intact (barcodes stay byte-for-byte — verified), so there is no quality loss.
+    Page rotation is normalised with transfer_rotation_to_content() first, so the
+    text always lands upright at the *visual* bottom-left regardless of how the
+    carrier stored the label (e.g. UPS labels rotated 90°).
+    """
+    from pypdf import PdfReader, PdfWriter, Transformation
+    from reportlab.pdfgen import canvas as rl_canvas
+
+    reader = PdfReader(io.BytesIO(carrier_pdf))
+    page = reader.pages[0]
+    if int(page.get("/Rotate", 0) or 0) % 360:
+        page.transfer_rotation_to_content()
+
+    box = page.mediabox
+    x0, y0 = float(box.left), float(box.bottom)
+    page_w, page_h = float(box.width), float(box.height)
+
     line_h = 12
-    y_start = MARGIN_PT + (len(lines) - 1) * line_h
-    y_start = min(y_start, TEXT_AREA_H - 4)
+    y = min(MARGIN_PT + (len(lines) - 1) * line_h, TEXT_AREA_H - 4)
 
-    ops: list[bytes] = [b"q", b"BT", b"/Helvetica-Bold 8 Tf", b"0 0 0 rg"]
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=(page_w, page_h))
+    c.setFont("Helvetica-Bold", 9)
+    for line in lines:
+        c.drawString(MARGIN_PT, y, line)
+        y -= line_h
+        if y < 2:
+            break
+    c.showPage()
+    c.save()
+
+    overlay = PdfReader(io.BytesIO(buf.getvalue())).pages[0]
+    if x0 or y0:
+        page.merge_transformed_page(overlay, Transformation().translate(x0, y0))
+    else:
+        page.merge_page(overlay)
+
+    writer = PdfWriter()
+    writer.add_page(page)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def _inject_pikepdf(carrier_pdf: bytes, lines: list[str]) -> bytes:
+    """Fallback stamp: append a raw content stream via pikepdf (no re-encoding).
+    Does not handle page rotation — used only if the pypdf overlay path fails.
+    """
+    import pikepdf
+
+    line_h = 12
+    y_start = min(MARGIN_PT + (len(lines) - 1) * line_h, TEXT_AREA_H - 4)
+
+    ops: list[bytes] = [b"q", b"BT", b"/Helvetica-Bold 9 Tf", b"0 0 0 rg"]
     y = y_start
     for line in lines:
         safe = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
@@ -92,7 +135,6 @@ def stamp_label(carrier_pdf: bytes, entry: LabelEntry) -> bytes:
     pdf = pikepdf.open(io.BytesIO(carrier_pdf))
     page = pdf.pages[0]
 
-    # Ensure Helvetica-Bold in page Resources/Font
     if "/Resources" not in page:
         page["/Resources"] = pikepdf.Dictionary()
     res = page["/Resources"]
@@ -105,7 +147,6 @@ def stamp_label(carrier_pdf: bytes, entry: LabelEntry) -> bytes:
             BaseFont=pikepdf.Name("/Helvetica-Bold"),
         )
 
-    # Append text as new content stream — carrier streams untouched
     text_stream = pikepdf.Stream(pdf, text_bytes)
     existing = page.get("/Contents")
     if existing is None:
@@ -116,9 +157,27 @@ def stamp_label(carrier_pdf: bytes, entry: LabelEntry) -> bytes:
         page["/Contents"] = pikepdf.Array([existing, pdf.make_indirect(text_stream)])
 
     out = io.BytesIO()
-    # compress_streams=False → all existing streams preserved byte-for-byte
     pdf.save(out, compress_streams=False, preserve_pdfa=False)
     return out.getvalue()
+
+
+def stamp_label(carrier_pdf: bytes, entry: LabelEntry) -> bytes:
+    """Stamp product info into the native blank space at the bottom of the carrier label.
+
+    Format: Qty + PR NAME + (size/pot if any) + (date for supplier JOE),
+    e.g. "2 PERSIMMON 1-2 FT - MAY 12". Returns the carrier PDF unchanged when
+    there is nothing to stamp.
+    """
+    lines = _build_label_lines(entry)
+    if not lines:
+        return carrier_pdf
+    try:
+        return _overlay_pypdf(carrier_pdf, lines)
+    except Exception:
+        try:
+            return _inject_pikepdf(carrier_pdf, lines)
+        except Exception:
+            return carrier_pdf
 
 
 def concat_label_pdfs(pdf_list: list[bytes]) -> bytes:

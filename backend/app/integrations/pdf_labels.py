@@ -82,18 +82,60 @@ def _normalize_rotation(carrier_pdf: bytes) -> bytes:
         return carrier_pdf
 
 
+def _find_blank_band(page, page_h: float, content_bottom: float,
+                     need: float) -> float | None:
+    """Find a blank horizontal band in the label's own footer area (just above
+    the bottom-most content) tall enough to hold the product lines. Returns the
+    band's bottom edge (pt from top) or None. Scans a rendered grayscale pixmap
+    so it sees actual ink, not just element boxes."""
+    import fitz
+
+    dpi = 100
+    z = dpi / 72.0
+    pix = page.get_pixmap(matrix=fitz.Matrix(z, z), colorspace=fitz.csGRAY)
+    w_px, h_px, sm = pix.width, pix.height, pix.samples
+    # Only require the left ~82% of the row to be blank, so a right-aligned
+    # carrier glyph (e.g. UPS gift/return box) doesn't block placement.
+    left_lim = max(1, int(w_px * 0.82))
+
+    def row_blank(py: int) -> bool:
+        base = py * w_px
+        return min(sm[base:base + left_lim]) >= 248
+
+    p_bottom = min(h_px - 1, int(content_bottom * z))
+    # Keep the search near the bottom (the billing/footer area) and never above
+    # the vertical middle, so the text isn't dropped into the barcode region.
+    p_top = max(0, int((content_bottom - 110) * z), int(page_h * 0.5 * z))
+    run = 0
+    band_bottom_px = None
+    for py in range(p_bottom, p_top, -1):
+        if row_blank(py):
+            if band_bottom_px is None:
+                band_bottom_px = py
+            run += 1
+            if run / z >= need:
+                return band_bottom_px / z
+        else:
+            run = 0
+            band_bottom_px = None
+    return None
+
+
 def _crop_and_stamp_fitz(carrier_pdf: bytes, lines: list[str]) -> bytes:
     """Trim the oversized blank area some carriers (e.g. UPS) leave below the
-    label, then stamp the product info into a tight footer strip.
+    label, then stamp the product info into the label's existing blank footer
+    band — not an added strip.
 
     Carrier labels are a fixed physical size (4x6), but EasyPost sometimes
-    returns the label on a taller page, leaving a large white gap at the
-    bottom. We detect the real content bbox, crop the page just below it
-    (keeping room for the product lines), and insert the text there.
+    returns the label on a taller page, leaving a large white gap at the bottom.
+    We detect the real content bbox, crop the page just below the bottom-most
+    content (removing that gap), and place the product lines in a blank band
+    inside the label's footer (e.g. between the BILLING line and the bottom
+    reference codes). If no such band exists we keep a tight footer strip.
 
     pymupdf preserves the existing content streams / image XObjects on save
     (barcodes stay byte-for-byte — verified), so there is no quality loss.
-    Raises when there is no excess whitespace to trim, so callers fall back
+    Raises when the page isn't a stampable portrait label, so callers fall back
     to the plain overlay path.
     """
     import fitz
@@ -115,24 +157,37 @@ def _crop_and_stamp_fitz(carrier_pdf: bytes, lines: list[str]) -> bytes:
         if content.is_empty or content.is_infinite or content.y1 <= 0:
             raise ValueError("no content bbox")
 
+        # Only handle an upright portrait label with a real content block.
+        if page_h <= page_w or content.y1 < page_h * 0.45:
+            raise ValueError("not a stampable portrait label")
+
         line_h = 12
         content_bottom = content.y1                 # distance from top (fitz coords)
-        need = 16 + len(lines) * line_h             # footer strip for the product lines
-        available = page_h - content_bottom
+        need = len(lines) * line_h + 4
+        below_blank = page_h - content_bottom
+        # "Oversized" = far more blank below the content than a normal label's
+        # native footer strip → the carrier returned the label on a taller page
+        # (the UPS case). Only then do we crop; normal 4x6 labels keep their size.
+        oversized = below_blank > 75
 
-        # Guards so we never over-crop an unusual page: only trim an upright
-        # portrait label whose content reaches past the upper half, and only
-        # when there is clearly excess blank space below it. Anything else
-        # falls back to the plain overlay path.
-        if page_h <= page_w or content_bottom < page_h * 0.5:
-            raise ValueError("not a portrait label with bottom whitespace")
-        if available < need + 6:
-            raise ValueError("no excess whitespace to crop")
+        band_bottom = _find_blank_band(page, page_h, content_bottom, need)
 
-        target_h = content_bottom + need
-        page.set_cropbox(fitz.Rect(0, 0, page_w, target_h))
+        if band_bottom is not None:
+            # Drop the text into the label's existing blank band.
+            if oversized:
+                page.set_cropbox(fitz.Rect(0, 0, page_w, content_bottom + 3))
+            y = band_bottom - 3 - (len(lines) - 1) * line_h
+        elif oversized and below_blank >= need + 10:
+            # No usable band — trim the oversized gap to a tight footer strip.
+            page.set_cropbox(fitz.Rect(0, 0, page_w, content_bottom + need + 8))
+            y = content_bottom + 14
+        elif below_blank >= need + 10:
+            # Normal-size label, no band: stamp into the native bottom strip
+            # without changing the label size.
+            y = content_bottom + 14
+        else:
+            raise ValueError("no room to stamp without overlapping content")
 
-        y = content_bottom + 14
         for line in lines:
             page.insert_text(fitz.Point(MARGIN_PT, y), line,
                              fontname="hebo", fontsize=9)

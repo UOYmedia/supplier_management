@@ -329,40 +329,31 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     except Exception as e:
         raise HTTPException(500, f"DB error loading pack items: {e}")
 
-    # fetch_label_pdf_b64 uses label_png_url only. Shipments created with PDF format
-    # won't have label_png_url, so it returns None. Try to regenerate as PNG via the
-    # /label endpoint so we get actual PNG bytes and a stable PNG URL.
-    carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
-    try:
-        regen_png, regen_url = await ep.regenerate_label(bought.get("id") or body.shipment_id)
-        if regen_png:
-            carrier_png_b64 = regen_png
-        if regen_url:
-            label_url = regen_url
-    except Exception as regen_err:
-        await _log(db, order_id, "easypost_buy",
-                   f"Label PNG regeneration failed (non-fatal): {regen_err}",
-                   level="warn", payload={"shipment_id": body.shipment_id})
-
-    # If PNG still unavailable, download label_url — could be PNG or PDF
+    # Download PDF directly from label_url — shipments are created with label_format=PDF
+    # so label_url should be a PDF. Skip PNG regeneration entirely to preserve quality.
     carrier_pdf_bytes: bytes | None = None
-    if not carrier_png_b64 and label_url:
+    carrier_png_b64: str | None = None
+    if label_url:
         try:
             import httpx as _httpx
             async with _httpx.AsyncClient(timeout=20) as _http:
                 _r = await _http.get(label_url)
             if _r.is_success:
-                if _r.content[:8] == b'\x89PNG\r\n\x1a\n':
-                    carrier_png_b64 = base64.b64encode(_r.content).decode()
-                elif _r.content[:5] == b"%PDF-":
+                if _r.content[:5] == b"%PDF-":
                     carrier_pdf_bytes = _r.content
+                elif _r.content[:8] == b'\x89PNG\r\n\x1a\n':
+                    carrier_png_b64 = base64.b64encode(_r.content).decode()
                 await _log(db, order_id, "easypost_buy",
-                           f"Label fallback download: {'PNG' if carrier_png_b64 else 'PDF' if carrier_pdf_bytes else 'unknown format'} from {label_url[:60]}",
+                           f"Label download: {'PDF' if carrier_pdf_bytes else 'PNG' if carrier_png_b64 else 'unknown'} from {label_url[:60]}",
                            level="info", payload={"shipment_id": body.shipment_id})
         except Exception as _dl_err:
             await _log(db, order_id, "easypost_buy",
-                       f"Label fallback download failed: {_dl_err}",
+                       f"Label download failed: {_dl_err}",
                        level="warn", payload={"shipment_id": body.shipment_id})
+
+    # Fallback: try PNG url if PDF not available
+    if not carrier_pdf_bytes and not carrier_png_b64:
+        carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
 
     def _ship_name(addr: dict | None) -> str | None:
         if not addr:

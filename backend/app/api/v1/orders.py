@@ -233,7 +233,7 @@ async def bulk_labels(
         return Response(
             content=pdf,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+            headers={"Content-Disposition": f'inline; filename="{fname}"'},
         )
 
     try:

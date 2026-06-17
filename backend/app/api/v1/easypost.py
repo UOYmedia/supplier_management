@@ -22,7 +22,7 @@ from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
     supplier_to_ep_address, shipping_addr_to_ep,
 )
-from app.api.v1.orders import _recalculate_order_status, _line_item_out
+from app.api.v1.orders import _recalculate_order_status, _line_item_out, _catalog_items_for_line_item
 from app.schemas.order import ShippingLabelOut
 
 router = APIRouter(prefix="/orders", tags=["easypost"])
@@ -342,9 +342,63 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
                        f"Label download failed: {_dl_err}",
                        level="warn", payload={"shipment_id": body.shipment_id})
 
-    # label_data not needed — frontend uses label_url directly for display.
-    # label_url is stored on the ShippingLabel record below.
-    label_data = None
+    # Download carrier label PDF from label_url
+    carrier_raw: bytes | None = None
+    if label_url:
+        try:
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=20) as _http:
+                _r = await _http.get(label_url)
+            if _r.is_success:
+                carrier_raw = _r.content
+        except Exception as _dl_err:
+            await _log(db, order_id, "easypost_buy",
+                       f"Label download failed: {_dl_err}",
+                       level="warn", payload={"shipment_id": body.shipment_id})
+
+    if not carrier_raw:
+        _png_b64 = await ep.fetch_label_pdf_b64(bought)
+        if _png_b64:
+            carrier_raw = base64.b64decode(_png_b64)
+
+    # Stamp product info into the blank strip at the bottom of the label
+    label_data: str | None = None
+    if carrier_raw:
+        try:
+            pack_items = []
+            for li_id in li_ids:
+                li_obj = await db.get(OrderLineItem, li_id)
+                if li_obj:
+                    pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
+            sup_obj = await db.get(Supplier, body.supplier_id) if body.supplier_id else None
+
+            if carrier_raw[:5] == b"%PDF-":
+                carrier_pdf = carrier_raw
+            else:
+                from app.integrations.pdf_labels import image_to_label_pdf
+                carrier_pdf = image_to_label_pdf(carrier_raw)
+
+            from app.integrations.pdf_labels import LabelEntry, stamp_label
+            def _ship_name(addr: dict | None) -> str | None:
+                return (addr.get("name") or addr.get("Name") or addr.get("buyer_name")) if addr else None
+            entry = LabelEntry(
+                order_label=(order.external_order_id or f"Order #{order_id}"),
+                ship_to=_ship_name(order.shipping_address),
+                tracking_number=tracking,
+                label_pdf=None,
+                items=pack_items,
+                supplier_name=sup_obj.name if sup_obj else None,
+            )
+            label_data = base64.b64encode(stamp_label(carrier_pdf, entry)).decode()
+        except Exception as _stamp_err:
+            await _log(db, order_id, "easypost_buy",
+                       f"Label stamp failed (non-fatal): {_stamp_err}",
+                       level="warn", payload={"shipment_id": body.shipment_id})
+            # Fallback: store carrier as-is
+            if carrier_raw:
+                label_data = base64.b64encode(
+                    carrier_raw if carrier_raw[:5] == b"%PDF-" else image_to_label_pdf(carrier_raw)
+                ).decode()
 
     try:
         label = ShippingLabel(

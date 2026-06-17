@@ -625,8 +625,45 @@ async def portal_easypost_buy(
     except (InvalidOperation, ValueError):
         cost_val = Decimal("0")
 
-    # label_data not needed — portal uses label_url directly for display.
-    label_data = None
+    # Download carrier label and stamp product info
+    carrier_raw: bytes | None = None
+    if label_url:
+        try:
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=20) as _http:
+                _r = await _http.get(label_url)
+            if _r.is_success:
+                carrier_raw = _r.content
+        except Exception:
+            pass
+    if not carrier_raw:
+        _png_b64 = await ep.fetch_label_pdf_b64(bought)
+        if _png_b64:
+            carrier_raw = base64.b64decode(_png_b64)
+
+    label_data: str | None = None
+    if carrier_raw:
+        try:
+            from app.api.v1.orders import _catalog_items_for_line_item
+            from app.integrations.pdf_labels import LabelEntry, stamp_label, image_to_label_pdf
+            pack_items = []
+            for li in items:
+                pack_items.extend(await _catalog_items_for_line_item(li, db))
+            carrier_pdf = carrier_raw if carrier_raw[:5] == b"%PDF-" else image_to_label_pdf(carrier_raw)
+            entry = LabelEntry(
+                order_label=(order.external_order_id or f"Order #{body.order_id}"),
+                ship_to=_addr_name(order.shipping_address),
+                tracking_number=tracking,
+                label_pdf=None,
+                items=pack_items,
+                supplier_name=supplier.name,
+            )
+            label_data = base64.b64encode(stamp_label(carrier_pdf, entry)).decode()
+        except Exception:
+            if carrier_raw:
+                label_data = base64.b64encode(
+                    carrier_raw if carrier_raw[:5] == b"%PDF-" else image_to_label_pdf(carrier_raw)
+                ).decode()
 
     label = ShippingLabel(
         supplier_id=supplier.id,

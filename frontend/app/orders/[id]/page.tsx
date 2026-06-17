@@ -151,9 +151,9 @@ export default function OrderDetailPage() {
     for (const labelId of labelIds) {
       const lbl = labels.find((l: any) => l.id === labelId);
       if (!lbl) continue;
-      const url = lbl.label_url
-        ? lbl.label_url
-        : ordersApi.labelDownloadUrl(oid, lbl.id);
+      const url = lbl.has_label_data
+        ? ordersApi.labelDownloadUrl(oid, lbl.id)
+        : lbl.label_url;
       if (url) printLabel(url);
       markPrintedMut.mutate(labelId);
     }

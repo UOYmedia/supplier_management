@@ -100,7 +100,7 @@ async def bulk_labels(
     import zipfile
     import httpx
     from collections import defaultdict
-    from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs, image_to_label_pdf, stamp_label, LabelEntry
+    from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs, image_to_label_pdf
 
     try:
         d = datetime.strptime(date, "%Y-%m-%d")
@@ -141,45 +141,18 @@ async def bulk_labels(
 
     async def _pdf_for_label(label: ShippingLabel) -> bytes | None:
         try:
-            # label_data already has items stamped in (set at buy time)
+            # Prefer label_url (original carrier PDF, no processing)
+            if label.label_url:
+                async with httpx.AsyncClient(timeout=20) as http:
+                    r = await http.get(label.label_url)
+                if r.is_success and r.content:
+                    if r.content[:5] == b"%PDF-":
+                        return r.content
+                    return image_to_label_pdf(r.content)
+            # Fallback: use stored label_data
             if label.label_data:
-                raw = decode_label_data(label.label_data)
-                if raw:
-                    return raw
-
-            # Fallback: fetch from label_url and stamp on the fly
-            if not label.label_url:
-                return None
-            async with httpx.AsyncClient(timeout=20) as http:
-                r = await http.get(label.label_url)
-            if not r.is_success:
-                return None
-            raw = r.content
-            if not raw:
-                return None
-
-            li_res = await db.execute(select(OrderLineItem).where(OrderLineItem.label_id == label.id))
-            lis = li_res.scalars().all()
-            pack_items = []
-            for li in lis:
-                pack_items.extend(await _catalog_items_for_line_item(li, db))
-            sup = await db.get(Supplier, label.supplier_id)
-
-            if pack_items:
-                order = await db.get(Order, lis[0].order_id) if lis else None
-                entry = LabelEntry(
-                    order_label=(order.external_order_id if order else f"Label #{label.id}"),
-                    ship_to=None,
-                    tracking_number=label.tracking_number,
-                    label_pdf=None,
-                    items=pack_items,
-                    supplier_name=sup.name if sup else None,
-                )
-                return stamp_label(raw, entry)
-
-            if raw[:5] == b"%PDF-":
-                return raw
-            return image_to_label_pdf(raw)
+                return decode_label_data(label.label_data)
+            return None
         except Exception as _e:
             import traceback as _tb
             print(f"bulk_labels: _pdf_for_label label={label.id} failed — {_e}\n{_tb.format_exc()}", flush=True)

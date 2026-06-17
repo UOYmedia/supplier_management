@@ -19,4 +19,3 @@ pypdf==5.1.0
 reportlab==4.2.5
 apscheduler==3.10.4
 anthropic>=0.40.0
-pikepdf==9.4.2

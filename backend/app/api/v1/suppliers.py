@@ -63,6 +63,10 @@ async def list_suppliers(
 async def create_supplier(body: SupplierCreate, db: AsyncSession = Depends(get_db)):
     from app.core.security import hash_password
     data = body.model_dump(exclude={"password"})
+    # Convert empty strings to None to avoid unique constraint violations (e.g. username)
+    for k, v in data.items():
+        if v == "":
+            data[k] = None
     if body.password:
         data["hashed_password"] = hash_password(body.password)
     supplier = Supplier(**data)

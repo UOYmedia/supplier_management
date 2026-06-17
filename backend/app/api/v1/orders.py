@@ -350,6 +350,7 @@ async def bulk_fulfill(
 
 
 
+@router.get("/delayed")
 async def list_delayed_orders(db: AsyncSession = Depends(get_db)):
     """Orders where a shipping label was purchased 3+ days ago but line items are still 'shipped' (not delivered)."""
     now = datetime.now(timezone.utc)

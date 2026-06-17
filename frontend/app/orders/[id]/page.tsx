@@ -151,9 +151,11 @@ export default function OrderDetailPage() {
     for (const labelId of labelIds) {
       const lbl = labels.find((l: any) => l.id === labelId);
       if (!lbl) continue;
-      const url = lbl.has_label_data
+      // Always go through the backend download endpoint so the carrier label is
+      // served with the product info stamped in (Qty + NAME + size + date).
+      const url = (lbl.has_label_data || lbl.label_url)
         ? ordersApi.labelDownloadUrl(oid, lbl.id)
-        : lbl.label_url;
+        : null;
       if (url) printLabel(url);
       markPrintedMut.mutate(labelId);
     }
@@ -389,7 +391,7 @@ export default function OrderDetailPage() {
                 <span className="text-gray-500">${parseFloat(l.cost).toFixed(2)}</span>
                 {(l.has_label_data || l.label_url) ? (
                   <a
-                    href={l.label_url || ordersApi.labelDownloadUrl(oid, l.id)}
+                    href={ordersApi.labelDownloadUrl(oid, l.id)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center gap-1 text-blue-600 hover:underline text-xs"

@@ -343,9 +343,11 @@ function printAndMarkShipped(orderId: number, labeledItems: any[], qc: any, supp
   }
   for (const [labelId, items] of byLabel) {
     const sample = items[0];
-    const url = sample.label_has_pdf
+    // Always go through the backend download endpoint so the label is served
+    // with the product info stamped in (Qty + NAME + size + date for JOE).
+    const url = (sample.label_has_pdf || sample.label_url)
       ? `/api/v1/orders/${orderId}/labels/${labelId}/download`
-      : sample.label_url;
+      : null;
     if (url) {
       const win = window.open(url, "_blank");
       if (win) {

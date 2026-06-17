@@ -246,6 +246,8 @@ async def download_label(order_id: int, label_id: int, db: AsyncSession = Depend
     if not label:
         raise HTTPException(404, "Label not found")
 
+    # Prefer label_data — the carrier label with product info stamped in at buy
+    # time (Qty + NAME + (size/pot) + date for JOE).
     if label.label_data:
         try:
             pdf_bytes = base64.b64decode(label.label_data)
@@ -258,7 +260,29 @@ async def download_label(order_id: int, label_id: int, db: AsyncSession = Depend
             raise HTTPException(500, "Failed to decode label data")
 
     if label.label_url:
-        # Redirect to the URL (EasyPost hosted labels)
+        # No stored label_data — fetch the raw carrier PDF and stamp the product
+        # info on the fly so the printed label still carries the product name.
+        import httpx
+        from app.api.v1.orders import _stamp_carrier_for_label
+        from app.integrations.pdf_labels import image_to_label_pdf
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
+                r = await http.get(label.label_url)
+            if r.is_success and r.content:
+                carrier = (r.content if r.content[:5] == b"%PDF-"
+                           else image_to_label_pdf(r.content))
+                try:
+                    stamped = await _stamp_carrier_for_label(carrier, label, db)
+                except Exception:
+                    stamped = carrier
+                return Response(
+                    content=stamped,
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": f"inline; filename=label_{label_id}.pdf"},
+                )
+        except Exception:
+            pass
+        # Fall back to redirecting to the hosted label if fetch/stamp failed
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url=label.label_url)
 

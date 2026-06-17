@@ -100,10 +100,7 @@ async def bulk_labels(
     import zipfile
     import httpx
     from collections import defaultdict
-    from app.integrations.pdf_labels import (
-        decode_label_data, concat_label_pdfs,
-        LabelEntry, PackItem, build_label_from_png,
-    )
+    from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs, image_to_label_pdf
 
     try:
         d = datetime.strptime(date, "%Y-%m-%d")
@@ -144,7 +141,6 @@ async def bulk_labels(
 
     async def _pdf_for_label(label: ShippingLabel) -> bytes | None:
         try:
-            from app.integrations.pdf_labels import build_batch_label_pdf
             raw: bytes | None = None
             if label.label_data:
                 raw = decode_label_data(label.label_data)
@@ -155,33 +151,10 @@ async def bulk_labels(
                     raw = r.content
             if not raw:
                 return None
-
-            # Always build with overlay — fetch items for all label types
-            li_res = await db.execute(select(OrderLineItem).where(OrderLineItem.label_id == label.id))
-            lis = li_res.scalars().all()
-            pack_items: list[PackItem] = []
-            for li in lis:
-                pack_items.extend(await _catalog_items_for_line_item(li, db))
-            order = await db.get(Order, lis[0].order_id) if lis else None
-            sup = await db.get(Supplier, label.supplier_id)
-
-            def _an(addr: dict | None) -> str | None:
-                return (addr.get("name") or addr.get("Name")) if addr else None
-
-            entry = LabelEntry(
-                order_label=(order.external_order_id if order else f"Label #{label.id}"),
-                ship_to=_an(order.shipping_address) if order else None,
-                tracking_number=label.tracking_number,
-                label_pdf=raw if raw[:5] == b"%PDF-" else None,
-                items=pack_items,
-                supplier_name=sup.name if sup else None,
-            )
             if raw[:5] == b"%PDF-":
-                # PDF carrier — merge with overlay via build_batch_label_pdf
-                return build_batch_label_pdf([entry])
-            else:
-                # PNG/image carrier — draw overlay on top
-                return build_label_from_png(raw, entry)
+                return raw
+            # PNG/image — wrap in PDF
+            return image_to_label_pdf(raw)
         except Exception as _e:
             import traceback as _tb
             print(f"bulk_labels: _pdf_for_label label={label.id} failed — {_e}\n{_tb.format_exc()}", flush=True)
@@ -833,26 +806,29 @@ async def regenerate_label(
     size: str = Query("4x6", description="EasyPost label size, e.g. 4x6 or 7x3"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Regenerate the label PDF on demand (e.g. to repair a missing archive or
-    change the printed size).
-
-    Preferred path: re-request the label PNG from EasyPost and build a combined
-    PDF with the catalog overlay strip. Fallback: re-fetch the stored label_url.
-    """
+    """Re-fetch the carrier label from EasyPost and store it as-is."""
     label = await db.get(ShippingLabel, label_id)
     if not label:
         raise HTTPException(404, "Label not found")
 
     from app.core.config import settings
-    from app.integrations.pdf_labels import (
-        LabelEntry, PackItem, build_label_from_png, build_batch_label_pdf, image_to_label_pdf,
-    )
+    from app.integrations.pdf_labels import image_to_label_pdf
 
-    raw_png_bytes: bytes | None = None
-    raw_pdf_bytes: bytes | None = None
+    raw: bytes | None = None
 
-    # Preferred: regenerate PNG from EasyPost
-    if label.shipment_id and settings.EASYPOST_API_KEY:
+    # Preferred: fetch PDF directly from label_url
+    if label.label_url:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
+                r = await http.get(label.label_url)
+            if r.is_success:
+                raw = r.content
+        except Exception as e:
+            raise HTTPException(502, f"Could not fetch the stored label URL: {e}")
+
+    # Fallback: regenerate from EasyPost
+    if not raw and label.shipment_id and settings.EASYPOST_API_KEY:
         from app.integrations.easypost.client import EasyPostClient, EasyPostError
         ep = EasyPostClient(settings.EASYPOST_API_KEY)
         try:
@@ -860,78 +836,18 @@ async def regenerate_label(
         except EasyPostError as e:
             raise HTTPException(e.status, str(e))
         if png_b64:
-            raw_png_bytes = base64.b64decode(png_b64)
+            raw = base64.b64decode(png_b64)
             if png_url:
                 label.label_url = png_url
 
-    # Fallback: re-fetch the stored label URL
-    if raw_png_bytes is None and label.label_url:
-        import httpx
-        try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
-                r = await http.get(label.label_url)
-        except Exception as e:
-            raise HTTPException(502, f"Could not fetch the stored label URL: {e}")
-        if not r.is_success:
-            raise HTTPException(502, f"Label URL returned HTTP {r.status_code} — it may have expired. Upload a PDF manually instead.")
-        content = r.content
-        if content[:5] == b"%PDF-":
-            raw_pdf_bytes = content
-        else:
-            raw_png_bytes = content
+    if not raw:
+        raise HTTPException(400, "No label URL or EasyPost shipment to regenerate from.")
 
-    if raw_png_bytes is None and raw_pdf_bytes is None:
-        raise HTTPException(400, "This label has no EasyPost shipment or stored URL to regenerate from — upload a PDF manually instead.")
-
-    # Build pack items using catalog lookup
-    supplier = await db.get(Supplier, label.supplier_id) if label.supplier_id else None
-    order = await _get_or_404(order_id, db)
-    lis_result = await db.execute(
-        select(OrderLineItem).where(
-            OrderLineItem.order_id == order_id,
-            OrderLineItem.label_id == label_id,
-        )
-    )
-    lis = lis_result.scalars().all()
-
-    pack_items: list[PackItem] = []
-    for li in lis:
-        pack_items.extend(await _catalog_items_for_line_item(li, db))
-
-    if not pack_items:
-        all_lis_result = await db.execute(
-            select(OrderLineItem).where(OrderLineItem.order_id == order_id)
-        )
-        for li in all_lis_result.scalars().all():
-            pack_items.extend(await _catalog_items_for_line_item(li, db))
-
-    def _addr_name(addr: dict | None) -> str | None:
-        if not addr:
-            return None
-        return addr.get("name") or addr.get("Name") or addr.get("full_name") or addr.get("buyer_name")
-
-    if raw_png_bytes:
-        entry = LabelEntry(
-            order_label=(order.external_order_id or f"Order #{order_id}"),
-            ship_to=_addr_name(order.shipping_address),
-            tracking_number=label.tracking_number,
-            label_pdf=None,
-            items=pack_items,
-            supplier_name=supplier.name if supplier else None,
-        )
-        combined_pdf = build_label_from_png(raw_png_bytes, entry)
+    if raw[:5] == b"%PDF-":
+        label.label_data = base64.b64encode(raw).decode()
     else:
-        entry = LabelEntry(
-            order_label=(order.external_order_id or f"Order #{order_id}"),
-            ship_to=_addr_name(order.shipping_address),
-            tracking_number=label.tracking_number,
-            label_pdf=raw_pdf_bytes,
-            items=pack_items,
-            supplier_name=supplier.name if supplier else None,
-        )
-        combined_pdf = build_batch_label_pdf([entry])
+        label.label_data = base64.b64encode(image_to_label_pdf(raw)).decode()
 
-    label.label_data = base64.b64encode(combined_pdf).decode()
     await db.commit()
     await db.refresh(label)
     return label
@@ -1179,37 +1095,6 @@ async def _get_or_404(order_id: int, db: AsyncSession) -> Order:
         raise HTTPException(404, "Order not found")
     return o
 
-
-async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> list:
-    """Resolve catalog name+qty for a line item via OFI → ProductComponent → SupplierProduct."""
-    from app.integrations.pdf_labels import PackItem
-    # Prefer OFI (already resolved and persisted)
-    fi_res = await db.execute(
-        select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
-    )
-    fis = fi_res.scalars().all()
-    if fis:
-        items = []
-        for fi in fis:
-            sp = await db.get(SupplierProduct, fi.supplier_product_id)
-            if sp:
-                items.append(PackItem(name=sp.short_name or sp.name or li.product_name, sku=sp.sku, quantity=fi.quantity))
-        if items:
-            return items
-    if li.product_id:
-        comps = (await db.execute(
-            select(ProductComponent).where(ProductComponent.product_id == li.product_id)
-        )).scalars().all()
-        if comps:
-            items = []
-            for comp in comps:
-                sp = await db.get(SupplierProduct, comp.supplier_product_id)
-                if sp:
-                    items.append(PackItem(name=sp.short_name or sp.name or li.product_name, sku=sp.sku,
-                                          quantity=li.quantity * comp.quantity))
-            if items:
-                return items
-    return [PackItem(name=li.product_name, sku=li.sku, quantity=li.quantity)]
 
 
 async def _line_item_out(li: OrderLineItem, db: AsyncSession) -> OrderLineItemOut:

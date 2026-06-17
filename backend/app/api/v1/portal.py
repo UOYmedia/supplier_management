@@ -302,17 +302,12 @@ async def portal_batch_labels(
     """Combine every unfulfilled label for this supplier into one PDF with catalog overlay.
 
     For labels that already have label_data (overlay baked in at buy time) those
-    pages are used directly. For labels that only have a label_url (e.g. bought before
-    the PNG pipeline was fixed), the PDF/PNG is fetched from EasyPost's CDN and the
-    catalog overlay is applied on-the-fly.
+    pages are used directly. For labels that only have a label_url, the PDF/PNG is
+    fetched from EasyPost's CDN as-is.
     """
     import httpx
     import base64
-    from app.integrations.pdf_labels import (
-        decode_label_data, concat_label_pdfs,
-        LabelEntry, build_label_from_png, build_batch_label_pdf,
-    )
-    from app.api.v1.orders import _catalog_items_for_line_item
+    from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs, image_to_label_pdf
 
     wanted_ids: set[int] | None = None
     if label_ids:
@@ -328,7 +323,6 @@ async def portal_batch_labels(
     ).order_by(OrderLineItem.order_id)
     lis = (await db.execute(q)).scalars().all()
 
-    # Group line items by label_id so we can resolve catalog items per label
     from collections import defaultdict
     label_to_lis: dict[int, list] = defaultdict(list)
     for li in lis:
@@ -345,14 +339,12 @@ async def portal_batch_labels(
         if not label or label.supplier_id != supplier.id:
             continue
 
-        # Case 1: label_data already has carrier PNG + catalog overlay baked in
         if label.label_data:
             pdf = decode_label_data(label.label_data)
             if pdf:
                 pdf_pages.append(pdf)
                 continue
 
-        # Case 2: no label_data — fetch from label_url and apply overlay now
         if not label.label_url:
             continue
         try:
@@ -364,27 +356,11 @@ async def portal_batch_labels(
         except Exception:
             continue
 
-        # Resolve catalog items for the overlay strip
-        pack_items = []
-        for li in label_lis:
-            pack_items.extend(await _catalog_items_for_line_item(li, db))
-
-        order = await db.get(Order, label_lis[0].order_id)
-        entry = LabelEntry(
-            order_label=(order.external_order_id if order else f"Label #{label_id}"),
-            ship_to=_addr_name(order.shipping_address) if order else None,
-            tracking_number=label.tracking_number,
-            label_pdf=None,
-            items=pack_items,
-            supplier_name=supplier.name,
-        )
-
         try:
-            if content[:8] == b'\x89PNG\r\n\x1a\n':
-                pdf_pages.append(build_label_from_png(content, entry))
+            if content[:5] == b"%PDF-":
+                pdf_pages.append(content)
             else:
-                entry.label_pdf = content
-                pdf_pages.append(build_batch_label_pdf([entry]))
+                pdf_pages.append(image_to_label_pdf(content))
         except Exception:
             continue
 
@@ -631,7 +607,6 @@ async def portal_easypost_buy(
     if not items:
         raise HTTPException(404, "No unshipped items in this order belong to you")
 
-    from app.api.v1.orders import _catalog_items_for_line_item
     from decimal import InvalidOperation
     import base64
 
@@ -650,41 +625,30 @@ async def portal_easypost_buy(
     except (InvalidOperation, ValueError):
         cost_val = Decimal("0")
 
-    # Resolve catalog pack items for the overlay strip
-    pack_items = []
-    for li in items:
-        pack_items.extend(await _catalog_items_for_line_item(li, db))
+    # Download carrier label as-is
+    label_data = None
+    if label_url:
+        try:
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=20) as _http:
+                _r = await _http.get(label_url)
+            if _r.is_success:
+                if _r.content[:5] == b"%PDF-":
+                    label_data = base64.b64encode(_r.content).decode()
+                elif _r.content[:8] == b'\x89PNG\r\n\x1a\n':
+                    from app.integrations.pdf_labels import image_to_label_pdf
+                    label_data = base64.b64encode(image_to_label_pdf(_r.content)).decode()
+        except Exception:
+            pass
 
-    # Fetch PNG — try buy response first, then regenerate explicitly
-    carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
-    try:
-        regen_png, regen_url = await ep.regenerate_label(bought.get("id") or body.shipment_id)
-        if regen_png:
-            carrier_png_b64 = regen_png
-        if regen_url:
-            label_url = regen_url
-    except Exception:
-        pass
-
-    try:
-        if carrier_png_b64 and pack_items:
-            from app.integrations.pdf_labels import LabelEntry, build_label_from_png
-            entry = LabelEntry(
-                order_label=(order.external_order_id or f"Order #{body.order_id}"),
-                ship_to=_addr_name(order.shipping_address),
-                tracking_number=tracking,
-                label_pdf=None,
-                items=pack_items,
-                supplier_name=supplier.name,
-            )
-            label_data = base64.b64encode(build_label_from_png(base64.b64decode(carrier_png_b64), entry)).decode()
-        elif carrier_png_b64:
-            from app.integrations.pdf_labels import image_to_label_pdf
-            label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
-        else:
-            label_data = None
-    except Exception:
-        label_data = None
+    if not label_data:
+        carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
+        if carrier_png_b64:
+            try:
+                from app.integrations.pdf_labels import image_to_label_pdf
+                label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
+            except Exception:
+                pass
 
     label = ShippingLabel(
         supplier_id=supplier.id,

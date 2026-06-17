@@ -22,7 +22,7 @@ from app.integrations.easypost.client import (
     EasyPostClient, EasyPostError,
     supplier_to_ep_address, shipping_addr_to_ep,
 )
-from app.api.v1.orders import _recalculate_order_status, _line_item_out, _catalog_items_for_line_item
+from app.api.v1.orders import _recalculate_order_status, _line_item_out
 from app.schemas.order import ShippingLabelOut
 
 router = APIRouter(prefix="/orders", tags=["easypost"])
@@ -320,15 +320,6 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     except (InvalidOperation, ValueError):
         cost_val = Decimal("0")
 
-    try:
-        pack_items = []
-        for li_id in li_ids:
-            li_obj = await db.get(OrderLineItem, li_id)
-            if li_obj:
-                pack_items.extend(await _catalog_items_for_line_item(li_obj, db))
-    except Exception as e:
-        raise HTTPException(500, f"DB error loading pack items: {e}")
-
     # Download PDF directly from label_url — shipments are created with label_format=PDF
     # so label_url should be a PDF. Skip PNG regeneration entirely to preserve quality.
     carrier_pdf_bytes: bytes | None = None
@@ -355,42 +346,18 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
     if not carrier_pdf_bytes and not carrier_png_b64:
         carrier_png_b64 = await ep.fetch_label_pdf_b64(bought)
 
-    def _ship_name(addr: dict | None) -> str | None:
-        if not addr:
-            return None
-        return addr.get("name") or addr.get("Name") or addr.get("buyer_name")
-
-    try:
-        if carrier_png_b64 and pack_items:
-            from app.integrations.pdf_labels import LabelEntry, build_label_from_png
-            png_bytes = base64.b64decode(carrier_png_b64)
-            entry = LabelEntry(
-                order_label=(order.external_order_id or f"Order #{order_id}"),
-                ship_to=_ship_name(order.shipping_address),
-                tracking_number=tracking,
-                label_pdf=None,
-                items=pack_items,
-            )
-            label_data = base64.b64encode(build_label_from_png(png_bytes, entry)).decode()
-        elif carrier_png_b64:
+    if carrier_pdf_bytes:
+        label_data = base64.b64encode(carrier_pdf_bytes).decode()
+    elif carrier_png_b64:
+        try:
             from app.integrations.pdf_labels import image_to_label_pdf
             label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
-        elif carrier_pdf_bytes:
-            from app.integrations.pdf_labels import LabelEntry, build_batch_label_pdf
-            entry = LabelEntry(
-                order_label=(order.external_order_id or f"Order #{order_id}"),
-                ship_to=_ship_name(order.shipping_address),
-                tracking_number=tracking,
-                label_pdf=carrier_pdf_bytes,
-                items=pack_items,
-            )
-            label_data = base64.b64encode(build_batch_label_pdf([entry])).decode()
-        else:
+        except Exception as pdf_err:
+            await _log(db, order_id, "easypost_buy",
+                       f"PNG→PDF conversion failed (non-fatal): {pdf_err}",
+                       level="warn", payload={"shipment_id": body.shipment_id})
             label_data = None
-    except Exception as pdf_err:
-        await _log(db, order_id, "easypost_buy",
-                   f"Label PDF generation failed (non-fatal): {pdf_err}",
-                   level="warn", payload={"shipment_id": body.shipment_id})
+    else:
         label_data = None
 
     try:

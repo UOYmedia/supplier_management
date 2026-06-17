@@ -131,6 +131,8 @@ export const ordersApi = {
   syncTracking: (orderId: number) => api.post(`/orders/${orderId}/sync-tracking`).then((r) => r.data),
   bulkLabels: (params: { date: string; supplier_id?: number }) =>
     api.get("/orders/bulk-labels", { params, responseType: "blob" }).then((r) => r.data),
+  bulkFulfill: (params: { date: string; supplier_id?: number }) =>
+    api.post("/orders/bulk-fulfill", null, { params }).then((r) => r.data),
   bulkLabelsUrl: (params: { date: string; supplier_id?: number }) => {
     const qs = new URLSearchParams({ date: params.date, ...(params.supplier_id != null ? { supplier_id: String(params.supplier_id) } : {}) });
     return `/api/v1/orders/bulk-labels?${qs}`;

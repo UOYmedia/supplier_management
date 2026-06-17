@@ -269,7 +269,89 @@ async def bulk_labels(
         raise HTTPException(500, f"Error building zip: {e}")
 
 
-@router.get("/delayed")
+@router.post("/bulk-fulfill")
+async def bulk_fulfill(
+    date: str = Query(...),
+    supplier_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark all labels (and their line items) for a given date/supplier as shipped."""
+    try:
+        d = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Invalid date — use YYYY-MM-DD.")
+    start = d.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    end = d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+
+    processing_label_ids_q = (
+        select(OrderLineItem.label_id)
+        .join(Order, Order.id == OrderLineItem.order_id)
+        .where(
+            OrderLineItem.label_id.isnot(None),
+            Order.status == OrderStatus.processing,
+        )
+    )
+    q = select(ShippingLabel).where(
+        ShippingLabel.purchased_at >= start,
+        ShippingLabel.purchased_at <= end,
+        ShippingLabel.id.in_(processing_label_ids_q),
+    )
+    if supplier_id is not None:
+        q = q.where(ShippingLabel.supplier_id == supplier_id)
+
+    labels = (await db.execute(q)).scalars().all()
+    if not labels:
+        raise HTTPException(404, "No processing labels found for this date/supplier")
+
+    now = datetime.now(timezone.utc)
+    marked_orders: set[int] = set()
+
+    for label in labels:
+        li_res = await db.execute(
+            select(OrderLineItem).where(OrderLineItem.label_id == label.id)
+        )
+        lis = list(li_res.scalars().all())
+        for li in lis:
+            if li.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+                li.fulfill_status = FulfillStatus.shipped
+                if not li.fulfilled_at:
+                    li.fulfilled_at = now
+            if label.tracking_number and not li.tracking_number:
+                li.tracking_number = label.tracking_number
+            fi_res = await db.execute(
+                select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+            )
+            for fi in fi_res.scalars().all():
+                if fi.fulfill_status not in (FulfillStatus.shipped, FulfillStatus.delivered):
+                    fi.fulfill_status = FulfillStatus.shipped
+                    if not fi.fulfilled_at:
+                        fi.fulfilled_at = now
+                    sp_stock = await db.get(SupplierProduct, fi.supplier_product_id)
+                    if sp_stock:
+                        sp_stock.stock_quantity = max(0, sp_stock.stock_quantity - fi.quantity)
+            marked_orders.add(li.order_id)
+
+    # Recalculate order statuses
+    for order_id in marked_orders:
+        order = await db.get(Order, order_id)
+        if order:
+            await _recalculate_order_status(order, db)
+
+    await db.commit()
+
+    # Best-effort push tracking to marketplace for each order
+    for order_id in marked_orders:
+        order = await db.get(Order, order_id)
+        if order:
+            try:
+                await _try_push_marketplace_tracking(order, db)
+            except Exception:
+                pass
+
+    return {"marked_orders": len(marked_orders), "labels_processed": len(labels)}
+
+
+
 async def list_delayed_orders(db: AsyncSession = Depends(get_db)):
     """Orders where a shipping label was purchased 3+ days ago but line items are still 'shipped' (not delivered)."""
     now = datetime.now(timezone.utc)

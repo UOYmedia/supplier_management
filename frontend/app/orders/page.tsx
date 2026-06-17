@@ -246,44 +246,50 @@ export default function OrdersPage() {
 }
 
 function BulkPrintModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
   const today = new Date().toISOString().split("T")[0];
   const [date, setDate] = useState(today);
   const [supplierId, setSupplierId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fulfilling, setFulfilling] = useState(false);
+  const [printed, setPrinted] = useState(false);
+  const [confirmFulfill, setConfirmFulfill] = useState(false);
 
   const { data: suppliers = [] } = useQuery({
     queryKey: ["suppliers"],
     queryFn: () => suppliersApi.list(),
   });
 
-  const handleDownload = async () => {
-    const params: { date: string; supplier_id?: number } = { date };
-    if (supplierId !== null) params.supplier_id = supplierId;
+  const params = (): { date: string; supplier_id?: number } => {
+    const p: { date: string; supplier_id?: number } = { date };
+    if (supplierId !== null) p.supplier_id = supplierId;
+    return p;
+  };
 
+  const handleDownload = async () => {
     // Single supplier → open PDF inline in new tab
     if (supplierId !== null) {
-      window.open(ordersApi.bulkLabelsUrl(params), "_blank");
-      onClose();
+      window.open(ordersApi.bulkLabelsUrl(params()), "_blank");
+      setPrinted(true);
       return;
     }
 
     // All suppliers → download zip
     setLoading(true);
     try {
-      const blob = await ordersApi.bulkLabels(params);
+      const blob = await ordersApi.bulkLabels(params());
       const d = new Date(date + "T12:00:00");
       const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
       const dateLabel = `${mon} ${d.getDate()}`;
-      const filename = `${dateLabel} - labels.zip`;
       const url = URL.createObjectURL(new Blob([blob], { type: "application/zip" }));
       const a = document.createElement("a");
       a.href = url;
-      a.download = filename;
+      a.download = `${dateLabel} - labels.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      onClose();
+      setPrinted(true);
     } catch (e: any) {
       const status = e.response?.status;
       if (status === 404) {
@@ -305,6 +311,26 @@ function BulkPrintModal({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const handleFulfill = async () => {
+    setFulfilling(true);
+    setConfirmFulfill(false);
+    try {
+      const result = await ordersApi.bulkFulfill(params());
+      toast.success(`Marked ${result.marked_orders} order(s) as fulfilled`);
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      onClose();
+    } catch (e: any) {
+      const detail = e.response?.data?.detail || "Error marking as fulfilled";
+      toast.error(detail);
+    } finally {
+      setFulfilling(false);
+    }
+  };
+
+  const supName = supplierId !== null
+    ? (suppliers as any[]).find((s) => s.id === supplierId)?.name ?? "supplier"
+    : "all suppliers";
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="card w-full max-w-sm p-6">
@@ -320,7 +346,7 @@ function BulkPrintModal({ onClose }: { onClose: () => void }) {
               type="date"
               className="input"
               value={date}
-              onChange={(e) => setDate(e.target.value)}
+              onChange={(e) => { setDate(e.target.value); setPrinted(false); }}
             />
           </div>
           <div>
@@ -328,7 +354,7 @@ function BulkPrintModal({ onClose }: { onClose: () => void }) {
             <select
               className="input"
               value={supplierId ?? ""}
-              onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : null)}
+              onChange={(e) => { setSupplierId(e.target.value ? Number(e.target.value) : null); setPrinted(false); }}
             >
               <option value="">All suppliers (zip)</option>
               {(suppliers as any[]).map((s) => (
@@ -338,8 +364,34 @@ function BulkPrintModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
+        {confirmFulfill && (
+          <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm">
+            <p className="font-medium text-amber-800 mb-2">
+              Mark all orders as fulfilled?
+            </p>
+            <p className="text-amber-700 text-xs mb-3">
+              All processing orders with labels on <strong>{date}</strong> for <strong>{supName}</strong> will be marked as shipped.
+            </p>
+            <div className="flex gap-2">
+              <button className="btn-secondary text-xs py-1" onClick={() => setConfirmFulfill(false)}>Cancel</button>
+              <button className="btn-primary text-xs py-1 bg-amber-600 hover:bg-amber-700" onClick={handleFulfill} disabled={fulfilling}>
+                {fulfilling ? "Processing…" : "Confirm"}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex justify-end gap-2 mt-6">
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-secondary" onClick={onClose}>Close</button>
+          {printed && !confirmFulfill && (
+            <button
+              className="btn-secondary text-green-700 border-green-300 hover:bg-green-50"
+              onClick={() => setConfirmFulfill(true)}
+              disabled={fulfilling}
+            >
+              Mark as Fulfilled
+            </button>
+          )}
           <button className="btn-primary" onClick={handleDownload} disabled={loading || !date}>
             {loading ? "Preparing…" : supplierId !== null ? "Open PDF" : "Download Zip"}
           </button>

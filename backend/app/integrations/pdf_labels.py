@@ -135,10 +135,15 @@ def concat_label_pdfs(pdf_list: list[bytes]) -> bytes:
 
 
 def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
-    """Build label PDFs with overlay strip below the carrier label at native size."""
+    """Build label PDFs with overlay strip below the carrier label at native size.
+
+    Strategy: expand the carrier page's mediabox downward by OVERLAY_H without
+    touching the carrier content stream at all (no scale, no re-encode).
+    The overlay is drawn in its own tiny canvas and merged only into the
+    new empty space at the bottom.
+    """
     writer = PdfWriter()
     for entry in entries:
-        # Detect carrier size (default 4×6)
         carrier_page = None
         cw, ch = LABEL_W, LABEL_H
         if entry.label_pdf:
@@ -149,27 +154,33 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
             except Exception:
                 carrier_page = None
 
-        # Output page = carrier size + overlay strip below (no scaling = no quality loss)
-        out_w, out_h = cw, ch + OVERLAY_H
-
-        # Draw overlay at the very bottom of the extended page
+        # Draw the overlay strip in a small canvas (overlay height only).
+        # _draw_overlay draws relative to (0,0)-(LABEL_W, OVERLAY_H).
         buf = io.BytesIO()
-        c = canvas.Canvas(buf, pagesize=(out_w, out_h))
+        c = canvas.Canvas(buf, pagesize=(cw, OVERLAY_H))
         _draw_overlay(c, entry)
         c.showPage()
         c.save()
         overlay_page = PdfReader(io.BytesIO(buf.getvalue())).pages[0]
 
-        out_page = writer.add_blank_page(width=out_w, height=out_h)
         if carrier_page is not None:
-            # Carrier sits at the top — translate it up by OVERLAY_H
+            # Add carrier page as-is, then expand mediabox downward by OVERLAY_H.
+            # The carrier content stream is untouched — zero quality loss.
+            writer.add_page(carrier_page)
+            out_page = writer.pages[-1]
+            # Expand the visible area below y=0 (PDF y-axis: 0 is bottom of original page)
+            lx = float(out_page.mediabox.lower_left[0])
+            ly = float(out_page.mediabox.lower_left[1])
+            out_page.mediabox.lower_left = (lx, ly - OVERLAY_H)
+            # Merge overlay translated to sit in the new space below y=0
             out_page.merge_transformed_page(
-                carrier_page,
-                Transformation().translate(0, OVERLAY_H),
+                overlay_page,
+                Transformation().translate(0, ly - OVERLAY_H),
             )
-        out_page.merge_page(overlay_page)
-        out_page.mediabox.lower_left = (0, 0)
-        out_page.mediabox.upper_right = (out_w, out_h)
+        else:
+            # No carrier — just a plain overlay page
+            out_page = writer.add_blank_page(width=cw, height=OVERLAY_H)
+            out_page.merge_page(overlay_page)
 
     out = io.BytesIO()
     writer.write(out)

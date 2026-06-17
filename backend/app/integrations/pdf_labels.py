@@ -4,7 +4,7 @@ import io
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from pypdf import PdfReader, PdfWriter, Transformation
+from pypdf import PdfReader, PdfWriter
 
 
 LABEL_W_PT = 4 * 72  # 288 pt  (1 inch = 72 pt)
@@ -41,54 +41,79 @@ def _smart_clip(text: str, n: int) -> str:
 
 
 def _stamp_items_on_pdf(carrier_pdf: bytes, entry: LabelEntry) -> bytes:
-    """Stamp product info text into the existing blank space at the bottom of
-    the carrier label. Carrier content stream is never modified — we only
-    merge a transparent text layer on top."""
-    from reportlab.pdfgen import canvas as rl_canvas
+    """Stamp product info text into the blank space at the bottom of the carrier label.
 
-    carrier_page = PdfReader(io.BytesIO(carrier_pdf)).pages[0]
-    cw = float(carrier_page.mediabox.width)
-    ch = float(carrier_page.mediabox.height)
-
-    # Build text-only overlay at the same page size (transparent background)
-    buf = io.BytesIO()
-    c = rl_canvas.Canvas(buf, pagesize=(cw, ch))
+    Uses pikepdf to append a new content stream — all existing page streams
+    (including barcode images) are preserved byte-for-byte, no re-encoding.
+    """
+    import pikepdf
 
     date_str = ""
     if (entry.supplier_name or "").strip().upper() == "JOE":
         now = datetime.now()
         date_str = now.strftime("%b").upper() + " " + str(now.day)
 
-    # Draw items from the bottom up, starting MARGIN_PT from the bottom
-    y = MARGIN_PT + (len(entry.items) - 1) * 14  # start high enough
-    y = min(y, TEXT_AREA_H - 4)  # stay within blank area
-
+    # Build lines of text
+    lines: list[str] = []
     for it in entry.items:
         parts = [str(it.quantity), (it.name or "").upper()]
         if it.size:
             parts.append(f"({it.size})")
         if date_str:
             parts.append(date_str)
-        line = "  ".join(parts)
+        lines.append(_smart_clip("  ".join(parts), 55))
 
-        c.setFont("Helvetica-Bold", 8)
-        c.setFillColorRGB(0, 0, 0)
-        c.drawString(MARGIN_PT, y, _smart_clip(line, 55))
-        y -= 13
+    if not lines:
+        return carrier_pdf
+
+    # Build raw PDF content stream operators (no external PDF needed)
+    line_h = 13  # points between lines
+    y_start = MARGIN_PT + (len(lines) - 1) * line_h
+    y_start = min(y_start, TEXT_AREA_H - 4)
+
+    ops: list[bytes] = [b"q", b"BT", b"/Helvetica-Bold 8 Tf", b"0 0 0 rg"]
+    y = y_start
+    for line in lines:
+        safe = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        # Tm sets absolute text matrix: 1 0 0 1 x y Tm
+        ops.append(f"1 0 0 1 {MARGIN_PT:.1f} {y:.1f} Tm".encode())
+        ops.append(f"({safe}) Tj".encode())
+        y -= line_h
         if y < 2:
             break
+    ops += [b"ET", b"Q"]
+    text_stream_bytes = b"\n".join(ops)
 
-    c.showPage()
-    c.save()
+    pdf = pikepdf.open(io.BytesIO(carrier_pdf))
+    page = pdf.pages[0]
 
-    text_page = PdfReader(io.BytesIO(buf.getvalue())).pages[0]
+    # Ensure Helvetica-Bold is in page Resources/Font
+    if "/Resources" not in page:
+        page["/Resources"] = pikepdf.Dictionary()
+    res = page["/Resources"]
+    if "/Font" not in res:
+        res["/Font"] = pikepdf.Dictionary()
+    if "/Helvetica-Bold" not in res["/Font"]:
+        res["/Font"]["/Helvetica-Bold"] = pikepdf.Dictionary(
+            Type=pikepdf.Name("/Font"),
+            Subtype=pikepdf.Name("/Type1"),
+            BaseFont=pikepdf.Name("/Helvetica-Bold"),
+        )
 
-    writer = PdfWriter()
-    writer.add_page(carrier_page)
-    writer.pages[0].merge_page(text_page)
+    # Append our text stream to the page's content streams
+    text_stream = pikepdf.Stream(pdf, text_stream_bytes)
+    existing = page.get("/Contents")
+    if existing is None:
+        page["/Contents"] = text_stream
+    elif isinstance(existing, pikepdf.Array):
+        existing.append(pdf.make_indirect(text_stream))
+    else:
+        # Convert single stream to array
+        page["/Contents"] = pikepdf.Array([existing, pdf.make_indirect(text_stream)])
 
     out = io.BytesIO()
-    writer.write(out)
+    # preserve_pdfa=False, recompress_streams=False → all existing streams untouched
+    pdf.save(out, recompress_streams=False, preserve_pdfa=False)
     return out.getvalue()
 
 

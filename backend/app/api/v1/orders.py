@@ -100,7 +100,7 @@ async def bulk_labels(
     import zipfile
     import httpx
     from collections import defaultdict
-    from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs, image_to_label_pdf
+    from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs, image_to_label_pdf, stamp_label, LabelEntry
 
     try:
         d = datetime.strptime(date, "%Y-%m-%d")
@@ -141,19 +141,44 @@ async def bulk_labels(
 
     async def _pdf_for_label(label: ShippingLabel) -> bytes | None:
         try:
-            raw: bytes | None = None
+            # label_data already has items stamped in (set at buy time)
             if label.label_data:
                 raw = decode_label_data(label.label_data)
-            elif label.label_url:
-                async with httpx.AsyncClient(timeout=20) as http:
-                    r = await http.get(label.label_url)
-                if r.is_success:
-                    raw = r.content
+                if raw:
+                    return raw
+
+            # Fallback: fetch from label_url and stamp on the fly
+            if not label.label_url:
+                return None
+            async with httpx.AsyncClient(timeout=20) as http:
+                r = await http.get(label.label_url)
+            if not r.is_success:
+                return None
+            raw = r.content
             if not raw:
                 return None
+
+            li_res = await db.execute(select(OrderLineItem).where(OrderLineItem.label_id == label.id))
+            lis = li_res.scalars().all()
+            pack_items = []
+            for li in lis:
+                pack_items.extend(await _catalog_items_for_line_item(li, db))
+            sup = await db.get(Supplier, label.supplier_id)
+
+            if pack_items:
+                order = await db.get(Order, lis[0].order_id) if lis else None
+                entry = LabelEntry(
+                    order_label=(order.external_order_id if order else f"Label #{label.id}"),
+                    ship_to=None,
+                    tracking_number=label.tracking_number,
+                    label_pdf=None,
+                    items=pack_items,
+                    supplier_name=sup.name if sup else None,
+                )
+                return stamp_label(raw, entry)
+
             if raw[:5] == b"%PDF-":
                 return raw
-            # PNG/image — wrap in PDF
             return image_to_label_pdf(raw)
         except Exception as _e:
             import traceback as _tb
@@ -843,11 +868,37 @@ async def regenerate_label(
     if not raw:
         raise HTTPException(400, "No label URL or EasyPost shipment to regenerate from.")
 
-    if raw[:5] == b"%PDF-":
-        label.label_data = base64.b64encode(raw).decode()
-    else:
-        label.label_data = base64.b64encode(image_to_label_pdf(raw)).decode()
+    # Stamp product info into blank space
+    try:
+        lis_res = await db.execute(
+            select(OrderLineItem).where(
+                OrderLineItem.order_id == order_id,
+                OrderLineItem.label_id == label_id,
+            )
+        )
+        lis = lis_res.scalars().all()
+        pack_items = []
+        for li in lis:
+            pack_items.extend(await _catalog_items_for_line_item(li, db))
+        sup = await db.get(Supplier, label.supplier_id) if label.supplier_id else None
+        if pack_items:
+            from app.integrations.pdf_labels import LabelEntry, stamp_label
+            entry = LabelEntry(
+                order_label=(order.external_order_id or f"Order #{order_id}"),
+                ship_to=None,
+                tracking_number=label.tracking_number,
+                label_pdf=None,
+                items=pack_items,
+                supplier_name=sup.name if sup else None,
+            )
+            raw = stamp_label(raw, entry)
+        elif raw[:4] != b"%PDF":
+            raw = image_to_label_pdf(raw)
+    except Exception:
+        if raw[:5] != b"%PDF-":
+            raw = image_to_label_pdf(raw)
 
+    label.label_data = base64.b64encode(raw).decode()
     await db.commit()
     await db.refresh(label)
     return label
@@ -1095,6 +1146,39 @@ async def _get_or_404(order_id: int, db: AsyncSession) -> Order:
         raise HTTPException(404, "Order not found")
     return o
 
+
+
+async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> list:
+    """Resolve catalog name/size/qty for a line item via OFI → ProductComponent → SupplierProduct."""
+    from app.integrations.pdf_labels import PackItem
+    fi_res = await db.execute(
+        select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+    )
+    fis = fi_res.scalars().all()
+    if fis:
+        items = []
+        for fi in fis:
+            sp = await db.get(SupplierProduct, fi.supplier_product_id)
+            if sp:
+                items.append(PackItem(name=sp.short_name or sp.name or li.product_name,
+                                      sku=sp.sku, quantity=fi.quantity, size=sp.size if hasattr(sp, 'size') else None))
+        if items:
+            return items
+    if li.product_id:
+        comps = (await db.execute(
+            select(ProductComponent).where(ProductComponent.product_id == li.product_id)
+        )).scalars().all()
+        if comps:
+            items = []
+            for comp in comps:
+                sp = await db.get(SupplierProduct, comp.supplier_product_id)
+                if sp:
+                    items.append(PackItem(name=sp.short_name or sp.name or li.product_name,
+                                          sku=sp.sku, quantity=li.quantity * comp.quantity,
+                                          size=sp.size if hasattr(sp, 'size') else None))
+            if items:
+                return items
+    return [PackItem(name=li.product_name, sku=li.sku, quantity=li.quantity)]
 
 
 async def _line_item_out(li: OrderLineItem, db: AsyncSession) -> OrderLineItemOut:

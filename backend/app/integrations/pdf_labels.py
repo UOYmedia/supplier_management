@@ -63,6 +63,88 @@ def _build_label_lines(entry: LabelEntry) -> list[str]:
     return lines
 
 
+def _normalize_rotation(carrier_pdf: bytes) -> bytes:
+    """Bake any /Rotate into the page content so the PDF is upright with
+    /Rotate 0. Returns the original bytes unchanged on any failure."""
+    try:
+        from pypdf import PdfReader, PdfWriter
+        reader = PdfReader(io.BytesIO(carrier_pdf))
+        page = reader.pages[0]
+        if int(page.get("/Rotate", 0) or 0) % 360 == 0:
+            return carrier_pdf
+        page.transfer_rotation_to_content()
+        writer = PdfWriter()
+        writer.add_page(page)
+        out = io.BytesIO()
+        writer.write(out)
+        return out.getvalue()
+    except Exception:
+        return carrier_pdf
+
+
+def _crop_and_stamp_fitz(carrier_pdf: bytes, lines: list[str]) -> bytes:
+    """Trim the oversized blank area some carriers (e.g. UPS) leave below the
+    label, then stamp the product info into a tight footer strip.
+
+    Carrier labels are a fixed physical size (4x6), but EasyPost sometimes
+    returns the label on a taller page, leaving a large white gap at the
+    bottom. We detect the real content bbox, crop the page just below it
+    (keeping room for the product lines), and insert the text there.
+
+    pymupdf preserves the existing content streams / image XObjects on save
+    (barcodes stay byte-for-byte — verified), so there is no quality loss.
+    Raises when there is no excess whitespace to trim, so callers fall back
+    to the plain overlay path.
+    """
+    import fitz
+
+    doc = fitz.open(stream=_normalize_rotation(carrier_pdf), filetype="pdf")
+    try:
+        page = doc[0]
+        page_w, page_h = page.rect.width, page.rect.height
+
+        # Union of all drawn content (vectors + text + images) → content bbox.
+        content = fitz.Rect(1e9, 1e9, -1e9, -1e9)
+        for d in page.get_drawings():
+            content |= fitz.Rect(d["rect"])
+        for bl in page.get_text("blocks"):
+            content |= fitz.Rect(bl[:4])
+        for im in page.get_images(full=True):
+            for rc in page.get_image_rects(im[0]):
+                content |= fitz.Rect(rc)
+        if content.is_empty or content.is_infinite or content.y1 <= 0:
+            raise ValueError("no content bbox")
+
+        line_h = 12
+        content_bottom = content.y1                 # distance from top (fitz coords)
+        need = 16 + len(lines) * line_h             # footer strip for the product lines
+        available = page_h - content_bottom
+
+        # Guards so we never over-crop an unusual page: only trim an upright
+        # portrait label whose content reaches past the upper half, and only
+        # when there is clearly excess blank space below it. Anything else
+        # falls back to the plain overlay path.
+        if page_h <= page_w or content_bottom < page_h * 0.5:
+            raise ValueError("not a portrait label with bottom whitespace")
+        if available < need + 6:
+            raise ValueError("no excess whitespace to crop")
+
+        target_h = content_bottom + need
+        page.set_cropbox(fitz.Rect(0, 0, page_w, target_h))
+
+        y = content_bottom + 14
+        for line in lines:
+            page.insert_text(fitz.Point(MARGIN_PT, y), line,
+                             fontname="hebo", fontsize=9)
+            y += line_h
+
+        out = io.BytesIO()
+        doc.save(out, deflate=False, garbage=0)
+        return out.getvalue()
+    finally:
+        doc.close()
+
+
 def _overlay_pypdf(carrier_pdf: bytes, lines: list[str]) -> bytes:
     """Stamp the lines into the bottom-left blank strip via a reportlab overlay.
 
@@ -171,13 +253,17 @@ def stamp_label(carrier_pdf: bytes, entry: LabelEntry) -> bytes:
     lines = _build_label_lines(entry)
     if not lines:
         return carrier_pdf
-    try:
-        return _overlay_pypdf(carrier_pdf, lines)
-    except Exception:
+    # 1) Trim oversized blank area + footer stamp (handles UPS' tall pages).
+    # 2) Plain rotation-safe overlay into the native bottom strip.
+    # 3) Raw pikepdf content-stream injection.
+    for stamp_fn in (_crop_and_stamp_fitz, _overlay_pypdf, _inject_pikepdf):
         try:
-            return _inject_pikepdf(carrier_pdf, lines)
+            out = stamp_fn(carrier_pdf, lines)
+            if out:
+                return out
         except Exception:
-            return carrier_pdf
+            continue
+    return carrier_pdf
 
 
 def concat_label_pdfs(pdf_list: list[bytes]) -> bytes:

@@ -375,7 +375,7 @@ async def buy_label(order_id: int, body: BuyRequest, db: AsyncSession = Depends(
         elif carrier_png_b64:
             from app.integrations.pdf_labels import image_to_label_pdf
             label_data = base64.b64encode(image_to_label_pdf(base64.b64decode(carrier_png_b64))).decode()
-        elif carrier_pdf_bytes and pack_items:
+        elif carrier_pdf_bytes:
             from app.integrations.pdf_labels import LabelEntry, build_batch_label_pdf
             entry = LabelEntry(
                 order_label=(order.external_order_id or f"Order #{order_id}"),

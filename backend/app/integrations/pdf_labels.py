@@ -151,12 +151,17 @@ def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
                 carrier = PdfReader(io.BytesIO(entry.label_pdf)).pages[0]
                 cw = float(carrier.mediabox.width)
                 ch = float(carrier.mediabox.height)
-                if cw and ch and (abs(cw - LABEL_W) > 1 or abs(ch - LABEL_H) > 1):
-                    # Scale carrier to fit 4×6 if its native size differs
-                    sx, sy = LABEL_W / cw, LABEL_H / ch
-                    out_page.merge_transformed_page(carrier, Transformation().scale(sx, sy))
-                else:
-                    out_page.merge_page(carrier)
+                if cw and ch:
+                    # Scale carrier to fit in the usable area above the overlay strip,
+                    # then translate up so it sits above the overlay band.
+                    usable_h = LABEL_H - OVERLAY_H
+                    scale = min(LABEL_W / cw, usable_h / ch)
+                    tx = (LABEL_W - cw * scale) / 2
+                    ty = OVERLAY_H + (usable_h - ch * scale) / 2
+                    out_page.merge_transformed_page(
+                        carrier,
+                        Transformation().scale(scale, scale).translate(tx, ty),
+                    )
             except Exception:
                 pass
         out_page.merge_page(overlay_page)

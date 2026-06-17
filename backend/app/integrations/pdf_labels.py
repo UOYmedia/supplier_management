@@ -53,14 +53,17 @@ def stamp_label(carrier_pdf: bytes, entry: LabelEntry) -> bytes:
         now = datetime.now()
         date_str = now.strftime("%b").upper() + " " + str(now.day)
 
+    # Format: Qty + PR NAME + (size/pot if any) + (date for supplier JOE)
+    # e.g. "2 PERSIMMON 1-2 FT - MAY 12"
     lines: list[str] = []
     for it in entry.items:
         parts = [str(it.quantity), (it.name or "").upper()]
         if it.size:
-            parts.append(f"({it.size})")
+            parts.append(str(it.size).upper())
+        line = " ".join(p for p in parts if p)
         if date_str:
-            parts.append(date_str)
-        lines.append(_smart_clip("  ".join(parts), 55))
+            line += f" - {date_str}"
+        lines.append(_smart_clip(line, 55))
 
     # Fallback: order_label when no catalog items
     if not lines and entry.order_label:

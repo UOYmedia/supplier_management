@@ -141,15 +141,26 @@ async def bulk_labels(
 
     async def _pdf_for_label(label: ShippingLabel) -> bytes | None:
         try:
-            # Prefer label_url (original carrier PDF, no processing)
+            # Prefer label_data — the carrier label with product info stamped in
+            # at buy time (Qty + NAME + (size/pot) + date for JOE).
+            if label.label_data:
+                pdf = decode_label_data(label.label_data)
+                if pdf and pdf[:5] == b"%PDF-":
+                    return pdf
+            # Otherwise fetch the raw carrier PDF and stamp the product info now,
+            # so the printed label still carries the product name.
             if label.label_url:
                 async with httpx.AsyncClient(timeout=20) as http:
                     r = await http.get(label.label_url)
                 if r.is_success and r.content:
-                    if r.content[:5] == b"%PDF-":
-                        return r.content
-                    return image_to_label_pdf(r.content)
-            # Fallback: use stored label_data
+                    carrier = (r.content if r.content[:5] == b"%PDF-"
+                               else image_to_label_pdf(r.content))
+                    try:
+                        return await _stamp_carrier_for_label(carrier, label, db)
+                    except Exception as _se:
+                        print(f"bulk_labels: stamp failed label={label.id} — {_se}", flush=True)
+                        return carrier
+            # Last resort: whatever label_data decodes to
             if label.label_data:
                 return decode_label_data(label.label_data)
             return None
@@ -1153,6 +1164,42 @@ async def _catalog_items_for_line_item(li: OrderLineItem, db: AsyncSession) -> l
             if items:
                 return items
     return [PackItem(name=li.product_name, sku=li.sku, quantity=li.quantity)]
+
+
+async def _stamp_carrier_for_label(carrier_pdf: bytes, label: ShippingLabel, db: AsyncSession) -> bytes:
+    """Stamp the product info (Qty + NAME + (size/pot) + date for JOE) onto a
+    raw carrier PDF, resolving items/supplier from the label's line items."""
+    from app.integrations.pdf_labels import LabelEntry, stamp_label
+
+    lis = (await db.execute(
+        select(OrderLineItem).where(OrderLineItem.label_id == label.id)
+    )).scalars().all()
+
+    pack_items: list = []
+    order_obj: Order | None = None
+    for li in lis:
+        pack_items.extend(await _catalog_items_for_line_item(li, db))
+        if order_obj is None and li.order_id:
+            order_obj = await db.get(Order, li.order_id)
+
+    if not pack_items:
+        return carrier_pdf
+
+    sup = await db.get(Supplier, label.supplier_id) if label.supplier_id else None
+    if order_obj is not None:
+        order_label = order_obj.external_order_id or f"Order #{order_obj.id}"
+    else:
+        order_label = ""
+
+    entry = LabelEntry(
+        order_label=order_label,
+        ship_to=None,
+        tracking_number=label.tracking_number,
+        label_pdf=None,
+        items=pack_items,
+        supplier_name=sup.name if sup else None,
+    )
+    return stamp_label(carrier_pdf, entry)
 
 
 async def _line_item_out(li: OrderLineItem, db: AsyncSession) -> OrderLineItemOut:

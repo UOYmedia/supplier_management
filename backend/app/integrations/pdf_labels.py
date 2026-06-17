@@ -135,38 +135,41 @@ def concat_label_pdfs(pdf_list: list[bytes]) -> bytes:
 
 
 def build_batch_label_pdf(entries: list[LabelEntry]) -> bytes:
-    """Fallback for PDF-based labels (manually uploaded). Uses pypdf merge."""
+    """Build label PDFs with overlay strip below the carrier label at native size."""
     writer = PdfWriter()
     for entry in entries:
+        # Detect carrier size (default 4×6)
+        carrier_page = None
+        cw, ch = LABEL_W, LABEL_H
+        if entry.label_pdf:
+            try:
+                carrier_page = PdfReader(io.BytesIO(entry.label_pdf)).pages[0]
+                cw = float(carrier_page.mediabox.width)
+                ch = float(carrier_page.mediabox.height)
+            except Exception:
+                carrier_page = None
+
+        # Output page = carrier size + overlay strip below (no scaling = no quality loss)
+        out_w, out_h = cw, ch + OVERLAY_H
+
+        # Draw overlay at the very bottom of the extended page
         buf = io.BytesIO()
-        c = canvas.Canvas(buf, pagesize=(LABEL_W, LABEL_H))
+        c = canvas.Canvas(buf, pagesize=(out_w, out_h))
         _draw_overlay(c, entry)
         c.showPage()
         c.save()
         overlay_page = PdfReader(io.BytesIO(buf.getvalue())).pages[0]
 
-        out_page = writer.add_blank_page(width=LABEL_W, height=LABEL_H)
-        if entry.label_pdf:
-            try:
-                carrier = PdfReader(io.BytesIO(entry.label_pdf)).pages[0]
-                cw = float(carrier.mediabox.width)
-                ch = float(carrier.mediabox.height)
-                if cw and ch:
-                    # Scale carrier to fit in the usable area above the overlay strip,
-                    # then translate up so it sits above the overlay band.
-                    usable_h = LABEL_H - OVERLAY_H
-                    scale = min(LABEL_W / cw, usable_h / ch)
-                    tx = (LABEL_W - cw * scale) / 2
-                    ty = OVERLAY_H + (usable_h - ch * scale) / 2
-                    out_page.merge_transformed_page(
-                        carrier,
-                        Transformation().scale(scale, scale).translate(tx, ty),
-                    )
-            except Exception:
-                pass
+        out_page = writer.add_blank_page(width=out_w, height=out_h)
+        if carrier_page is not None:
+            # Carrier sits at the top — translate it up by OVERLAY_H
+            out_page.merge_transformed_page(
+                carrier_page,
+                Transformation().translate(0, OVERLAY_H),
+            )
         out_page.merge_page(overlay_page)
         out_page.mediabox.lower_left = (0, 0)
-        out_page.mediabox.upper_right = (LABEL_W, LABEL_H)
+        out_page.mediabox.upper_right = (out_w, out_h)
 
     out = io.BytesIO()
     writer.write(out)

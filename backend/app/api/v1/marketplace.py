@@ -333,11 +333,26 @@ async def auto_map_listings(db: AsyncSession = Depends(get_db)):
 # --- Unmapped ASINs (order lines with an ASIN but no product mapping) ---
 
 @router.get("/unmapped-asins")
-async def list_unmapped_asins(db: AsyncSession = Depends(get_db)):
+async def list_unmapped_asins(
+    supplier_filter: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
     """Order lines that carry an Amazon ASIN but still have product_id = NULL
     (no mapping to a SupplierProduct), so supplier stock isn't being deducted
     for them. Cancelled/shipped lines are excluded. Grouped by (asin, sku) with
-    the number of pending orders and total quantity, busiest first."""
+    the number of pending orders and total quantity, busiest first.
+
+    Each item is classified by SKU structure ({owner}-{shop}-{supplier}-...) into
+    a detected supplier. Optional ``supplier_filter``:
+      - "JOE"              → only items detected as supplier Joe
+      - "missing_supplier" → only items whose SKU has no recognizable supplier
+      - any other name     → items whose detected supplier matches it
+      - omitted/empty      → everything
+    """
+    from app.services.sku_classifier import get_known_supplier_usernames, classify_sku
+
+    known_suppliers = await get_known_supplier_usernames(db)
+
     q = (
         select(
             OrderLineItem.asin,
@@ -357,15 +372,28 @@ async def list_unmapped_asins(db: AsyncSession = Depends(get_db)):
         .order_by(func.sum(OrderLineItem.quantity).desc())
     )
     rows = (await db.execute(q)).all()
-    return [
-        {
+
+    items = []
+    for asin, sku, order_count, total_quantity in rows:
+        c = classify_sku(sku, known_suppliers)
+        items.append({
             "asin": asin,
             "sku": sku,
             "order_count": order_count,
             "total_quantity": int(total_quantity),
-        }
-        for asin, sku, order_count, total_quantity in rows
-    ]
+            "detected_supplier": c["supplier"],
+            "detection_reason": c["reason"],
+        })
+
+    if supplier_filter:
+        if supplier_filter == "JOE":
+            items = [it for it in items if it["detected_supplier"] == "Joe"]
+        elif supplier_filter == "missing_supplier":
+            items = [it for it in items if it["detection_reason"] == "missing_supplier"]
+        else:
+            items = [it for it in items if it["detected_supplier"] == supplier_filter]
+
+    return {"total": len(items), "items": items}
 
 
 # --- Push to marketplace ---

@@ -17,10 +17,11 @@ export default function ProductsPage() {
   const [loadingSuggestions, setLoadingSuggestions] = useState(false)
   const [tab, setTab] = useState<"mappings" | "unmapped">("mappings");
 
-  const { data: unmappedAsins = [] } = useQuery({
-    queryKey: ["unmapped-asins"],
+  const { data: unmappedSummary } = useQuery({
+    queryKey: ["unmapped-asins", ""],
     queryFn: () => api.get("/marketplace/unmapped-asins").then((r) => r.data),
   });
+  const unmappedCount = unmappedSummary?.total ?? 0;
 
   const { data: mappings = [], isLoading } = useQuery({
     queryKey: ["mappings", search],
@@ -106,9 +107,9 @@ export default function ProductsPage() {
           className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 flex items-center gap-1.5 ${tab === "unmapped" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}
         >
           Unmapped ASINs
-          {unmappedAsins.length > 0 && (
+          {unmappedCount > 0 && (
             <span className="bg-red-500 text-white text-xs font-semibold rounded-full px-1.5 py-0.5 leading-none">
-              {unmappedAsins.length}
+              {unmappedCount}
             </span>
           )}
         </button>
@@ -466,10 +467,17 @@ function AddMappingModal({ onClose }: { onClose: () => void }) {
 function UnmappedAsinsTab() {
   // Order lines that carry an ASIN but no product mapping yet (product_id null),
   // so supplier stock isn't being deducted → risk of oversell.
-  const { data: unmapped = [], isLoading } = useQuery({
-    queryKey: ["unmapped-asins"],
-    queryFn: () => api.get("/marketplace/unmapped-asins").then((r) => r.data),
+  const [filter, setFilter] = useState("JOE"); // default to JOE
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["unmapped-asins", filter],
+    queryFn: () =>
+      api
+        .get("/marketplace/unmapped-asins", { params: filter ? { supplier_filter: filter } : {} })
+        .then((r) => r.data),
   });
+  const items: any[] = data?.items ?? [];
+  const total: number = data?.total ?? 0;
 
   // Flat list of every supplier catalog item for the Catalog Item dropdown.
   const { data: catalogItems = [] } = useQuery({
@@ -487,37 +495,89 @@ function UnmappedAsinsTab() {
     },
   });
 
+  const note =
+    filter === "JOE"
+      ? `Hiển thị ${total} ASIN của JOE (gồm nhận diện tự động + override list)`
+      : filter === "missing_supplier"
+      ? `Hiển thị ${total} ASIN có SKU thiếu vị trí supplier — cần team kiểm tra`
+      : `Hiển thị ${total} ASIN`;
+
   return (
-    <div className="card table-wrapper">
-      <table>
-        <thead>
-          <tr>
-            <th>ASIN</th>
-            <th>SKU</th>
-            <th>Số đơn đang chờ</th>
-            <th>Tổng cây</th>
-            <th>Catalog Item</th>
-            <th>Units / Order</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {isLoading ? (
-            <tr><td colSpan={7} className="text-center py-8 text-gray-400">Loading…</td></tr>
-          ) : unmapped.length === 0 ? (
-            <tr><td colSpan={7} className="text-center py-8 text-gray-400">
-              No unmapped ASINs — every order line is linked to a catalog item. 🎉
-            </td></tr>
-          ) : unmapped.map((row: any) => (
-            <UnmappedAsinRow key={`${row.asin}__${row.sku}`} row={row} catalogItems={catalogItems} />
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <p className="text-sm text-gray-500">{note}</p>
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-gray-500">Supplier filter</label>
+          <select className="input" value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <option value="">All suppliers</option>
+            <option value="JOE">JOE</option>
+            <option value="missing_supplier">⚠️ Missing supplier</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="card table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>ASIN</th>
+              <th>SKU</th>
+              <th>Detected</th>
+              <th>Số đơn đang chờ</th>
+              <th>Tổng cây</th>
+              <th>Catalog Item</th>
+              <th>Units / Order</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              <tr><td colSpan={8} className="text-center py-8 text-gray-400">Loading…</td></tr>
+            ) : items.length === 0 ? (
+              <tr><td colSpan={8} className="text-center py-8 text-gray-400">
+                No unmapped ASINs for this filter. 🎉
+              </td></tr>
+            ) : items.map((row: any) => (
+              <UnmappedAsinRow
+                key={`${row.asin}__${row.sku}`}
+                row={row}
+                catalogItems={catalogItems}
+                filter={filter}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
-function UnmappedAsinRow({ row, catalogItems }: { row: any; catalogItems: any[] }) {
+function DetectedBadge({ row }: { row: any }) {
+  const reason = row.detection_reason;
+  if (reason === "missing_supplier") {
+    return <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-orange-100 text-orange-700">Missing supplier</span>;
+  }
+  if (reason === "override") {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-sm">{row.detected_supplier}</span>
+        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-green-100 text-green-700">Override</span>
+      </span>
+    );
+  }
+  if (reason === "position_3") {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-sm">{row.detected_supplier}</span>
+        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Auto</span>
+      </span>
+    );
+  }
+  // invalid
+  return <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">Invalid SKU</span>;
+}
+
+function UnmappedAsinRow({ row, catalogItems, filter }: { row: any; catalogItems: any[]; filter: string }) {
   const qc = useQueryClient();
   const [spId, setSpId] = useState("");
   const [units, setUnits] = useState("1");
@@ -534,8 +594,14 @@ function UnmappedAsinRow({ row, catalogItems }: { row: any; catalogItems: any[] 
       toast.success(`Linked ${row.asin}`);
       // create_mapping doesn't back-fill existing order lines, so drop this row
       // from the list locally instead of refetching.
-      qc.setQueryData(["unmapped-asins"], (old: any[] = []) =>
-        old.filter((r) => !(r.asin === row.asin && r.sku === row.sku))
+      qc.setQueryData(["unmapped-asins", filter], (old: any) =>
+        old
+          ? {
+              ...old,
+              items: old.items.filter((r: any) => !(r.asin === row.asin && r.sku === row.sku)),
+              total: Math.max(0, (old.total ?? 1) - 1),
+            }
+          : old
       );
       qc.invalidateQueries({ queryKey: ["mappings"] });
     },
@@ -546,6 +612,7 @@ function UnmappedAsinRow({ row, catalogItems }: { row: any; catalogItems: any[] 
     <tr>
       <td className="font-mono text-xs font-medium text-gray-800">{row.asin}</td>
       <td className="text-sm">{row.sku || <span className="text-gray-300">—</span>}</td>
+      <td><DetectedBadge row={row} /></td>
       <td className="text-center">{row.order_count}</td>
       <td className="text-center font-medium">{row.total_quantity}</td>
       <td>

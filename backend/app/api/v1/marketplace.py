@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from pydantic import BaseModel
 from app.core.database import get_db
 from app.models.marketplace import MarketplaceConnection, MarketplaceListing, MarketplaceType, ConnectionStatus
 from app.models.product import Product
@@ -332,26 +333,21 @@ async def auto_map_listings(db: AsyncSession = Depends(get_db)):
 
 # --- Unmapped ASINs (order lines with an ASIN but no product mapping) ---
 
-@router.get("/unmapped-asins")
-async def list_unmapped_asins(
-    supplier_filter: str | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    """Order lines that carry an Amazon ASIN but still have product_id = NULL
-    (no mapping to a SupplierProduct), so supplier stock isn't being deducted
-    for them. Cancelled/shipped lines are excluded. Grouped by (asin, sku) with
-    the number of pending orders and total quantity, busiest first.
+async def _build_unmapped_items(db: AsyncSession, supplier_filter: str | None = None) -> list[dict]:
+    """Build the filtered list of unmapped-ASIN items, each enriched with a
+    detected supplier and (for items with a detected supplier) the top-3 origin
+    suggestions. Shared by the GET endpoint and the auto-link endpoint.
 
-    Each item is classified by SKU structure ({owner}-{shop}-{supplier}-...) into
-    a detected supplier. Optional ``supplier_filter``:
-      - "JOE"              → only items detected as supplier Joe
-      - "missing_supplier" → only items whose SKU has no recognizable supplier
-      - any other name     → items whose detected supplier matches it
-      - omitted/empty      → everything
-    """
+    Suggestions are computed only for the items that survive the filter, to
+    avoid scanning supplier catalogs for rows we won't return."""
     from app.services.sku_classifier import get_known_supplier_usernames, classify_sku
+    from app.services.origin_suggester import suggest_origin_for_sku
 
     known_suppliers = await get_known_supplier_usernames(db)
+    sup_rows = (await db.execute(
+        select(Supplier.username, Supplier.id).where(Supplier.username.isnot(None))
+    )).all()
+    username_to_id = {username: sid for username, sid in sup_rows}
 
     q = (
         select(
@@ -359,6 +355,7 @@ async def list_unmapped_asins(
             OrderLineItem.sku,
             func.count(func.distinct(OrderLineItem.order_id)).label("order_count"),
             func.coalesce(func.sum(OrderLineItem.quantity), 0).label("total_quantity"),
+            func.max(OrderLineItem.product_name).label("product_name"),
         )
         .where(
             OrderLineItem.asin.isnot(None),
@@ -374,15 +371,17 @@ async def list_unmapped_asins(
     rows = (await db.execute(q)).all()
 
     items = []
-    for asin, sku, order_count, total_quantity in rows:
+    for asin, sku, order_count, total_quantity, product_name in rows:
         c = classify_sku(sku, known_suppliers)
         items.append({
             "asin": asin,
             "sku": sku,
             "order_count": order_count,
             "total_quantity": int(total_quantity),
+            "product_name": product_name,
             "detected_supplier": c["supplier"],
             "detection_reason": c["reason"],
+            "suggestions": [],
         })
 
     if supplier_filter:
@@ -393,7 +392,81 @@ async def list_unmapped_asins(
         else:
             items = [it for it in items if it["detected_supplier"] == supplier_filter]
 
+    # Origin suggestions only for surviving items that have a detected supplier.
+    for it in items:
+        sid = username_to_id.get(it["detected_supplier"]) if it["detected_supplier"] else None
+        if sid is not None:
+            it["suggestions"] = await suggest_origin_for_sku(
+                it["sku"], it["product_name"], sid, db
+            )
+
+    return items
+
+
+@router.get("/unmapped-asins")
+async def list_unmapped_asins(
+    supplier_filter: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Order lines that carry an Amazon ASIN but still have product_id = NULL
+    (no mapping to a SupplierProduct), so supplier stock isn't being deducted
+    for them. Cancelled/shipped lines are excluded. Grouped by (asin, sku) with
+    the number of pending orders and total quantity, busiest first.
+
+    Each item is classified by SKU structure ({owner}-{shop}-{supplier}-...) into
+    a detected supplier and gets up to 3 origin (catalog) suggestions. Optional
+    ``supplier_filter``:
+      - "JOE"              → only items detected as supplier Joe
+      - "missing_supplier" → only items whose SKU has no recognizable supplier
+      - any other name     → items whose detected supplier matches it
+      - omitted/empty      → everything
+    """
+    items = await _build_unmapped_items(db, supplier_filter)
     return {"total": len(items), "items": items}
+
+
+class AutoLinkRequest(BaseModel):
+    supplier_filter: str = "JOE"
+    min_confidence: int = 95
+
+
+@router.post("/auto-link-suggestions")
+async def auto_link_suggestions(body: AutoLinkRequest, db: AsyncSession = Depends(get_db)):
+    """Bulk-link every unmapped ASIN whose top origin suggestion is confident
+    enough (>= min_confidence). Reuses products.create_mapping so the mapping
+    logic stays in one place. Does NOT back-fill existing order lines."""
+    from app.api.v1.products import create_mapping, MappingCreate
+
+    items = await _build_unmapped_items(db, body.supplier_filter)
+
+    linked = 0
+    skipped = 0
+    details = []
+    for it in items:
+        top = it["suggestions"][0] if it["suggestions"] else None
+        if not top or top["confidence"] < body.min_confidence:
+            skipped += 1
+            continue
+        try:
+            await create_mapping(
+                MappingCreate(
+                    marketplace_sku=it["asin"],
+                    supplier_product_id=top["supplier_product_id"],
+                    units=1,
+                ),
+                db,
+            )
+            linked += 1
+            details.append({
+                "asin": it["asin"],
+                "sku": it["sku"],
+                "linked_to": top["name"],
+                "confidence": top["confidence"],
+            })
+        except Exception:
+            skipped += 1
+
+    return {"linked": linked, "skipped": skipped, "details": details}
 
 
 # --- Push to marketplace ---

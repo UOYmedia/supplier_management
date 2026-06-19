@@ -1,64 +1,22 @@
 """
-Danh sách SKU thuộc supplier JOE nhưng KHÔNG có "Joe" ở vị trí 3
-(do team đặt thiếu supplier lúc tạo listing).
+Override list cho supplier JOE.
 
-TODO: Nếu danh sách vượt 100 SKU hoặc cần team tự sửa thường xuyên,
-chuyển sang bảng database sku_supplier_overrides + giao diện quản lý.
+Dùng cho các SKU thực sự thuộc JOE nhưng cấu trúc SKU KHÔNG mang 'Joe' ở vị trí
+supplier (vị trí 3) — ví dụ SKU cũ/thiếu vị trí supplier. Khi đó classifier
+không tự nhận diện được, nên ta liệt kê SKU đầy đủ ở đây để ép phân loại về JOE.
+
+Cách dùng: thêm nguyên chuỗi marketplace SKU vào JOE_SKU_OVERRIDES. So khớp
+được thực hiện sau khi đi qua _normalize() nên không phân biệt hoa/thường và
+khoảng trắng thừa.
 """
 
-JOE_SKU_OVERRIDES = {
-    "Jane-GGL-Pink Easter-10",
-    "Jane-GGL-Pink Easter-11",
-    "Jane-GGL-Pink Easter-11a",
-    "Jane-GGL-Pink Easter-12",
-    "Jane-GGL-Red Easter-10",
-    "Jane-GGL-Red Easter-11",
-    "Jane-GGL-Red Easter-12",
-    "Jane-GGL-Thai Constellation-10",
-    "Jane-GGL-Thai Constellation-11",
-    "Jenny-GGL-Guava-pink-1",
-    "Jenny-GGL-bayleaf-1",
-    "Jenny-GGL-bleeding-heart-1",
-    "Jenny-GGL-bleeding-heart-2",
-    "Jenny-GGL-bleeding-heart-3",
-    "Jenny-GGL-christmas-cactus-Pink-1",
-    "Jenny-GGL-christmas-cactus-orange-2",
-    "Jenny-GGL-christmas-cactus-pink-2",
-    "Jenny-GGL-christmas-cactus-purple-1",
-    "Jenny-GGL-christmas-cactus-purple-s2",
-    "Jenny-GGL-christmas-cactus-red-1",
-    "Jenny-GGL-christmas-cactus-red-2",
-    "Jenny-GGL-christmas-cactus-sunset-1",
-    "Jenny-GGL-christmas-cactus-sunset-2",
-    "Jenny-GGL-christmas-cactus-white-2",
-    "Jenny-GGL-christmas-cactus-yellow-1",
-    "Jenny-GGL-christmas-cactus-yellow-2",
-    "Jenny-GGL-christmas-cactus-yellow-2b",
-    "Jenny-GGL-christmas-cactus-yellow-3",
-    "Jenny-GGL-christmas-varA",
-    "Jenny-GGL-christmas-yellow-B3",
-    "Jenny-GGL-jasmine-1",
-    "Jenny-GGL-jasmine-4",
-    "Jenny-GGL-jasmine-b1",
-    "Jenny-GGL-jasmine-belle-1",
-    "Jenny-GGL-jasmine-belle-indian-2",
-    "Jenny-GGL-jasmine-bridal-1",
-    "Jenny-GGL-jasmine-confer-1",
-    "Jenny-GGL-jasmine-downy",
-    "Jenny-GGL-jasmine-frostproof-1",
-    "Jenny-GGL-jasmine-night-3",
-    "Jenny-GGL-jasmine-olean-1",
-    "Jenny-GGL-jasmine-varAA",
-    "Jenny-GGL-monstera-1",
-    "Jenny-GGL-monstera-2",
-    "Jenny-GGL-passion-flower-1",
-    "Jenny-GGL-philo-combo-2",
-    "Jenny-GGL-philo-red-1",
-    "Jenny-GGL-philo-red-2",
-    "Zoe-GGL-Pink Guava-4",
-}
+# Danh sách SKU (đầy đủ) cần ép phân loại về supplier JOE.
+# TODO(team): bổ sung các SKU JOE bị thiếu vị trí supplier vào đây.
+JOE_SKU_OVERRIDES: list[str] = [
+    # "Jenny-GGL-jasmine-1",
+]
 
 
-def _normalize(sku: str) -> str:
-    """Strip + collapse whitespace để khớp tolerant với spacing."""
-    return " ".join(sku.split()) if sku else ""
+def _normalize(value: str | None) -> str:
+    """Chuẩn hoá SKU để so khớp khoan dung (bỏ khoảng trắng, về chữ thường)."""
+    return (value or "").strip().lower()

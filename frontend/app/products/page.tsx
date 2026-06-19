@@ -1,7 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { productsApi, suppliersApi, api } from "@/lib/api";
+import { productsApi, suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
 import { Plus, Search, Trash2, X, ChevronRight, Upload, Download } from "lucide-react";
 import Link from "next/link";
@@ -15,12 +15,6 @@ export default function ProductsPage() {
   const [shortNameInput, setShortNameInput] = useState("")
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [loadingSuggestions, setLoadingSuggestions] = useState(false)
-  const [tab, setTab] = useState<"mappings" | "unmapped">("mappings");
-
-  const { data: unmappedAsins = [] } = useQuery({
-    queryKey: ["unmapped-asins"],
-    queryFn: () => api.get("/marketplace/unmapped-asins").then((r) => r.data),
-  });
 
   const { data: mappings = [], isLoading } = useQuery({
     queryKey: ["mappings", search],
@@ -81,42 +75,16 @@ export default function ProductsPage() {
           <h1 className="page-title">SKU Mappings</h1>
           <p className="text-sm text-gray-500 mt-0.5">Map marketplace SKUs to supplier catalog items</p>
         </div>
-        {tab === "mappings" && (
-          <div className="flex gap-2">
-            <button className="btn-secondary" onClick={() => setShowImport(true)}>
-              <Upload className="w-4 h-4" /> Import CSV
-            </button>
-            <button className="btn-primary" onClick={() => setShowAdd(true)}>
-              <Plus className="w-4 h-4" /> Add Mapping
-            </button>
-          </div>
-        )}
+        <div className="flex gap-2">
+          <button className="btn-secondary" onClick={() => setShowImport(true)}>
+            <Upload className="w-4 h-4" /> Import CSV
+          </button>
+          <button className="btn-primary" onClick={() => setShowAdd(true)}>
+            <Plus className="w-4 h-4" /> Add Mapping
+          </button>
+        </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-200 mb-4">
-        <button
-          onClick={() => setTab("mappings")}
-          className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 ${tab === "mappings" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}
-        >
-          SKU Mappings
-        </button>
-        <button
-          onClick={() => setTab("unmapped")}
-          className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 flex items-center gap-1.5 ${tab === "unmapped" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}
-        >
-          Unmapped ASINs
-          {unmappedAsins.length > 0 && (
-            <span className="bg-red-500 text-white text-xs font-semibold rounded-full px-1.5 py-0.5 leading-none">
-              {unmappedAsins.length}
-            </span>
-          )}
-        </button>
-      </div>
-
-      {tab === "unmapped" && <UnmappedAsinsTab />}
-
-      {tab === "mappings" && (<>
       <div className="card mb-4 px-3 py-2 flex items-center gap-2">
         <Search className="w-4 h-4 text-gray-400" />
         <input
@@ -197,7 +165,6 @@ export default function ProductsPage() {
           </tbody>
         </table>
       </div>
-      </>)}
 
       {showAdd && <AddMappingModal onClose={() => setShowAdd(false)} />}
       {showImport && <ImportMappingsModal onClose={() => setShowImport(false)} />}
@@ -460,122 +427,5 @@ function AddMappingModal({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </div>
-  );
-}
-
-function UnmappedAsinsTab() {
-  // Order lines that carry an ASIN but no product mapping yet (product_id null),
-  // so supplier stock isn't being deducted → risk of oversell.
-  const { data: unmapped = [], isLoading } = useQuery({
-    queryKey: ["unmapped-asins"],
-    queryFn: () => api.get("/marketplace/unmapped-asins").then((r) => r.data),
-  });
-
-  // Flat list of every supplier catalog item for the Catalog Item dropdown.
-  const { data: catalogItems = [] } = useQuery({
-    queryKey: ["all-catalog-items"],
-    queryFn: async () => {
-      const suppliers = await suppliersApi.list();
-      const lists = await Promise.all(
-        suppliers.map((s: any) =>
-          suppliersApi.listProducts(s.id).then((ps: any[]) =>
-            ps.map((p) => ({ ...p, supplier_name: s.name }))
-          )
-        )
-      );
-      return lists.flat();
-    },
-  });
-
-  return (
-    <div className="card table-wrapper">
-      <table>
-        <thead>
-          <tr>
-            <th>ASIN</th>
-            <th>SKU</th>
-            <th>Số đơn đang chờ</th>
-            <th>Tổng cây</th>
-            <th>Catalog Item</th>
-            <th>Units / Order</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {isLoading ? (
-            <tr><td colSpan={7} className="text-center py-8 text-gray-400">Loading…</td></tr>
-          ) : unmapped.length === 0 ? (
-            <tr><td colSpan={7} className="text-center py-8 text-gray-400">
-              No unmapped ASINs — every order line is linked to a catalog item. 🎉
-            </td></tr>
-          ) : unmapped.map((row: any) => (
-            <UnmappedAsinRow key={`${row.asin}__${row.sku}`} row={row} catalogItems={catalogItems} />
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function UnmappedAsinRow({ row, catalogItems }: { row: any; catalogItems: any[] }) {
-  const qc = useQueryClient();
-  const [spId, setSpId] = useState("");
-  const [units, setUnits] = useState("1");
-
-  const mut = useMutation({
-    // POST /products/mappings expects {marketplace_sku, supplier_product_id, units}
-    mutationFn: () =>
-      productsApi.createMapping({
-        marketplace_sku: row.asin,
-        supplier_product_id: parseInt(spId),
-        units: parseInt(units) || 1,
-      }),
-    onSuccess: () => {
-      toast.success(`Linked ${row.asin}`);
-      // create_mapping doesn't back-fill existing order lines, so drop this row
-      // from the list locally instead of refetching.
-      qc.setQueryData(["unmapped-asins"], (old: any[] = []) =>
-        old.filter((r) => !(r.asin === row.asin && r.sku === row.sku))
-      );
-      qc.invalidateQueries({ queryKey: ["mappings"] });
-    },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Link failed"),
-  });
-
-  return (
-    <tr>
-      <td className="font-mono text-xs font-medium text-gray-800">{row.asin}</td>
-      <td className="text-sm">{row.sku || <span className="text-gray-300">—</span>}</td>
-      <td className="text-center">{row.order_count}</td>
-      <td className="text-center font-medium">{row.total_quantity}</td>
-      <td>
-        <select className="input" value={spId} onChange={(e) => setSpId(e.target.value)}>
-          <option value="">Select catalog item…</option>
-          {catalogItems.map((sp: any) => (
-            <option key={sp.id} value={sp.id}>
-              {sp.supplier_name} · {sp.short_name || sp.name} ({sp.sku})
-            </option>
-          ))}
-        </select>
-      </td>
-      <td>
-        <input
-          className="input w-20"
-          type="number"
-          min="1"
-          value={units}
-          onChange={(e) => setUnits(e.target.value)}
-        />
-      </td>
-      <td>
-        <button
-          className="btn-primary text-xs"
-          disabled={!spId || mut.isPending}
-          onClick={() => mut.mutate()}
-        >
-          {mut.isPending ? "Linking…" : "Link"}
-        </button>
-      </td>
-    </tr>
   );
 }

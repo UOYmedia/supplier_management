@@ -1,10 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 from app.core.database import get_db
 from app.models.marketplace import MarketplaceConnection, MarketplaceListing, MarketplaceType, ConnectionStatus
 from app.models.product import Product
-from app.models.order import OrderLineItem, FulfillStatus
 from app.schemas.marketplace import (
     ConnectionCreate, ConnectionUpdate, ConnectionOut,
     ListingCreate, ListingUpdate, ListingOut,
@@ -328,44 +327,6 @@ async def auto_map_listings(db: AsyncSession = Depends(get_db)):
             unmatched.append(listing.marketplace_sku)
     await db.commit()
     return {"mapped": mapped, "unmatched": unmatched}
-
-
-# --- Unmapped ASINs (order lines with an ASIN but no product mapping) ---
-
-@router.get("/unmapped-asins")
-async def list_unmapped_asins(db: AsyncSession = Depends(get_db)):
-    """Order lines that carry an Amazon ASIN but still have product_id = NULL
-    (no mapping to a SupplierProduct), so supplier stock isn't being deducted
-    for them. Cancelled/shipped lines are excluded. Grouped by (asin, sku) with
-    the number of pending orders and total quantity, busiest first."""
-    q = (
-        select(
-            OrderLineItem.asin,
-            OrderLineItem.sku,
-            func.count(func.distinct(OrderLineItem.order_id)).label("order_count"),
-            func.coalesce(func.sum(OrderLineItem.quantity), 0).label("total_quantity"),
-        )
-        .where(
-            OrderLineItem.asin.isnot(None),
-            OrderLineItem.product_id.is_(None),
-            OrderLineItem.fulfill_status.notin_([
-                FulfillStatus.cancelled.value,
-                FulfillStatus.shipped.value,
-            ]),
-        )
-        .group_by(OrderLineItem.asin, OrderLineItem.sku)
-        .order_by(func.sum(OrderLineItem.quantity).desc())
-    )
-    rows = (await db.execute(q)).all()
-    return [
-        {
-            "asin": asin,
-            "sku": sku,
-            "order_count": order_count,
-            "total_quantity": int(total_quantity),
-        }
-        for asin, sku, order_count, total_quantity in rows
-    ]
 
 
 # --- Push to marketplace ---

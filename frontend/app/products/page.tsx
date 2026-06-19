@@ -467,7 +467,6 @@ function AddMappingModal({ onClose }: { onClose: () => void }) {
 function UnmappedAsinsTab() {
   // Order lines that carry an ASIN but no product mapping yet (product_id null),
   // so supplier stock isn't being deducted → risk of oversell.
-  const qc = useQueryClient();
   const [filter, setFilter] = useState("JOE"); // default to JOE
 
   const { data, isLoading } = useQuery({
@@ -503,50 +502,11 @@ function UnmappedAsinsTab() {
       ? `Hiển thị ${total} ASIN có SKU thiếu vị trí supplier — cần team kiểm tra`
       : `Hiển thị ${total} ASIN`;
 
-  // Auto-link is only meaningful for a specific supplier (not "All", not "missing").
-  const showAutoLink = filter !== "" && filter !== "missing_supplier";
-  const autoLinkCount = items.filter((it: any) => (it.suggestions?.[0]?.confidence ?? 0) >= 95).length;
-  const [showConfirm, setShowConfirm] = useState(false);
-
-  const autoLinkMut = useMutation({
-    mutationFn: () =>
-      api
-        .post("/marketplace/auto-link-suggestions", { supplier_filter: filter, min_confidence: 95 })
-        .then((r) => r.data),
-    onSuccess: (res: any) => {
-      setShowConfirm(false);
-      // create_mapping doesn't back-fill order lines, so drop the linked rows
-      // from the list locally instead of refetching.
-      const linkedAsins = new Set((res.details || []).map((d: any) => d.asin));
-      qc.setQueryData(["unmapped-asins", filter], (old: any) =>
-        old
-          ? {
-              ...old,
-              items: old.items.filter((r: any) => !linkedAsins.has(r.asin)),
-              total: Math.max(0, (old.total ?? 0) - res.linked),
-            }
-          : old
-      );
-      qc.invalidateQueries({ queryKey: ["mappings"] });
-      toast.success(`✅ Đã nối ${res.linked} ASIN. Còn ${Math.max(0, total - res.linked)} ASIN cần xử lý tay.`);
-    },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Auto-link failed"),
-  });
-
   return (
     <>
       <div className="flex items-center justify-between gap-3 mb-3">
         <p className="text-sm text-gray-500">{note}</p>
         <div className="flex items-center gap-2">
-          {showAutoLink && (
-            <button
-              className="btn-primary"
-              disabled={autoLinkCount === 0}
-              onClick={() => setShowConfirm(true)}
-            >
-              ⚡ Auto-link tất cả gợi ý 95%+{autoLinkCount > 0 ? ` (${autoLinkCount})` : ""}
-            </button>
-          )}
           <label className="text-xs text-gray-500">Supplier filter</label>
           <select className="input" value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="">All suppliers</option>
@@ -565,7 +525,6 @@ function UnmappedAsinsTab() {
               <th>Detected</th>
               <th>Số đơn đang chờ</th>
               <th>Tổng cây</th>
-              <th>Gợi ý</th>
               <th>Catalog Item</th>
               <th>Units / Order</th>
               <th></th>
@@ -573,9 +532,9 @@ function UnmappedAsinsTab() {
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={9} className="text-center py-8 text-gray-400">Loading…</td></tr>
+              <tr><td colSpan={8} className="text-center py-8 text-gray-400">Loading…</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={9} className="text-center py-8 text-gray-400">
+              <tr><td colSpan={8} className="text-center py-8 text-gray-400">
                 No unmapped ASINs for this filter. 🎉
               </td></tr>
             ) : items.map((row: any) => (
@@ -589,24 +548,6 @@ function UnmappedAsinsTab() {
           </tbody>
         </table>
       </div>
-
-      {showConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="card w-full max-w-md p-6">
-            <h2 className="font-semibold mb-2">Auto-link gợi ý 95%+</h2>
-            <p className="text-sm text-gray-600 mb-4">
-              Sẽ tự nối <strong>{autoLinkCount}</strong> ASIN với độ tin cậy ≥ 95%. Sau khi nối có thể
-              vào tab SKU Mappings để sửa lại nếu cần. Tiếp tục?
-            </p>
-            <div className="flex justify-end gap-2">
-              <button className="btn-secondary" onClick={() => setShowConfirm(false)}>Huỷ</button>
-              <button className="btn-primary" disabled={autoLinkMut.isPending} onClick={() => autoLinkMut.mutate()}>
-                {autoLinkMut.isPending ? "Đang nối…" : "Tiếp tục"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }
@@ -636,29 +577,9 @@ function DetectedBadge({ row }: { row: any }) {
   return <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">Invalid SKU</span>;
 }
 
-function SuggestionBadge({ suggestions }: { suggestions: any[] }) {
-  const top = suggestions?.[0];
-  if (!top) return <span className="text-gray-300">—</span>;
-  const cls =
-    top.confidence >= 95
-      ? "bg-green-100 text-green-700"
-      : top.confidence >= 70
-      ? "bg-yellow-100 text-yellow-700"
-      : "bg-gray-100 text-gray-500";
-  return (
-    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cls}`} title={top.reason}>
-      {top.confidence}% {top.name}
-    </span>
-  );
-}
-
 function UnmappedAsinRow({ row, catalogItems, filter }: { row: any; catalogItems: any[]; filter: string }) {
   const qc = useQueryClient();
-  // Pre-select the top suggestion when it's confident enough (>= 70); user can change.
-  const [spId, setSpId] = useState(() => {
-    const top = row.suggestions?.[0];
-    return top && top.confidence >= 70 ? String(top.supplier_product_id) : "";
-  });
+  const [spId, setSpId] = useState("");
   const [units, setUnits] = useState("1");
 
   const mut = useMutation({
@@ -694,7 +615,6 @@ function UnmappedAsinRow({ row, catalogItems, filter }: { row: any; catalogItems
       <td><DetectedBadge row={row} /></td>
       <td className="text-center">{row.order_count}</td>
       <td className="text-center font-medium">{row.total_quantity}</td>
-      <td><SuggestionBadge suggestions={row.suggestions} /></td>
       <td>
         <select className="input" value={spId} onChange={(e) => setSpId(e.target.value)}>
           <option value="">Select catalog item…</option>

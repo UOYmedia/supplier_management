@@ -125,33 +125,35 @@ from app.models.daily_balance import DailyBalance
 class DailyBalanceIn(BaseModel):
     date: Date
     ending_balance: Decimal
+    top_up: Decimal = Decimal(0)
 
 
 class DailyBalanceOut(BaseModel):
     date: Date
     ending_balance: Decimal
+    top_up: Decimal = Decimal(0)
 
 
 @router.get("/daily-balance", response_model=DailyBalanceOut | None)
 async def get_daily_balance(date: Date = Query(...), db: AsyncSession = Depends(get_db)):
-    """Return the stored ending balance for a given date, or null if none."""
+    """Return the stored ending balance + manual top-up for a given date, or null if none."""
     row = (await db.execute(select(DailyBalance).where(DailyBalance.date == date))).scalar_one_or_none()
     if not row:
         return None
-    return DailyBalanceOut(date=row.date, ending_balance=row.ending_balance)
+    return DailyBalanceOut(date=row.date, ending_balance=row.ending_balance, top_up=row.top_up or Decimal(0))
 
 
 @router.post("/daily-balance", response_model=DailyBalanceOut)
 async def upsert_daily_balance(body: DailyBalanceIn, db: AsyncSession = Depends(get_db)):
-    """Save (upsert) ending balance for a date."""
+    """Save (upsert) ending balance + manual top-up for a date."""
     stmt = (
         pg_insert(DailyBalance)
-        .values(date=body.date, ending_balance=body.ending_balance)
+        .values(date=body.date, ending_balance=body.ending_balance, top_up=body.top_up)
         .on_conflict_do_update(
             index_elements=["date"],
-            set_={"ending_balance": body.ending_balance},
+            set_={"ending_balance": body.ending_balance, "top_up": body.top_up},
         )
     )
     await db.execute(stmt)
     await db.commit()
-    return DailyBalanceOut(date=body.date, ending_balance=body.ending_balance)
+    return DailyBalanceOut(date=body.date, ending_balance=body.ending_balance, top_up=body.top_up)

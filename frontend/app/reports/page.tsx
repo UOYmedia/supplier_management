@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ordersApi, reportsApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Copy, Check, ShoppingCart, TrendingDown, Wallet, DollarSign } from "lucide-react";
+import { Copy, Check, ShoppingCart, TrendingDown, Wallet, DollarSign, PlusCircle } from "lucide-react";
 
 const LS_BALANCE_KEY = "ending_balance_yesterday";
 
@@ -76,6 +76,7 @@ export default function ReportsPage() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [startingBalance, setStartingBalance] = useState("");
+  const [topUp, setTopUp] = useState("");
   const [balanceAutoLoaded, setBalanceAutoLoaded] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -91,6 +92,11 @@ export default function ReportsPage() {
     const dayBefore = new Date(from);
     dayBefore.setDate(dayBefore.getDate() - 1);
     const prevDate = dayBefore.toISOString().split("T")[0];
+    // Restore any manual top-up already recorded for this period's start date.
+    const currentDate = from.toISOString().split("T")[0];
+    reportsApi.getDailyBalance(currentDate).then((data: any) => {
+      setTopUp(data?.top_up != null && Number(data.top_up) !== 0 ? String(data.top_up) : "");
+    });
     reportsApi.getDailyBalance(prevDate).then((data: any) => {
       if (data?.ending_balance != null) {
         setStartingBalance(String(data.ending_balance));
@@ -158,7 +164,8 @@ export default function ReportsPage() {
   const orderCount = (orders as any[]).length;
   const totalCOGS = groups.reduce((s, g) => s + g.total, 0);
   const startNum = parseFloat(startingBalance.replace(/[^0-9.]/g, "")) || 0;
-  const ending = startNum - totalCOGS;
+  const topUpNum = parseFloat((topUp || "").replace(/[^0-9.]/g, "")) || 0;
+  const ending = startNum + topUpNum - totalCOGS;
   const dateLabel = fmtDateLabel(period, from, to);
 
   // Auto-save ending balance to server whenever it changes (debounced)
@@ -166,15 +173,16 @@ export default function ReportsPage() {
     if (!startingBalance.trim() || isLoading) return;
     const todayDate = from.toISOString().split("T")[0];
     const timer = setTimeout(() => {
-      reportsApi.saveDailyBalance(todayDate, ending);
+      reportsApi.saveDailyBalance(todayDate, ending, topUpNum);
     }, 1500);
     return () => clearTimeout(timer);
-  }, [ending, startingBalance, from, isLoading]);
+  }, [ending, startingBalance, topUpNum, from, isLoading]);
 
   const handleCopy = () => {
     const lines = [
       `${dateLabel} – ${orderCount} ORDER${orderCount !== 1 ? "S" : ""}`,
       `Starting balance: $${startNum.toLocaleString()}`,
+      ...(topUpNum ? [`Top-up: $${topUpNum.toLocaleString()}`] : []),
       ...groups.map((g) => `• ${g.orders} order${g.orders !== 1 ? "s" : ""} of ${g.qty} ${g.name} => $${g.total.toFixed(0)}`),
       `TOTAL: $${totalCOGS.toFixed(0)}`,
       `Ending balance: $${ending.toLocaleString()}`,
@@ -185,7 +193,7 @@ export default function ReportsPage() {
     // Save today's ending balance to server so tomorrow auto-loads it
     if (startingBalance.trim()) {
       const todayDate = from.toISOString().split("T")[0];
-      reportsApi.saveDailyBalance(todayDate, ending);
+      reportsApi.saveDailyBalance(todayDate, ending, topUpNum);
       // Also keep localStorage as fallback
       if (typeof window !== "undefined") {
         localStorage.setItem(LS_BALANCE_KEY, ending.toFixed(2));
@@ -249,7 +257,7 @@ export default function ReportsPage() {
       </div>
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-4">
         <div className="card p-5">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs text-gray-500 font-medium">Total Orders</span>
@@ -290,6 +298,23 @@ export default function ReportsPage() {
 
         <div className="card p-5">
           <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-gray-500 font-medium">Nạp thêm (Top-up)</span>
+            <PlusCircle className="w-4 h-4 text-emerald-500" />
+          </div>
+          <div className="relative mt-1">
+            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+            <input
+              type="number"
+              className="input pl-6 w-full text-lg font-bold"
+              placeholder="0"
+              value={topUp}
+              onChange={(e) => setTopUp(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-2">
             <span className="text-xs text-gray-500 font-medium">Ending Balance</span>
             <DollarSign className="w-4 h-4 text-green-500" />
           </div>
@@ -307,6 +332,14 @@ export default function ReportsPage() {
           <span className="font-medium text-gray-700">
             Starting <span className="text-blue-600 font-bold">${startNum.toLocaleString()}</span>
           </span>
+          {topUpNum > 0 && (
+            <>
+              <span className="text-gray-400 font-medium">+</span>
+              <span className="font-medium text-gray-700">
+                Nạp <span className="text-emerald-600 font-bold">${topUpNum.toLocaleString()}</span>
+              </span>
+            </>
+          )}
           <span className="text-gray-400 font-medium">−</span>
           <span className="font-medium text-gray-700">
             COGS <span className="text-red-500 font-bold">${totalCOGS.toFixed(0)}</span>

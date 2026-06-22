@@ -12,6 +12,8 @@ class DailyBalance(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     ending_balance: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # Manual deposit ("nạp thêm") recorded for this day; already folded into ending_balance.
+    top_up: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

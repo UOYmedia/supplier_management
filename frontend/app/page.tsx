@@ -1,8 +1,8 @@
 "use client";
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { reportsApi, ordersApi } from "@/lib/api";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { reportsApi, ordersApi, marketplaceApi } from "@/lib/api";
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { TrendingUp, ShoppingCart, Package, AlertTriangle, Copy, Check, ChevronRight } from "lucide-react";
 import Link from "next/link";
 import DrillDownDrawer from "@/components/DrillDownDrawer";
@@ -113,6 +113,7 @@ export default function DashboardPage() {
   const [customTo, setCustomTo] = useState("");
   const [openDrawer, setOpenDrawer] = useState<string | null>(null);
   const [scSupplier, setScSupplier] = useState<{ id: number; name: string } | null>(null);
+  const [mkt, setMkt] = useState<string | null>(null);
 
   const { from, to } = useMemo(
     () => computeDateRange(period, customFrom, customTo),
@@ -216,7 +217,11 @@ export default function DashboardPage() {
         {kpis.map((k) => {
           const pct = pctChange(k.cur, k.prev);
           const pctStr = fmtPct(pct);
-          const drawerKey = (k.label === "Gross Profit" || k.label === "Margin") ? "margin" : null;
+          const drawerKey =
+            k.label === "Gross Profit" || k.label === "Margin" ? "margin"
+            : k.label === "Total Revenue" ? "revenue"
+            : k.label === "Orders" ? "orders"
+            : null;
           return (
             <div
               key={k.label}
@@ -244,14 +249,20 @@ export default function DashboardPage() {
       {/* Row 2: Revenue chart + Delay Alert */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         <div className="card p-5">
-          <h2 className="text-sm font-semibold text-gray-700 mb-4">Revenue by Marketplace <span className="text-xs font-normal text-gray-400">(all-time)</span></h2>
+          <h2 className="text-sm font-semibold text-gray-700 mb-4">Revenue by Marketplace <span className="text-xs font-normal text-gray-400">(all-time · click a bar)</span></h2>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={byMarket || []}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="marketplace" tick={{ fontSize: 12 }} />
               <YAxis tick={{ fontSize: 12 }} />
               <Tooltip formatter={(v: number) => `$${v.toLocaleString()}`} />
-              <Bar dataKey="revenue" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+              <Bar
+                dataKey="revenue"
+                fill="#3b82f6"
+                radius={[4, 4, 0, 0]}
+                style={{ cursor: "pointer" }}
+                onClick={(d: any) => { if (d?.marketplace) { setMkt(d.marketplace); setOpenDrawer("marketplace"); } }}
+              />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -363,6 +374,36 @@ export default function DashboardPage() {
         }
       >
         <MarginBreakdownContent fromISO={fromISO} toISO={toISO_} />
+      </DrillDownDrawer>
+
+      {/* Drill-down: Revenue */}
+      <DrillDownDrawer
+        open={openDrawer === "revenue"}
+        onClose={() => setOpenDrawer(null)}
+        title="Revenue"
+        subtitle="Daily trend · AOV · marketplace split (selected period)"
+      >
+        <RevenueDrawerContent fromISO={fromISO} toISO={toISO_} />
+      </DrillDownDrawer>
+
+      {/* Drill-down: Orders */}
+      <DrillDownDrawer
+        open={openDrawer === "orders"}
+        onClose={() => setOpenDrawer(null)}
+        title="Orders"
+        subtitle="Daily trend · status breakdown (selected period)"
+      >
+        <OrdersDrawerContent fromISO={fromISO} toISO={toISO_} />
+      </DrillDownDrawer>
+
+      {/* Drill-down: Marketplace */}
+      <DrillDownDrawer
+        open={openDrawer === "marketplace" && !!mkt}
+        onClose={() => setOpenDrawer(null)}
+        title={mkt ? `Marketplace · ${mkt}` : "Marketplace"}
+        subtitle="Period performance · all-time · connection sync"
+      >
+        {mkt && <MarketplaceDrawerContent marketplace={mkt} fromISO={fromISO} toISO={toISO_} byMarket={byMarket as any[] | undefined} />}
       </DrillDownDrawer>
     </div>
   );
@@ -963,6 +1004,148 @@ function MarginBreakdownContent({ fromISO, toISO }: { fromISO: string; toISO: st
               </div>
             ))}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Revenue / Orders / Marketplace (drill-downs) ───────────────────────────────
+
+function MiniStat({ label, value, tone = "" }: { label: string; value: any; tone?: string }) {
+  return (
+    <div className="rounded-lg border border-gray-100 p-3">
+      <div className={`text-base font-bold ${tone || "text-gray-800"}`}>{value}</div>
+      <div className="text-[10px] text-gray-400 uppercase tracking-wide">{label}</div>
+    </div>
+  );
+}
+
+function useOrdersBreakdown(fromISO: string, toISO: string) {
+  return useQuery({
+    queryKey: ["orders-breakdown", fromISO, toISO],
+    queryFn: () => reportsApi.ordersBreakdown({ from_date: fromISO, to_date: toISO }),
+  });
+}
+
+function RevenueDrawerContent({ fromISO, toISO }: { fromISO: string; toISO: string }) {
+  const { data, isLoading } = useOrdersBreakdown(fromISO, toISO);
+  if (isLoading || !data) return <p className="text-sm text-gray-400">Loading…</p>;
+  const daily: any[] = data.daily ?? [];
+  return (
+    <div>
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <MiniStat label="Revenue" value={`$${Number(data.revenue).toLocaleString()}`} />
+        <MiniStat label="Orders" value={data.orders} />
+        <MiniStat label="Avg order" value={`$${Number(data.aov).toLocaleString()}`} />
+      </div>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Daily revenue</h3>
+      <ResponsiveContainer width="100%" height={180}>
+        <LineChart data={daily}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+          <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(d: string) => d.slice(5)} />
+          <YAxis tick={{ fontSize: 11 }} />
+          <Tooltip formatter={(v: number) => `$${v.toLocaleString()}`} />
+          <Line type="monotone" dataKey="revenue" stroke="#22c55e" strokeWidth={2} dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2 mt-4">By marketplace</h3>
+      <div className="space-y-1.5">
+        {(data.by_marketplace ?? []).map((m: any) => (
+          <div key={m.marketplace} className="flex items-center justify-between text-sm">
+            <span className="text-gray-700">{m.marketplace}</span>
+            <span className="text-gray-500">${Number(m.revenue).toLocaleString()} · {m.orders} orders</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OrdersDrawerContent({ fromISO, toISO }: { fromISO: string; toISO: string }) {
+  const { data, isLoading } = useOrdersBreakdown(fromISO, toISO);
+  if (isLoading || !data) return <p className="text-sm text-gray-400">Loading…</p>;
+  const daily: any[] = data.daily ?? [];
+  const statuses = Object.entries(data.status_counts ?? {}) as [string, number][];
+  return (
+    <div>
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <MiniStat label="Orders" value={data.orders} />
+        <MiniStat label="Units" value={data.units} />
+        <MiniStat label="Avg order" value={`$${Number(data.aov).toLocaleString()}`} />
+      </div>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Daily orders</h3>
+      <ResponsiveContainer width="100%" height={180}>
+        <BarChart data={daily}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+          <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(d: string) => d.slice(5)} />
+          <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+          <Tooltip />
+          <Bar dataKey="orders" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2 mt-4">Status breakdown</h3>
+      <div className="space-y-1.5">
+        {statuses.length === 0 ? (
+          <p className="text-sm text-gray-400">No orders.</p>
+        ) : statuses.map(([s, c]) => (
+          <div key={s} className="flex items-center justify-between text-sm">
+            <span className="text-gray-700 capitalize">{s.replace(/_/g, " ")}</span>
+            <span className="text-gray-500">{c}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MarketplaceDrawerContent({
+  marketplace, fromISO, toISO, byMarket,
+}: {
+  marketplace: string; fromISO: string; toISO: string; byMarket: any[] | undefined;
+}) {
+  const { data } = useOrdersBreakdown(fromISO, toISO);
+  const { data: connections = [] } = useQuery({
+    queryKey: ["connections"],
+    queryFn: () => marketplaceApi.listConnections(),
+  });
+  const period = (data?.by_marketplace ?? []).find((m: any) => m.marketplace === marketplace);
+  const allTime = (byMarket ?? []).find((m: any) => m.marketplace === marketplace);
+  const conns = (connections as any[]).filter(
+    (c) => String(c.marketplace).toLowerCase() === marketplace.toLowerCase(),
+  );
+
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Selected period</h3>
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <MiniStat label="Revenue" value={`$${Number(period?.revenue ?? 0).toLocaleString()}`} />
+        <MiniStat label="Orders" value={period?.orders ?? 0} />
+      </div>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">All-time</h3>
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <MiniStat label="Revenue" value={`$${Number(allTime?.revenue ?? 0).toLocaleString()}`} />
+        <MiniStat label="Orders" value={allTime?.order_count ?? 0} />
+      </div>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Connections</h3>
+      {conns.length === 0 ? (
+        <p className="text-sm text-gray-400">No connection configured.</p>
+      ) : (
+        <div className="space-y-2">
+          {conns.map((c) => (
+            <div key={c.id} className="border border-gray-100 rounded-lg p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-800">{c.name}</span>
+                <span className={`badge ${c.status === "active" ? "badge-green" : c.status === "error" ? "badge-red" : "badge-yellow"}`}>
+                  {c.status}
+                </span>
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                Last synced: {c.last_synced_at ? new Date(c.last_synced_at).toLocaleString() : "never"}
+              </div>
+              {c.error_message && <div className="text-xs text-red-600 mt-1 truncate">{c.error_message}</div>}
+            </div>
+          ))}
         </div>
       )}
     </div>

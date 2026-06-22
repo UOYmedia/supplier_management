@@ -185,6 +185,7 @@ export const reportsApi = {
   stockInsights: (params?: { days?: number; threshold?: number; target_days?: number }) => api.get("/reports/stock-insights", { params }).then((r) => r.data),
   supplierScorecard: (supplier_id: number, days: number = 30) => api.get("/reports/supplier-scorecard", { params: { supplier_id, days } }).then((r) => r.data),
   marginBreakdown: (params?: { from_date?: string; to_date?: string }) => api.get("/reports/margin-breakdown", { params }).then((r) => r.data),
+  ordersBreakdown: (params?: { from_date?: string; to_date?: string }) => api.get("/reports/orders-breakdown", { params }).then((r) => r.data),
   getDailyBalance: (date: string) => api.get("/reports/daily-balance", { params: { date } }).then((r) => r.data).catch(() => null),
   saveDailyBalance: (date: string, ending_balance: number, top_up: number = 0, external_cogs: number = 0) => api.post("/reports/daily-balance", { date, ending_balance, top_up, external_cogs }).then((r) => r.data).catch(() => null),
 };

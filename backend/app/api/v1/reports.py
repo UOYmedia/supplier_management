@@ -341,6 +341,59 @@ async def margin_breakdown(
         "top_cost_products": top_cost_products,
     }
 
+
+@router.get("/orders-breakdown")
+async def orders_breakdown(
+    from_date: datetime | None = Query(None),
+    to_date: datetime | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Daily revenue/order trend + status and marketplace splits for the period
+    (read-only). Powers the Revenue and Orders dashboard drill-downs."""
+    oq = select(Order)
+    if from_date:
+        oq = oq.where(Order.ordered_at >= from_date)
+    if to_date:
+        oq = oq.where(Order.ordered_at <= to_date)
+    orders = (await db.execute(oq)).scalars().all()
+
+    daily: dict[str, dict] = {}
+    status_counts: dict[str, int] = {}
+    by_mkt: dict[str, dict] = {}
+    for o in orders:
+        total = float(o.total or 0)
+        d = o.ordered_at.date().isoformat() if o.ordered_at else "—"
+        db_ = daily.setdefault(d, {"revenue": 0.0, "orders": 0})
+        db_["revenue"] += total
+        db_["orders"] += 1
+        status_counts[o.status] = status_counts.get(o.status, 0) + 1
+        m = by_mkt.setdefault(o.marketplace or "—", {"revenue": 0.0, "orders": 0})
+        m["revenue"] += total
+        m["orders"] += 1
+
+    uq = select(func.coalesce(func.sum(OrderLineItem.quantity), 0)).join(
+        Order, Order.id == OrderLineItem.order_id
+    )
+    if from_date:
+        uq = uq.where(Order.ordered_at >= from_date)
+    if to_date:
+        uq = uq.where(Order.ordered_at <= to_date)
+    units = int((await db.execute(uq)).scalar() or 0)
+
+    revenue = sum(float(o.total or 0) for o in orders)
+    n = len(orders)
+    return {
+        "revenue": round(revenue, 2),
+        "orders": n,
+        "units": units,
+        "aov": round(revenue / n, 2) if n else 0,
+        "daily": [{"date": k, "revenue": round(v["revenue"], 2), "orders": v["orders"]}
+                  for k, v in sorted(daily.items())],
+        "status_counts": status_counts,
+        "by_marketplace": [{"marketplace": k, "revenue": round(v["revenue"], 2), "orders": v["orders"]}
+                           for k, v in sorted(by_mkt.items(), key=lambda kv: kv[1]["revenue"], reverse=True)],
+    }
+
 from decimal import Decimal
 from datetime import date as Date
 from fastapi import HTTPException

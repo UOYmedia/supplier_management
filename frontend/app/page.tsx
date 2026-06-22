@@ -112,6 +112,7 @@ export default function DashboardPage() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [openDrawer, setOpenDrawer] = useState<string | null>(null);
+  const [scSupplier, setScSupplier] = useState<{ id: number; name: string } | null>(null);
 
   const { from, to } = useMemo(
     () => computeDateRange(period, customFrom, customTo),
@@ -247,12 +248,15 @@ export default function DashboardPage() {
           </ResponsiveContainer>
         </div>
 
-        <DelayAlertWidget delayed={delayed as any[]} />
+        <DelayAlertWidget delayed={delayed as any[]} onOpen={() => setOpenDrawer("delays")} />
       </div>
 
       {/* Row 3: By Supplier + Low Stock */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        <BySupplierWidget bySupplier={bySupplier as any[] | undefined} />
+        <BySupplierWidget
+          bySupplier={bySupplier as any[] | undefined}
+          onSelect={(s) => { setScSupplier({ id: s.supplier_id, name: s.supplier_name }); setOpenDrawer("supplier"); }}
+        />
 
         <div
           className="card p-5 cursor-pointer hover:shadow-md transition-shadow"
@@ -304,6 +308,38 @@ export default function DashboardPage() {
         }
       >
         <StockInsightsContent />
+      </DrillDownDrawer>
+
+      {/* Drill-down: Supplier scorecard */}
+      <DrillDownDrawer
+        open={openDrawer === "supplier" && !!scSupplier}
+        onClose={() => setOpenDrawer(null)}
+        title={scSupplier ? `Supplier · ${scSupplier.name}` : "Supplier"}
+        subtitle="Last 30 days · spend, fulfilment, speed, stock"
+        footer={
+          scSupplier && (
+            <Link href={`/suppliers/${scSupplier.id}`} className="text-sm text-blue-600 hover:underline">
+              Open supplier page →
+            </Link>
+          )
+        }
+      >
+        {scSupplier && <SupplierScorecardContent supplierId={scSupplier.id} />}
+      </DrillDownDrawer>
+
+      {/* Drill-down: Delays by supplier */}
+      <DrillDownDrawer
+        open={openDrawer === "delays"}
+        onClose={() => setOpenDrawer(null)}
+        title="Delayed orders by supplier"
+        subtitle="Who to chase first — grouped by supplier, most urgent on top"
+        footer={
+          <Link href="/orders" className="text-sm text-blue-600 hover:underline">
+            Open Orders →
+          </Link>
+        }
+      >
+        <DelayBySupplierContent delayed={delayed as any[]} />
       </DrillDownDrawer>
     </div>
   );
@@ -450,7 +486,7 @@ function PeriodSelector({
 
 // ─── Delay Alert Widget ────────────────────────────────────────────────────────
 
-function DelayAlertWidget({ delayed }: { delayed: any[] }) {
+function DelayAlertWidget({ delayed, onOpen }: { delayed: any[]; onOpen: () => void }) {
   const urgent = delayed.filter((o) => o.status === "urgent");
   const warning = delayed.filter((o) => o.status === "warning");
   const top3 = [...urgent].sort((a, b) => b.days_delayed - a.days_delayed).slice(0, 3);
@@ -458,7 +494,9 @@ function DelayAlertWidget({ delayed }: { delayed: any[] }) {
   return (
     <div className="card p-5">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-semibold text-gray-700">Delay Alerts</h2>
+        <button onClick={onOpen} className="flex items-center text-sm font-semibold text-gray-700 hover:text-blue-600">
+          Delay Alerts <ChevronRight className="w-3.5 h-3.5 text-blue-500" />
+        </button>
         <div className="flex gap-2">
           {urgent.length > 0 && (
             <span className="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
@@ -511,7 +549,7 @@ function DelayAlertWidget({ delayed }: { delayed: any[] }) {
 
 // ─── By Supplier Widget ────────────────────────────────────────────────────────
 
-function BySupplierWidget({ bySupplier }: { bySupplier: any[] | undefined }) {
+function BySupplierWidget({ bySupplier, onSelect }: { bySupplier: any[] | undefined; onSelect: (s: any) => void }) {
   const sorted = useMemo(
     () => [...(bySupplier || [])].sort((a, b) => b.line_item_count - a.line_item_count).slice(0, 8),
     [bySupplier],
@@ -520,13 +558,17 @@ function BySupplierWidget({ bySupplier }: { bySupplier: any[] | undefined }) {
 
   return (
     <div className="card p-5">
-      <h2 className="text-sm font-semibold text-gray-700 mb-4">Orders by Supplier <span className="text-xs font-normal text-gray-400">(all-time)</span></h2>
+      <h2 className="text-sm font-semibold text-gray-700 mb-4">Orders by Supplier <span className="text-xs font-normal text-gray-400">(all-time · click for scorecard)</span></h2>
       {!sorted.length ? (
         <p className="text-sm text-gray-400">No data.</p>
       ) : (
-        <div className="space-y-2.5">
+        <div className="space-y-1">
           {sorted.map((s) => (
-            <div key={s.supplier_id} className="flex items-center gap-3">
+            <button
+              key={s.supplier_id}
+              onClick={() => onSelect(s)}
+              className="w-full flex items-center gap-3 py-1.5 px-1 rounded-lg hover:bg-gray-50 transition-colors text-left"
+            >
               <div className="w-28 text-xs text-gray-600 truncate shrink-0">{s.supplier_name}</div>
               <div className="flex-1 bg-gray-100 rounded-full h-2 overflow-hidden">
                 <div
@@ -535,7 +577,8 @@ function BySupplierWidget({ bySupplier }: { bySupplier: any[] | undefined }) {
                 />
               </div>
               <div className="text-xs text-gray-500 w-10 text-right shrink-0">{s.line_item_count}</div>
-            </div>
+              <ChevronRight className="w-3 h-3 text-gray-300 shrink-0" />
+            </button>
           ))}
         </div>
       )}
@@ -702,6 +745,118 @@ function OrderSummaryWidget({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Supplier Scorecard (drill-down) ────────────────────────────────────────────
+
+function SupplierScorecardContent({ supplierId }: { supplierId: number }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["supplier-scorecard", supplierId],
+    queryFn: () => reportsApi.supplierScorecard(supplierId, 30),
+  });
+  if (isLoading || !data) return <p className="text-sm text-gray-400">Loading…</p>;
+
+  const kpis = [
+    { label: "Orders", value: data.order_count },
+    { label: "Units", value: data.units },
+    { label: "Spend (COGS)", value: `$${Number(data.total_cogs).toLocaleString()}` },
+    { label: "Fulfilment", value: `${data.fulfillment_rate}%` },
+    { label: "Avg ship", value: data.avg_days_to_ship == null ? "—" : `${data.avg_days_to_ship}d` },
+    { label: "Open items", value: data.open_count },
+    { label: "Low stock", value: data.low_stock_count },
+  ];
+
+  return (
+    <div>
+      <div className="grid grid-cols-3 gap-3 mb-5">
+        {kpis.map((k) => (
+          <div key={k.label} className="rounded-lg border border-gray-100 p-3">
+            <div className="text-base font-bold text-gray-800">{k.value}</div>
+            <div className="text-[10px] text-gray-400 uppercase tracking-wide">{k.label}</div>
+          </div>
+        ))}
+      </div>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Top products (30d)</h3>
+      {!data.top_products?.length ? (
+        <p className="text-sm text-gray-400">No orders in this window.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {data.top_products.map((p: any) => (
+            <div key={p.name} className="flex items-center justify-between text-sm">
+              <span className="text-gray-700 truncate pr-2">
+                <span className="font-semibold">{p.qty}</span> {p.name}
+              </span>
+              <span className="text-gray-500 shrink-0">${Number(p.cogs).toFixed(0)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Delays by Supplier (drill-down) ────────────────────────────────────────────
+
+function DelayBySupplierContent({ delayed }: { delayed: any[] }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, { supplier: string; orders: any[]; urgent: number; warning: number }>();
+    for (const o of delayed) {
+      const key = o.supplier_name || "—";
+      const g = map.get(key) ?? { supplier: key, orders: [], urgent: 0, warning: 0 };
+      g.orders.push(o);
+      if (o.status === "urgent") g.urgent++;
+      else if (o.status === "warning") g.warning++;
+      map.set(key, g);
+    }
+    return [...map.values()]
+      .map((g) => ({
+        ...g,
+        maxDays: Math.max(...g.orders.map((o) => o.days_delayed || 0)),
+        avgDays: g.orders.reduce((s, o) => s + (o.days_delayed || 0), 0) / g.orders.length,
+      }))
+      .sort((a, b) => b.urgent - a.urgent || b.maxDays - a.maxDays);
+  }, [delayed]);
+
+  if (!delayed.length) return <p className="text-sm text-gray-400">No delayed orders. 🎉</p>;
+
+  return (
+    <div className="space-y-4">
+      {groups.map((g) => (
+        <div key={g.supplier}>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-sm font-semibold text-gray-800">{g.supplier}</div>
+            <div className="flex items-center gap-1.5 text-xs">
+              {g.urgent > 0 && <span className="badge badge-red">{g.urgent} urgent</span>}
+              {g.warning > 0 && <span className="badge badge-yellow">{g.warning} warning</span>}
+              <span className="text-gray-400">avg {g.avgDays.toFixed(1)}d · max {g.maxDays}d</span>
+            </div>
+          </div>
+          <div className="space-y-1">
+            {[...g.orders].sort((a, b) => b.days_delayed - a.days_delayed).slice(0, 5).map((o) => (
+              <Link
+                key={`${o.order_id}-${o.purchased_at}`}
+                href={`/orders/${o.order_id}`}
+                className="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-gray-50 text-sm"
+              >
+                <span className="text-gray-700">
+                  #{o.order_id}
+                  {o.order_name && o.order_name !== `#${o.order_id}` && (
+                    <span className="ml-1 text-xs text-gray-400 font-mono">{o.order_name}</span>
+                  )}
+                </span>
+                <span className={`font-bold ${o.status === "urgent" ? "text-red-600" : "text-yellow-600"}`}>
+                  {o.days_delayed}d
+                </span>
+              </Link>
+            ))}
+            {g.orders.length > 5 && (
+              <div className="text-[11px] text-gray-400 px-2">+{g.orders.length - 5} more</div>
+            )}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

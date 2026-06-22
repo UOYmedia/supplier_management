@@ -199,6 +199,80 @@ async def stock_insights(
     ))
     return {"days": days, "target_days": target_days, "count": len(items), "items": items}
 
+
+@router.get("/supplier-scorecard")
+async def supplier_scorecard(
+    supplier_id: int = Query(...),
+    days: int = Query(30),
+    db: AsyncSession = Depends(get_db),
+):
+    """Operational scorecard for one supplier over a window (read-only):
+    order/line/unit counts, total spend (COGS), fulfilment rate, average days
+    to ship, open line items, low-stock catalog items, and top products."""
+    from fastapi import HTTPException as _HTTPException
+
+    sup = await db.get(Supplier, supplier_id)
+    if not sup:
+        raise _HTTPException(404, "Supplier not found")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = (await db.execute(
+        select(OrderLineItem, Order.ordered_at)
+        .join(Order, Order.id == OrderLineItem.order_id)
+        .where(OrderLineItem.supplier_id == supplier_id, Order.ordered_at >= cutoff)
+    )).all()
+
+    order_ids: set[int] = set()
+    units = 0
+    total_cogs = 0.0
+    status_counts: dict[str, int] = {}
+    ship_days: list[float] = []
+    prod: dict[str, list[float]] = {}
+    for li, ordered_at in rows:
+        order_ids.add(li.order_id)
+        qty = li.quantity or 0
+        units += qty
+        cogs = float(li.base_cost or 0) * qty
+        total_cogs += cogs
+        status_counts[li.fulfill_status] = status_counts.get(li.fulfill_status, 0) + 1
+        if li.fulfilled_at and ordered_at and li.fulfill_status in ("shipped", "delivered"):
+            ship_days.append((li.fulfilled_at - ordered_at).total_seconds() / 86400)
+        name = li.product_name or "Unknown"
+        p = prod.setdefault(name, [0, 0.0])
+        p[0] += qty
+        p[1] += cogs
+
+    line_item_count = len(rows)
+    fulfilled = status_counts.get("shipped", 0) + status_counts.get("delivered", 0)
+    open_count = status_counts.get("unfulfilled", 0) + status_counts.get("pending", 0)
+    low_stock = (await db.execute(
+        select(func.count(SupplierProduct.id)).where(
+            SupplierProduct.supplier_id == supplier_id,
+            SupplierProduct.stock_quantity <= 5,
+        )
+    )).scalar()
+    top_products = sorted(
+        ({"name": n, "qty": v[0], "cogs": round(v[1], 2)} for n, v in prod.items()),
+        key=lambda x: x["qty"], reverse=True,
+    )[:5]
+
+    return {
+        "supplier_id": supplier_id,
+        "supplier_name": sup.name,
+        "days": days,
+        "order_count": len(order_ids),
+        "line_item_count": line_item_count,
+        "units": units,
+        "total_cogs": round(total_cogs, 2),
+        "fulfilled_count": fulfilled,
+        "open_count": open_count,
+        "fulfillment_rate": round(fulfilled / line_item_count * 100, 1) if line_item_count else 0,
+        "avg_days_to_ship": round(sum(ship_days) / len(ship_days), 1) if ship_days else None,
+        "low_stock_count": low_stock,
+        "status_counts": status_counts,
+        "top_products": top_products,
+    }
+
 from decimal import Decimal
 from datetime import date as Date
 from fastapi import HTTPException

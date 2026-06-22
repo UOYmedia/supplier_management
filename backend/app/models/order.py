@@ -109,6 +109,7 @@ class ShippingLabel(Base):
     from_address: Mapped[dict | None] = mapped_column(JSON)
     to_address: Mapped[dict | None] = mapped_column(JSON)
     purchased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     supplier: Mapped["Supplier"] = relationship(back_populates="shipping_labels")
 

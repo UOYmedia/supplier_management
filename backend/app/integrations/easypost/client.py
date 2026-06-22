@@ -18,6 +18,19 @@ class EasyPostClient:
     def __init__(self, api_key: str):
         self._auth = (api_key, "")
 
+    @staticmethod
+    def _extract_error(r) -> str:
+        try:
+            body = r.json()
+            err = body.get("error", {})
+            if isinstance(err, dict):
+                return err.get("message") or err.get("code") or r.text
+            if isinstance(err, str) and err:
+                return err
+        except Exception:
+            pass
+        return r.text or f"HTTP {r.status_code}"
+
     async def _post(self, path: str, payload: dict) -> dict:
         try:
             async with httpx.AsyncClient(timeout=30) as http:
@@ -25,11 +38,7 @@ class EasyPostClient:
         except httpx.HTTPError as e:
             raise EasyPostError(503, f"EasyPost unreachable: {e}")
         if not r.is_success:
-            try:
-                detail = r.json().get("error", {}).get("message", r.text)
-            except Exception:
-                detail = r.text or f"HTTP {r.status_code}"
-            raise EasyPostError(r.status_code, detail)
+            raise EasyPostError(r.status_code, self._extract_error(r))
         return r.json()
 
     async def _get(self, path: str, params: dict | None = None) -> dict:
@@ -39,11 +48,7 @@ class EasyPostClient:
         except httpx.HTTPError as e:
             raise EasyPostError(503, f"EasyPost unreachable: {e}")
         if not r.is_success:
-            try:
-                detail = r.json().get("error", {}).get("message", r.text)
-            except Exception:
-                detail = r.text or f"HTTP {r.status_code}"
-            raise EasyPostError(r.status_code, detail)
+            raise EasyPostError(r.status_code, self._extract_error(r))
         return r.json()
 
     async def fetch_label_pdf_b64(self, shipment: dict) -> str | None:
@@ -108,24 +113,21 @@ class EasyPostClient:
             params={"file_format": "png", "label_size": label_size},
         )
         pl = converted.get("postage_label") or {}
-        # Only use the explicit PNG URL — label_url may still point to a PDF even
-        # when file_format=png is requested (EasyPost doesn't always regenerate).
         png_url = pl.get("label_png_url")
-        # label_url (PDF or otherwise) is still useful for the ShippingLabel.label_url field.
         any_url = pl.get("label_url") or png_url
-        if not png_url:
-            return None, any_url
-        try:
-            async with httpx.AsyncClient(timeout=30) as http:
-                r = await http.get(png_url)
-                if not r.is_success:
-                    return None, any_url
-            # Validate PNG magic bytes so we never pass PDF bytes to ImageReader
-            if r.content[:8] != b'\x89PNG\r\n\x1a\n':
-                return None, any_url
-            return base64.b64encode(r.content).decode(), png_url
-        except Exception:
-            return None, any_url
+        # Try label_png_url first, fall back to label_url (EasyPost sometimes puts
+        # the PNG at label_url when file_format=png is requested)
+        for candidate_url in filter(None, [png_url, any_url if any_url != png_url else None]):
+            try:
+                async with httpx.AsyncClient(timeout=30) as http:
+                    r = await http.get(candidate_url)
+                    if not r.is_success:
+                        continue
+                if r.content[:8] == b'\x89PNG\r\n\x1a\n':
+                    return base64.b64encode(r.content).decode(), candidate_url
+            except Exception:
+                continue
+        return None, any_url
 
     async def list_webhooks(self) -> list[dict]:
         """Return all registered EasyPost webhooks for this account."""
@@ -145,6 +147,11 @@ class EasyPostClient:
         return await self._post("/trackers", {
             "tracker": {"tracking_code": tracking_code, "carrier": carrier}
         })
+
+    async def refund_shipment(self, shipment_id: str) -> dict:
+        """Request a postage refund for a purchased shipment.
+        EasyPost returns a refund object; status is typically 'submitted' initially."""
+        return await self._post(f"/shipments/{shipment_id}/refunds", {})
 
 
 def supplier_to_ep_address(supplier) -> dict:

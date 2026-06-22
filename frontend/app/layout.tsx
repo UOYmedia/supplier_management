@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "react-hot-toast";
 import { useState, useEffect } from "react";
-import { Package, Users, ShoppingCart, Globe, BarChart2, Menu, UserCog, LogOut } from "lucide-react";
+import { Package, Users, ShoppingCart, Globe, BarChart2, FileText, Menu, UserCog, LogOut } from "lucide-react";
 import clsx from "clsx";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -17,6 +17,7 @@ const NAV = [
   { href: "/suppliers", label: "Suppliers", icon: Users },
   { href: "/orders", label: "Orders", icon: ShoppingCart },
   { href: "/marketplace", label: "Marketplace", icon: Globe },
+  { href: "/reports", label: "Reports", icon: FileText },
   { href: "/users", label: "Users", icon: UserCog },
 ];
 

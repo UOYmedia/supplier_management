@@ -17,3 +17,7 @@ openpyxl==3.1.5
 cryptography==43.0.1
 pypdf==5.1.0
 reportlab==4.2.5
+apscheduler==3.10.4
+anthropic>=0.40.0
+pikepdf==9.4.2
+pymupdf==1.24.10

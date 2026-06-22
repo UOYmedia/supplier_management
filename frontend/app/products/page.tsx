@@ -11,6 +11,10 @@ export default function ProductsPage() {
   const [search, setSearch] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [editingShortName, setEditingShortName] = useState<{id: number, name: string} | null>(null)
+  const [shortNameInput, setShortNameInput] = useState("")
+  const [suggestions, setSuggestions] = useState<string[]>([])
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false)
 
   const { data: mappings = [], isLoading } = useQuery({
     queryKey: ["mappings", search],
@@ -22,6 +26,39 @@ export default function ProductsPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["mappings"] }); toast.success("Mapping removed"); },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Error"),
   });
+
+  const openShortNameEditor = async (spId: number, spName: string) => {
+    setEditingShortName({id: spId, name: spName})
+    setShortNameInput("")
+    setSuggestions([])
+    setLoadingSuggestions(true)
+    try {
+      const res = await fetch(`/api/suppliers/supplier-products/${spId}/suggest-name`)
+      const data = await res.json()
+      setSuggestions(data.suggestions || [])
+      if (data.suggestions?.[0]) setShortNameInput(data.suggestions[0])
+    } catch {
+      setSuggestions([])
+    } finally {
+      setLoadingSuggestions(false)
+    }
+  }
+
+  const saveShortName = async () => {
+    if (!editingShortName || !shortNameInput) return
+    try {
+      await fetch(`/api/suppliers/supplier-products/${editingShortName.id}/short-name`, {
+        method: "PATCH",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({short_name: shortNameInput})
+      })
+      toast.success("Đã lưu tên ngắn")
+      setEditingShortName(null)
+      qc.invalidateQueries({queryKey: ["mappings"]})
+    } catch {
+      toast.error("Lưu thất bại")
+    }
+  }
 
   // Group by product_sku for display
   const grouped: Record<string, any[]> = {};
@@ -93,7 +130,18 @@ export default function ProductsPage() {
                     </td>
                   )}
                   <td className="font-medium text-sm">{m.catalog_name}</td>
-                  <td className="text-xs text-gray-500">{m.catalog_short_name || <span className="text-gray-300">—</span>}</td>
+                  <td className="text-xs text-gray-500">
+                    <button
+                      onClick={() => openShortNameEditor(m.supplier_product_id, m.catalog_name)}
+                      className="flex items-center gap-1 hover:text-blue-600 transition-colors"
+                    >
+                      {m.catalog_short_name
+                        ? <span>{m.catalog_short_name}</span>
+                        : <span className="text-gray-300">—</span>
+                      }
+                      <span className="text-gray-400 hover:text-blue-500">✏️</span>
+                    </button>
+                  </td>
                   <td className="text-sm">{m.supplier_name}</td>
                   <td className="text-center">{m.units}</td>
                   <td>
@@ -120,6 +168,52 @@ export default function ProductsPage() {
 
       {showAdd && <AddMappingModal onClose={() => setShowAdd(false)} />}
       {showImport && <ImportMappingsModal onClose={() => setShowImport(false)} />}
+
+      {editingShortName && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
+            <h3 className="font-semibold text-gray-800 mb-1">Đặt tên ngắn</h3>
+            <p className="text-xs text-gray-400 mb-4 truncate">{editingShortName.name}</p>
+
+            {loadingSuggestions ? (
+              <p className="text-xs text-gray-400 mb-3">Đang tạo gợi ý...</p>
+            ) : suggestions.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {suggestions.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setShortNameInput(s)}
+                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                      shortNameInput === s
+                        ? "bg-blue-500 text-white border-blue-500"
+                        : "border-gray-200 text-gray-600 hover:border-blue-400"
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <input
+              type="text"
+              value={shortNameInput}
+              onChange={(e) => setShortNameInput(e.target.value)}
+              placeholder="Nhập tên ngắn..."
+              className="input w-full text-sm mb-4"
+            />
+
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditingShortName(null)} className="btn-secondary text-sm px-4">
+                Huỷ
+              </button>
+              <button onClick={saveShortName} disabled={!shortNameInput} className="btn-primary text-sm px-4">
+                Lưu
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

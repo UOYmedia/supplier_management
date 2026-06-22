@@ -246,19 +246,45 @@ async def download_label(order_id: int, label_id: int, db: AsyncSession = Depend
     if not label:
         raise HTTPException(404, "Label not found")
 
+    def _pdf_response(pdf_bytes: bytes) -> Response:
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"inline; filename=label_{label_id}.pdf"},
+        )
+
+    # Prefer stamping fresh from the pristine carrier PDF (label_url). This is the
+    # source of truth: it guarantees the product info (Qty + NAME + size/pot +
+    # date for JOE) is on the label even for older labels whose stored
+    # label_data was saved before the stamp existed — and it never double-stamps,
+    # since label_url is always the clean carrier label.
+    if label.label_url:
+        import httpx
+        from app.api.v1.orders import _stamp_carrier_for_label
+        from app.integrations.pdf_labels import image_to_label_pdf
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
+                r = await http.get(label.label_url)
+            if r.is_success and r.content:
+                carrier = (r.content if r.content[:5] == b"%PDF-"
+                           else image_to_label_pdf(r.content))
+                try:
+                    carrier = await _stamp_carrier_for_label(carrier, label, db)
+                except Exception:
+                    pass
+                return _pdf_response(carrier)
+        except Exception:
+            pass  # fall through to stored label_data / redirect
+
+    # No usable label_url — fall back to the stored label_data (stamped at buy
+    # time, or a manually uploaded PDF).
     if label.label_data:
         try:
-            pdf_bytes = base64.b64decode(label.label_data)
-            return Response(
-                content=pdf_bytes,
-                media_type="application/pdf",
-                headers={"Content-Disposition": f"attachment; filename=label_{label_id}.pdf"},
-            )
+            return _pdf_response(base64.b64decode(label.label_data))
         except Exception:
             raise HTTPException(500, "Failed to decode label data")
 
     if label.label_url:
-        # Redirect to the URL (EasyPost hosted labels)
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url=label.label_url)
 

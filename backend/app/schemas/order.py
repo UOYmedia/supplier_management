@@ -1,7 +1,11 @@
 from datetime import datetime
 from decimal import Decimal
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 from app.models.order import OrderStatus, FulfillStatus
+
+
+class UploadLabelB64(BaseModel):
+    data: str  # base64-encoded PDF bytes
 
 
 class ShippingAddress(BaseModel):
@@ -52,6 +56,7 @@ class OrderLineItemOut(BaseModel):
     label_id: int | None
     fulfilled_at: datetime | None
     supplier_name: str | None = None
+    catalog_name: str | None = None
     mapping_suggestion: dict | None = None
 
 
@@ -138,11 +143,9 @@ class ShippingLabelOut(BaseModel):
     shipment_id: str | None = None
     cost: Decimal
     purchased_at: datetime
-    has_label_data: bool = False
+    refunded_at: datetime | None = None
 
-    @classmethod
-    def model_validate(cls, obj, *args, **kwargs):
-        instance = super().model_validate(obj, *args, **kwargs)
-        if hasattr(obj, "label_data"):
-            instance.has_label_data = bool(obj.label_data)
-        return instance
+    @computed_field  # type: ignore[misc]
+    @property
+    def has_label_data(self) -> bool:
+        return bool(self.label_data)

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, suppliersApi, easypostApi, amazonShippingApi } from "@/lib/api";
 import { useParams, useSearchParams } from "next/navigation";
@@ -21,6 +22,8 @@ export default function OrderDetailPage() {
   const [editingOrderInfo, setEditingOrderInfo] = useState(false);
   const [assigningItem, setAssigningItem] = useState<number | null>(null);
   const [autoOpenedForSupplier, setAutoOpenedForSupplier] = useState<number | null>(null);
+  const [confirmRefund, setConfirmRefund] = useState<{ labelId: number } | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const { data: order } = useQuery({ queryKey: ["order", oid], queryFn: () => ordersApi.get(oid), throwOnError: false });
   const { data: labels = [] } = useQuery({ queryKey: ["labels", oid], queryFn: () => ordersApi.listLabels(oid), throwOnError: false });
@@ -75,6 +78,20 @@ export default function OrderDetailPage() {
     onError: (e: any) => toast.error(e.response?.data?.detail || "Shopify sync failed"),
   });
 
+  const refundLabelMut = useMutation({
+    mutationFn: (labelId: number) => easypostApi.refundLabel(oid, { label_id: labelId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["labels", oid] });
+      qc.invalidateQueries({ queryKey: ["order", oid] });
+      toast.success("Label cancelled — refund submitted to EasyPost");
+      setConfirmRefund(null);
+    },
+    onError: (e: any) => {
+      toast.error(e.response?.data?.detail || "Refund failed");
+      setConfirmRefund(null);
+    },
+  });
+
   // Auto-open Buy Label modal when navigated from supplier orders tab
   useEffect(() => {
     if (!order || autoOpenedForSupplier !== null) return;
@@ -93,6 +110,11 @@ export default function OrderDetailPage() {
       setAutoOpenedForSupplier(sid);
     }
   }, [order, searchParams, autoOpenedForSupplier]);
+
+  useEffect(() => {
+    const user = JSON.parse(localStorage.getItem("admin_user") || "{}");
+    setIsAdmin(user.role === "admin");
+  }, []);
 
   if (!order) return <div className="p-6 text-gray-400">Loading…</div>;
 
@@ -117,17 +139,7 @@ export default function OrderDetailPage() {
 
   const printLabel = (url: string) => {
     if (!url) return;
-    const win = window.open(url, "_blank");
-    if (!win) {
-      toast.error("Popup blocked — allow popups to print labels");
-      return;
-    }
-    try {
-      win.focus();
-      setTimeout(() => {
-        try { win.print(); } catch {}
-      }, 800);
-    } catch {}
+    window.open(url, "_blank");
   };
 
   const printLabelsForGroup = (items: any[]) => {
@@ -139,9 +151,11 @@ export default function OrderDetailPage() {
     for (const labelId of labelIds) {
       const lbl = labels.find((l: any) => l.id === labelId);
       if (!lbl) continue;
-      const url = lbl.has_label_data
+      // Always go through the backend download endpoint so the carrier label is
+      // served with the product info stamped in (Qty + NAME + size + date).
+      const url = (lbl.has_label_data || lbl.label_url)
         ? ordersApi.labelDownloadUrl(oid, lbl.id)
-        : lbl.label_url;
+        : null;
       if (url) printLabel(url);
       markPrintedMut.mutate(labelId);
     }
@@ -272,6 +286,11 @@ export default function OrderDetailPage() {
         );
         const needsLabel = unshipped.filter((li: any) => !li.tracking_number);
         const itemsWithLabel = (items as any[]).filter((li: any) => li.label_id);
+        const groupLabelId: number | null = itemsWithLabel.length > 0 ? itemsWithLabel[0].label_id : null;
+        const isGroupRefunded = !!(labels as any[]).find((l: any) => l.id === groupLabelId)?.refunded_at;
+        const isGroupShipped = (items as any[]).some((li: any) =>
+          li.fulfill_status === "shipped" || li.fulfill_status === "delivered"
+        );
 
         return (
           <div key={supplierId} className="card mb-4">
@@ -285,12 +304,28 @@ export default function OrderDetailPage() {
               </div>
               <div className="flex gap-2">
                 {itemsWithLabel.length > 0 && (
-                  <button
-                    className="btn-primary text-xs py-1"
-                    onClick={() => printLabelsForGroup(itemsWithLabel)}
-                  >
-                    <Printer className="w-3 h-3" /> Print Label
-                  </button>
+                  <>
+                    <button
+                      className="btn-primary text-xs py-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={() => printLabelsForGroup(itemsWithLabel)}
+                      disabled={isGroupRefunded}
+                    >
+                      <Printer className="w-3 h-3" /> Print Label
+                    </button>
+                    {isGroupRefunded ? (
+                      <span className="text-xs font-medium px-2 py-1 bg-red-50 text-red-600 rounded border border-red-200">
+                        Refunded
+                      </span>
+                    ) : isGroupShipped ? null : isAdmin ? (
+                      <button
+                        className="text-xs py-1 px-2 rounded bg-red-600 hover:bg-red-700 text-white flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={() => setConfirmRefund({ labelId: groupLabelId! })}
+                        disabled={refundLabelMut.isPending}
+                      >
+                        Cancel Label
+                      </button>
+                    ) : null}
+                  </>
                 )}
                 {sid !== null && needsLabel.length > 0 && (
                   <button
@@ -321,6 +356,7 @@ export default function OrderDetailPage() {
                     <LineItemRow
                       key={li.id}
                       li={li}
+                      orderId={oid}
                       suppliers={suppliers}
                       onUpdate={(data) => updateLIMut.mutate({ liId: li.id, data })}
                       onAssignSupplier={() => setAssigningItem(li.id)}
@@ -353,21 +389,16 @@ export default function OrderDetailPage() {
                 {l.service && <span className="text-gray-500 text-xs">{l.service}</span>}
                 <span className="font-mono text-xs">{l.tracking_number || "—"}</span>
                 <span className="text-gray-500">${parseFloat(l.cost).toFixed(2)}</span>
-                {l.has_label_data && (
+                {(l.has_label_data || l.label_url) ? (
                   <a
                     href={ordersApi.labelDownloadUrl(oid, l.id)}
                     target="_blank"
+                    rel="noopener noreferrer"
                     className="flex items-center gap-1 text-blue-600 hover:underline text-xs"
                   >
-                    <Download className="w-3 h-3" /> Download PDF
-                  </a>
-                )}
-                {!l.has_label_data && l.label_url && (
-                  <a href={l.label_url} target="_blank" className="flex items-center gap-1 text-blue-600 hover:underline text-xs">
                     <ExternalLink className="w-3 h-3" /> Download
                   </a>
-                )}
-                {!l.has_label_data && !l.label_url && (
+                ) : (
                   <span className="text-xs text-amber-600">No PDF — upload one</span>
                 )}
                 <button
@@ -439,6 +470,34 @@ export default function OrderDetailPage() {
           onSave={(data) => updateOrderMut.mutate(data)}
           saving={updateOrderMut.isPending}
         />
+      )}
+
+      {confirmRefund !== null && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 shadow-xl max-w-sm w-full mx-4">
+            <h3 className="text-base font-semibold mb-2">Cancel this label?</h3>
+            <p className="text-sm text-gray-600 mb-5">
+              Are you sure you want to cancel this label? EasyPost will be requested to refund and all associated line items will be cancelled.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                className="btn-secondary text-sm"
+                onClick={() => setConfirmRefund(null)}
+                disabled={refundLabelMut.isPending}
+              >
+                No
+              </button>
+              <button
+                className="text-sm px-4 py-2 rounded bg-red-600 hover:bg-red-700 text-white flex items-center gap-2 disabled:opacity-60"
+                onClick={() => refundLabelMut.mutate(confirmRefund.labelId)}
+                disabled={refundLabelMut.isPending}
+              >
+                {refundLabelMut.isPending && <Loader2 className="w-3 h-3 animate-spin" />}
+                Confirm Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -590,7 +649,8 @@ function ManualLabelModal({ orderId, supplierId, lineItemIds, onClose, onDone }:
       toast.success("Manual label saved");
       onDone();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || "Error saving label");
+      const msg = e.response?.data?.detail || e.message || "Error saving label";
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -678,7 +738,8 @@ function EditLabelModal({ orderId, label, onClose, onDone }: {
       toast.success("Label updated");
       onDone();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || "Error updating label");
+      const msg = e.response?.data?.detail || e.message || "Error updating label";
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -768,77 +829,175 @@ function groupBySupplier(items: any[]) {
   }, {} as Record<string, any[]>);
 }
 
-function LineItemRow({ li, onUpdate, onAssignSupplier, onQuickAssign, suppliers }: {
+function LineItemRow({ li, orderId, onUpdate, onAssignSupplier, onQuickAssign, suppliers }: {
   li: any;
+  orderId: number;
   onUpdate: (d: object) => void;
   onAssignSupplier: () => void;
   onQuickAssign: (suggestion: any) => void;
   suppliers: any[];
 }) {
+  const qc = useQueryClient();
   const [status, setStatus] = useState(li.fulfill_status);
   const [tracking, setTracking] = useState(li.tracking_number || "");
   const [baseCost, setBaseCost] = useState(String(li.base_cost));
+  const [editingShortName, setEditingShortName] = useState<{ id: number; name: string } | null>(null);
+  const [shortNameInput, setShortNameInput] = useState("");
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
 
   const isShipped = status === "shipped" || status === "delivered";
   const canReassign = !isShipped && !!li.supplier_id;
 
+  const openShortNameEditor = async (spId: number, spName: string) => {
+    setEditingShortName({ id: spId, name: spName });
+    setShortNameInput("");
+    setSuggestions([]);
+    setLoadingSuggestions(true);
+    try {
+      const res = await fetch(`/api/suppliers/supplier-products/${spId}/suggest-name`);
+      const data = await res.json();
+      setSuggestions(data.suggestions || []);
+      if (data.suggestions?.[0]) setShortNameInput(data.suggestions[0]);
+    } catch {
+      setSuggestions([]);
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  };
+
+  const saveShortName = async () => {
+    if (!editingShortName || !shortNameInput) return;
+    try {
+      await fetch(`/api/suppliers/supplier-products/${editingShortName.id}/short-name`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ short_name: shortNameInput }),
+      });
+      toast.success("Short name saved");
+      setEditingShortName(null);
+      qc.invalidateQueries({ queryKey: ["order", orderId] });
+    } catch {
+      toast.error("Save failed");
+    }
+  };
+
   return (
-    <tr>
-      <td className="font-medium">{li.product_name}</td>
-      <td className="font-mono text-xs text-gray-500">{li.sku || "—"}</td>
-      <td>{li.quantity}</td>
-      <td>${parseFloat(li.price).toFixed(2)}</td>
-      <td>
-        <input type="number" className="input w-20" value={baseCost} onChange={(e) => setBaseCost(e.target.value)}
-          onBlur={() => onUpdate({ base_cost: parseFloat(baseCost) })} step="0.01" />
-      </td>
-      <td>
-        <select className="input w-36 text-xs" value={status} onChange={(e) => {
-          setStatus(e.target.value);
-          onUpdate({ fulfill_status: e.target.value });
-        }}>
-          {FULFILL_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      </td>
-      <td>
-        {isShipped ? (
-          <span className="font-mono text-xs text-gray-600">{tracking || "—"}</span>
-        ) : (
-          <input className="input w-32 text-xs" placeholder="tracking…" value={tracking} onChange={(e) => setTracking(e.target.value)}
-            onBlur={() => tracking !== li.tracking_number && onUpdate({ tracking_number: tracking })} />
-        )}
-      </td>
-      <td>
-        <div className="flex flex-col gap-1 items-start">
-          {!li.supplier_id && li.mapping_suggestion && (
-            <button
-              onClick={() => onQuickAssign(li.mapping_suggestion)}
-              className="flex items-center gap-1 text-xs text-green-600 hover:text-green-800 font-medium whitespace-nowrap"
-              title={`Quick assign: ${li.mapping_suggestion.supplier_name} → ${li.mapping_suggestion.catalog_name}`}
-            >
-              <CheckCircle2 className="w-3 h-3" />
-              {li.mapping_suggestion.supplier_name}
-            </button>
+    <>
+      <tr>
+        <td className="font-medium">
+          <div className="flex items-center gap-1">
+            <span>{li.product_name}</span>
+            {li.supplier_product_id && (
+              <button
+                onClick={() => openShortNameEditor(li.supplier_product_id, li.product_name)}
+                className="text-gray-300 hover:text-blue-500 transition-colors flex-shrink-0"
+                title="Edit short name"
+              >
+                ✏️
+              </button>
+            )}
+          </div>
+          {li.catalog_short_name && (
+            <div className="text-xs text-blue-600">{li.catalog_short_name}</div>
           )}
-          {!li.supplier_id && (
-            <button
-              onClick={onAssignSupplier}
-              className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium whitespace-nowrap"
-            >
-              <UserPlus className="w-3 h-3" /> {li.mapping_suggestion ? "Change" : "Assign"}
-            </button>
+        </td>
+        <td className="font-mono text-xs text-gray-500">{li.sku || "—"}</td>
+        <td>{li.quantity}</td>
+        <td>${parseFloat(li.price).toFixed(2)}</td>
+        <td>
+          <input type="number" className="input w-20" value={baseCost} onChange={(e) => setBaseCost(e.target.value)}
+            onBlur={() => onUpdate({ base_cost: parseFloat(baseCost) })} step="0.01" />
+        </td>
+        <td>
+          <select className="input w-36 text-xs" value={status} onChange={(e) => {
+            setStatus(e.target.value);
+            onUpdate({ fulfill_status: e.target.value });
+          }}>
+            {FULFILL_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </td>
+        <td>
+          {isShipped ? (
+            <span className="font-mono text-xs text-gray-600">{tracking || "—"}</span>
+          ) : (
+            <input className="input w-32 text-xs" placeholder="tracking…" value={tracking} onChange={(e) => setTracking(e.target.value)}
+              onBlur={() => tracking !== li.tracking_number && onUpdate({ tracking_number: tracking })} />
           )}
-          {canReassign && (
-            <button
-              onClick={onAssignSupplier}
-              className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-700 whitespace-nowrap"
-            >
-              <Pencil className="w-3 h-3" /> Re-assign
-            </button>
-          )}
-        </div>
-      </td>
-    </tr>
+        </td>
+        <td>
+          <div className="flex flex-col gap-1 items-start">
+            {!li.supplier_id && li.mapping_suggestion && (
+              <button
+                onClick={() => onQuickAssign(li.mapping_suggestion)}
+                className="flex items-center gap-1 text-xs text-green-600 hover:text-green-800 font-medium whitespace-nowrap"
+                title={`Quick assign: ${li.mapping_suggestion.supplier_name} → ${li.mapping_suggestion.catalog_name}`}
+              >
+                <CheckCircle2 className="w-3 h-3" />
+                {li.mapping_suggestion.supplier_name}
+              </button>
+            )}
+            {!li.supplier_id && (
+              <button
+                onClick={onAssignSupplier}
+                className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium whitespace-nowrap"
+              >
+                <UserPlus className="w-3 h-3" /> {li.mapping_suggestion ? "Change" : "Assign"}
+              </button>
+            )}
+            {canReassign && (
+              <button
+                onClick={onAssignSupplier}
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-700 whitespace-nowrap"
+              >
+                <Pencil className="w-3 h-3" /> Re-assign
+              </button>
+            )}
+          </div>
+        </td>
+      </tr>
+      {mounted && editingShortName && createPortal(
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
+            <h3 className="font-semibold text-gray-800 mb-1">Set short name</h3>
+            <p className="text-xs text-gray-400 mb-4 truncate">{editingShortName.name}</p>
+            {loadingSuggestions ? (
+              <p className="text-xs text-gray-400 mb-3">Loading suggestions…</p>
+            ) : suggestions.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {suggestions.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setShortNameInput(s)}
+                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                      shortNameInput === s
+                        ? "bg-blue-500 text-white border-blue-500"
+                        : "border-gray-200 text-gray-600 hover:border-blue-400"
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+            <input
+              type="text"
+              value={shortNameInput}
+              onChange={(e) => setShortNameInput(e.target.value)}
+              placeholder="Enter short name…"
+              className="input w-full text-sm mb-4"
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditingShortName(null)} className="btn-secondary text-sm px-4">Cancel</button>
+              <button onClick={saveShortName} disabled={!shortNameInput} className="btn-primary text-sm px-4">Save</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
 
@@ -1351,7 +1510,13 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
       toast.success("Label purchased — items moved to Pending");
       onClose();
     },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Purchase failed"),
+    onError: (e: any) => {
+      const msg = e.response?.data?.detail || "Purchase failed";
+      const hint = typeof msg === "string" && (msg.includes("malformed") || msg.includes("invalid") || msg.includes("expired"))
+        ? " — go back and refresh rates, then try again"
+        : "";
+      toast.error(msg + hint);
+    },
   });
 
   const pf = (k: string) => (e: any) => setParcel((p) => ({ ...p, [k]: e.target.value }));
@@ -1481,7 +1646,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
                 <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 <button
                   className="btn-primary flex items-center gap-1.5"
-                  disabled={!selectedRate || buyMut.isPending}
+                  disabled={!selectedRate || !shipmentId || buyMut.isPending}
                   onClick={() => buyMut.mutate()}
                 >
                   {buyMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />}

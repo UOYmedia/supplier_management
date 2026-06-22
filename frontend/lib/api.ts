@@ -2,7 +2,6 @@ import axios from "axios";
 
 export const api = axios.create({
   baseURL: "/api/v1",
-  headers: { "Content-Type": "application/json" },
 });
 
 // Attach admin JWT from localStorage on every request
@@ -39,7 +38,7 @@ export const productsApi = {
   importCsv: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return api.post("/products/import/csv", fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+    return api.post("/products/import/csv", fd).then((r) => r.data);
   },
   listSuppliers: (id: number) => api.get(`/products/${id}/suppliers`).then((r) => r.data),
   addSupplier: (id: number, data: object) => api.post(`/products/${id}/suppliers`, data).then((r) => r.data),
@@ -55,7 +54,7 @@ export const productsApi = {
   importMappingsCsv: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return api.post("/products/mappings/import/csv", fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+    return api.post("/products/mappings/import/csv", fd).then((r) => r.data);
   },
 };
 
@@ -81,7 +80,7 @@ export const suppliersApi = {
   createInvoiceFromOrders: (id: number, data: object) => api.post(`/suppliers/${id}/invoices/create-from-orders`, data).then((r) => r.data),
   importCatalog: (id: number, file: File) => {
     const fd = new FormData(); fd.append("file", file);
-    return api.post(`/suppliers/${id}/products/import/csv`, fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+    return api.post(`/suppliers/${id}/products/import/csv`, fd).then((r) => r.data);
   },
   exportCatalog: (id: number, filename: string) =>
     api.get(`/suppliers/${id}/products/export.csv`, { responseType: "blob" }).then((r) => {
@@ -112,14 +111,33 @@ export const ordersApi = {
   markLabelPrinted: (orderId: number, labelId: number) => api.post(`/orders/${orderId}/labels/${labelId}/mark-printed`).then((r) => r.data),
   updateLabel: (orderId: number, labelId: number, data: object) => api.patch(`/orders/${orderId}/labels/${labelId}`, data).then((r) => r.data),
   uploadLabel: (orderId: number, labelId: number, file: File) => {
-    const fd = new FormData(); fd.append("file", file);
-    return api.post(`/orders/${orderId}/labels/${labelId}/upload`, fd, { headers: { "Content-Type": "multipart/form-data" } }).then((r) => r.data);
+    return new Promise<any>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const b64 = result.includes(",") ? result.split(",")[1] : result;
+        api.post(`/orders/${orderId}/labels/${labelId}/upload-b64`, { data: b64 })
+          .then((r) => resolve(r.data))
+          .catch(reject);
+      };
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsDataURL(file);
+    });
   },
   regenerateLabel: (orderId: number, labelId: number, size: string) =>
     api.post(`/orders/${orderId}/labels/${labelId}/regenerate`, null, { params: { size } }).then((r) => r.data),
   labelDownloadUrl: (orderId: number, labelId: number) => `/api/v1/orders/${orderId}/labels/${labelId}/download`,
   parcelEstimate: (orderId: number, params?: object) => api.get(`/orders/${orderId}/parcel-estimate`, { params }).then((r) => r.data),
   syncTracking: (orderId: number) => api.post(`/orders/${orderId}/sync-tracking`).then((r) => r.data),
+  bulkLabels: (params: { date: string; supplier_id?: number }) =>
+    api.get("/orders/bulk-labels", { params, responseType: "blob" }).then((r) => r.data),
+  bulkFulfill: (params: { date: string; supplier_id?: number }) =>
+    api.post("/orders/bulk-fulfill", null, { params }).then((r) => r.data),
+  bulkLabelsUrl: (params: { date: string; supplier_id?: number }) => {
+    const qs = new URLSearchParams({ date: params.date, ...(params.supplier_id != null ? { supplier_id: String(params.supplier_id) } : {}) });
+    return `/api/v1/orders/bulk-labels?${qs}`;
+  },
+  listDelayed: () => api.get("/orders/delayed").then((r) => r.data),
 };
 
 // Marketplace
@@ -164,16 +182,23 @@ export const reportsApi = {
   byMarketplace: () => api.get("/reports/by-marketplace").then((r) => r.data),
   bySupplier: () => api.get("/reports/by-supplier").then((r) => r.data),
   inventoryAlert: (threshold?: number) => api.get("/reports/inventory-alert", { params: { threshold } }).then((r) => r.data),
+  stockInsights: (params?: { days?: number; threshold?: number; target_days?: number }) => api.get("/reports/stock-insights", { params }).then((r) => r.data),
+  supplierScorecard: (supplier_id: number, days: number = 30) => api.get("/reports/supplier-scorecard", { params: { supplier_id, days } }).then((r) => r.data),
+  marginBreakdown: (params?: { from_date?: string; to_date?: string }) => api.get("/reports/margin-breakdown", { params }).then((r) => r.data),
+  ordersBreakdown: (params?: { from_date?: string; to_date?: string }) => api.get("/reports/orders-breakdown", { params }).then((r) => r.data),
+  getDailyBalance: (date: string) => api.get("/reports/daily-balance", { params: { date } }).then((r) => r.data).catch(() => null),
+  saveDailyBalance: (date: string, ending_balance: number, top_up: number = 0, external_cogs: number = 0) => api.post("/reports/daily-balance", { date, ending_balance, top_up, external_cogs }).then((r) => r.data).catch(() => null),
 };
 
 // EasyPost (admin)
 export const easypostApi = {
   getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/rates`, data).then((r) => r.data),
   buyLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/buy`, data).then((r) => r.data),
+  refundLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/refund`, data).then((r) => r.data),
 };
 
 // Amazon Shipping (admin)
 export const amazonShippingApi = {
-  getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon-shipping/rates`, data).then((r) => r.data),
-  buyLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon-shipping/buy`, data).then((r) => r.data),
+  getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon/rates`, data).then((r) => r.data),
+  buyLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon/buy`, data).then((r) => r.data),
 };

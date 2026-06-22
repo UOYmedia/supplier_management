@@ -203,6 +203,23 @@ class ShopifySync(MarketplaceSyncer):
                     li.fulfill_status = FulfillStatus.shipped
                     li.fulfilled_at = datetime.now(timezone.utc)
                 db.add(li)
+
+            # Flush so li.id is available, then auto-assign supplier via SKU
+            await db.flush()
+            try:
+                from app.api.v1.orders import _auto_assign_line_item
+                new_lis_res = await db.execute(
+                    select(OrderLineItem).where(
+                        OrderLineItem.order_id == order.id,
+                        OrderLineItem.supplier_id.is_(None),
+                        OrderLineItem.fulfill_status != FulfillStatus.shipped,
+                    )
+                )
+                for new_li in new_lis_res.scalars().all():
+                    await _auto_assign_line_item(new_li, db)
+            except Exception as _e:
+                print(f"Shopify sync: auto-assign failed for order {order.id} — {_e}", flush=True)
+
             count += 1
 
         await db.commit()

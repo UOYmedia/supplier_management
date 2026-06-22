@@ -79,9 +79,11 @@ export default function PortalOrdersPage() {
   const labelInfoForOrder = (orderItems: PortalItem[]) => {
     const withLabel = orderItems.find((i) => i.label_id);
     if (!withLabel) return null;
-    const url = withLabel.label_has_pdf
+    // Always use the backend download endpoint so the label carries the
+    // stamped product info (Qty + NAME + size + date for JOE).
+    const url = (withLabel.label_has_pdf || withLabel.label_url)
       ? `/api/v1/orders/${withLabel.order_id}/labels/${withLabel.label_id}/download`
-      : withLabel.label_url;
+      : null;
     return url ? { url, labelId: withLabel.label_id!, orderId: withLabel.order_id } : null;
   };
 

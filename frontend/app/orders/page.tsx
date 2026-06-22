@@ -1,11 +1,11 @@
 "use client";
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ordersApi } from "@/lib/api";
+import { ordersApi, suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, ChevronRight, RefreshCw, X, Trash2 } from "lucide-react";
+import { Plus, ChevronRight, RefreshCw, X, Trash2, Printer, AlertTriangle } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { OrderStatusBadge } from "./order-status-badge";
 
 const STATUSES = ["", "pending", "processing", "partially_fulfilled", "fulfilled", "cancelled"];
@@ -20,15 +20,52 @@ interface LineItemDraft {
 
 const emptyItem = (): LineItemDraft => ({ product_name: "", sku: "", quantity: 1, price: "" });
 
-export default function OrdersPage() {
+function OrdersPageInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const page = Number(searchParams.get("page") || "0");
+  const limit = 50;
+
   const [status, setStatus] = useState("");
   const [marketplace, setMarketplace] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [showBulkPrint, setShowBulkPrint] = useState(false);
+  const [showDelayed, setShowDelayed] = useState(false);
 
-  const { data: orders = [], isLoading, refetch } = useQuery({
-    queryKey: ["orders", status, marketplace],
-    queryFn: () => ordersApi.list({ status: status || undefined, marketplace: marketplace || undefined }),
+  const { data: regularOrders = [], isLoading: regularLoading, refetch: refetchRegular } = useQuery({
+    queryKey: ["orders", status, marketplace, page],
+    queryFn: () => ordersApi.list({ status: status || undefined, marketplace: marketplace || undefined, skip: page * limit, limit }),
   });
+
+  const { data: delayedOrders = [], isLoading: delayedLoading, refetch: refetchDelayed } = useQuery({
+    queryKey: ["orders", "delayed"],
+    queryFn: () => ordersApi.listDelayed(),
+    refetchInterval: 5 * 60 * 1000,
+  });
+
+  const orders = showDelayed ? (delayedOrders as any[]) : (regularOrders as any[]);
+  const isLoading = showDelayed ? delayedLoading : regularLoading;
+  const refetch = showDelayed ? refetchDelayed : refetchRegular;
+  const urgentCount = (delayedOrders as any[]).filter((o) => o.status === "urgent").length;
+
+  const hasMore = !showDelayed && (regularOrders as any[]).length === limit;
+
+  // Pagination: Prev | 1 | 2 | ... | page-1 | page | Next
+  // Always show 1 and 2; ellipsis when page > 3; no trailing ellipsis (Next handles that).
+  type PageItem = { type: "page"; index: number } | { type: "ellipsis"; key: string };
+  const pageItems: PageItem[] = [];
+  if (page <= 2) {
+    // Small page numbers: show 1 2 3 (cap at current page when no more data)
+    const end = hasMore ? 2 : page;
+    for (let i = 0; i <= end; i++) pageItems.push({ type: "page", index: i });
+  } else {
+    // Always show 1, 2, then gap, then page-1, page
+    pageItems.push({ type: "page", index: 0 });
+    pageItems.push({ type: "page", index: 1 });
+    if (page > 3) pageItems.push({ type: "ellipsis", key: "pre" });
+    pageItems.push({ type: "page", index: page - 1 });
+    pageItems.push({ type: "page", index: page });
+  }
 
   return (
     <div>
@@ -36,60 +73,334 @@ export default function OrdersPage() {
         <h1 className="page-title">Orders</h1>
         <div className="flex gap-2">
           <button className="btn-secondary" onClick={() => refetch()}><RefreshCw className="w-4 h-4" />Refresh</button>
+          <button className="btn-secondary" onClick={() => setShowBulkPrint(true)}><Printer className="w-4 h-4" />Bulk Print</button>
           <button className="btn-primary" onClick={() => setShowCreate(true)}><Plus className="w-4 h-4" />Create Order</button>
         </div>
       </div>
 
       {/* Filters */}
-      <div className="flex gap-3 mb-4">
-        <select className="input w-40" value={status} onChange={(e) => setStatus(e.target.value)}>
+      <div className="flex items-center gap-3 mb-4">
+        <select
+          className="input w-40"
+          value={status}
+          disabled={showDelayed}
+          onChange={(e) => { setStatus(e.target.value); router.replace("?page=0"); }}
+        >
           {STATUSES.map((s) => <option key={s} value={s}>{s || "All statuses"}</option>)}
         </select>
-        <select className="input w-40" value={marketplace} onChange={(e) => setMarketplace(e.target.value)}>
+        <select
+          className="input w-40"
+          value={marketplace}
+          disabled={showDelayed}
+          onChange={(e) => { setMarketplace(e.target.value); router.replace("?page=0"); }}
+        >
           {MARKETS.map((m) => <option key={m} value={m}>{m || "All channels"}</option>)}
         </select>
+        <button
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors ${
+            showDelayed
+              ? "bg-red-50 border-red-400 text-red-700"
+              : "bg-white border-gray-300 text-gray-700 hover:border-gray-400"
+          }`}
+          onClick={() => { setShowDelayed((v) => !v); router.replace("?page=0"); }}
+        >
+          <AlertTriangle className="w-4 h-4" />
+          Delayed
+          {urgentCount > 0 && (
+            <span className="ml-0.5 bg-red-500 text-white text-xs font-bold rounded-full px-1.5 py-0.5 min-w-[20px] text-center leading-none">
+              {urgentCount}
+            </span>
+          )}
+        </button>
       </div>
 
       <div className="card table-wrapper">
-        <table>
-          <thead><tr>
-            <th>Order ID</th><th>Channel</th><th>Buyer</th><th>Total</th><th>Status</th><th>Items</th><th>Date</th><th></th>
-          </tr></thead>
-          <tbody>
-            {isLoading ? (
-              <tr><td colSpan={8} className="text-center py-8 text-gray-400">Loading…</td></tr>
-            ) : orders.length === 0 ? (
-              <tr><td colSpan={8} className="text-center py-8 text-gray-400">No orders found.</td></tr>
-            ) : orders.map((o: any) => (
-              <tr key={o.id}>
-                <td>
-                  <div className="font-medium">#{o.id}</div>
-                  {o.external_order_id && <div className="text-xs text-gray-400 font-mono">{o.external_order_id}</div>}
-                </td>
-                <td><span className="capitalize badge-gray">{o.marketplace}</span></td>
-                <td>
-                  <div>{o.buyer_name || "—"}</div>
-                  <div className="text-xs text-gray-400">{o.buyer_email}</div>
-                </td>
-                <td className="font-medium">${parseFloat(o.total).toFixed(2)} <span className="text-xs text-gray-400">{o.currency}</span></td>
-                <td><OrderStatusBadge status={o.status} /></td>
-                <td>{o.line_items?.length ?? 0}</td>
-                <td className="text-xs text-gray-500">{new Date(o.ordered_at).toLocaleDateString()}</td>
-                <td>
-                  <Link href={`/orders/${o.id}`} className="p-1 hover:bg-gray-100 rounded text-gray-500">
-                    <ChevronRight className="w-4 h-4" />
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {showDelayed ? (
+          <table>
+            <thead><tr>
+              <th>Order</th><th>Supplier</th><th>Label Date</th><th>Days Delayed</th><th>Delay Status</th><th></th>
+            </tr></thead>
+            <tbody>
+              {isLoading ? (
+                <tr><td colSpan={6} className="text-center py-8 text-gray-400">Loading…</td></tr>
+              ) : orders.length === 0 ? (
+                <tr><td colSpan={6} className="text-center py-8 text-gray-400">No delayed orders.</td></tr>
+              ) : orders.map((o: any) => (
+                <tr
+                  key={`${o.order_id}-${o.purchased_at}`}
+                  className={o.status === "urgent" ? "bg-red-50 hover:bg-red-100" : "bg-yellow-50 hover:bg-yellow-100"}
+                >
+                  <td>
+                    <div className="font-medium">#{o.order_id}</div>
+                    {o.order_name && o.order_name !== `#${o.order_id}` && (
+                      <div className="text-xs text-gray-400 font-mono">{o.order_name}</div>
+                    )}
+                  </td>
+                  <td>{o.supplier_name || "—"}</td>
+                  <td className="text-xs text-gray-600">{new Date(o.purchased_at).toLocaleDateString()}</td>
+                  <td>
+                    <span className={`font-semibold ${o.status === "urgent" ? "text-red-600" : "text-yellow-600"}`}>
+                      {o.days_delayed}d
+                    </span>
+                  </td>
+                  <td>
+                    {o.status === "urgent" ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+                        <AlertTriangle className="w-3 h-3" />URGENT
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">
+                        <AlertTriangle className="w-3 h-3" />WARNING
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <Link href={`/orders/${o.order_id}`} className="p-1 hover:bg-gray-100 rounded text-gray-500">
+                      <ChevronRight className="w-4 h-4" />
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <table>
+            <thead><tr>
+              <th>Order ID</th><th>Channel</th><th>Buyer</th><th>Total</th><th>Status</th><th>Items</th><th>Date</th><th></th>
+            </tr></thead>
+            <tbody>
+              {isLoading ? (
+                <tr><td colSpan={8} className="text-center py-8 text-gray-400">Loading…</td></tr>
+              ) : orders.length === 0 ? (
+                <tr><td colSpan={8} className="text-center py-8 text-gray-400">No orders found.</td></tr>
+              ) : orders.map((o: any) => (
+                <tr key={o.id}>
+                  <td>
+                    <div className="font-medium">#{o.id}</div>
+                    {o.external_order_id && <div className="text-xs text-gray-400 font-mono">{o.external_order_id}</div>}
+                  </td>
+                  <td><span className="capitalize badge-gray">{o.marketplace}</span></td>
+                  <td>
+                    <div>{o.buyer_name || "—"}</div>
+                    <div className="text-xs text-gray-400">{o.buyer_email}</div>
+                  </td>
+                  <td className="font-medium">${parseFloat(o.total).toFixed(2)} <span className="text-xs text-gray-400">{o.currency}</span></td>
+                  <td><OrderStatusBadge status={o.status} /></td>
+                  <td>{o.line_items?.length ?? 0}</td>
+                  <td className="text-xs text-gray-500">{new Date(o.ordered_at).toLocaleDateString()}</td>
+                  <td>
+                    <Link href={`/orders/${o.id}`} className="p-1 hover:bg-gray-100 rounded text-gray-500">
+                      <ChevronRight className="w-4 h-4" />
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
+      {!showDelayed && (
+        <div className="flex items-center justify-between mt-3 px-1">
+          <span className="text-sm text-gray-500">
+            {(regularOrders as any[]).length > 0
+              ? `Showing ${page * limit + 1}–${page * limit + (regularOrders as any[]).length}`
+              : !isLoading ? "No orders found" : ""}
+          </span>
+          <div className="flex items-center gap-1">
+            <button className="btn-secondary" disabled={page === 0} onClick={() => router.push(`?page=${page - 1}`)}>
+              Previous
+            </button>
+            {pageItems.map((item) =>
+              item.type === "ellipsis" ? (
+                <span key={item.key} className="px-2 text-gray-400 select-none">…</span>
+              ) : (
+                <button
+                  key={item.index}
+                  className={item.index === page ? "btn-primary" : "btn-secondary"}
+                  onClick={() => router.push(`?page=${item.index}`)}
+                >
+                  {item.index + 1}
+                </button>
+              )
+            )}
+            <button className="btn-secondary" disabled={!hasMore} onClick={() => router.push(`?page=${page + 1}`)}>
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+
       {showCreate && <CreateOrderModal onClose={() => setShowCreate(false)} />}
+      {showBulkPrint && <BulkPrintModal onClose={() => setShowBulkPrint(false)} />}
     </div>
   );
 }
+
+export default function OrdersPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-gray-400">Loading...</div>}>
+      <OrdersPageInner />
+    </Suspense>
+  );
+}
+
+function BulkPrintModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const today = new Date().toISOString().split("T")[0];
+  const [date, setDate] = useState(today);
+  const [supplierId, setSupplierId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [fulfilling, setFulfilling] = useState(false);
+  const [printed, setPrinted] = useState(false);
+  const [confirmFulfill, setConfirmFulfill] = useState(false);
+
+  const { data: suppliers = [] } = useQuery({
+    queryKey: ["suppliers"],
+    queryFn: () => suppliersApi.list(),
+  });
+
+  const params = (): { date: string; supplier_id?: number } => {
+    const p: { date: string; supplier_id?: number } = { date };
+    if (supplierId !== null) p.supplier_id = supplierId;
+    return p;
+  };
+
+  const handleDownload = async () => {
+    // Single supplier → open PDF inline in new tab
+    if (supplierId !== null) {
+      window.open(ordersApi.bulkLabelsUrl(params()), "_blank");
+      setPrinted(true);
+      return;
+    }
+
+    // All suppliers → download zip
+    setLoading(true);
+    try {
+      const blob = await ordersApi.bulkLabels(params());
+      const d = new Date(date + "T12:00:00");
+      const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+      const dateLabel = `${mon} ${d.getDate()}`;
+      const url = URL.createObjectURL(new Blob([blob], { type: "application/zip" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${dateLabel} - labels.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setPrinted(true);
+    } catch (e: any) {
+      const status = e.response?.status;
+      if (status === 404) {
+        toast.error("No printable labels found — labels may have no PDF data yet.");
+      } else {
+        let detail = "";
+        try {
+          if (e.response?.data instanceof Blob) {
+            const text = await e.response.data.text();
+            detail = JSON.parse(text)?.detail || text;
+          } else {
+            detail = e.response?.data?.detail || "";
+          }
+        } catch {}
+        toast.error(`Download failed (${status ?? "network error"})${detail ? ": " + detail : ""}`);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFulfill = async () => {
+    setFulfilling(true);
+    setConfirmFulfill(false);
+    try {
+      const result = await ordersApi.bulkFulfill(params());
+      toast.success(`Marked ${result.marked_orders} order(s) as fulfilled`);
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      onClose();
+    } catch (e: any) {
+      const detail = e.response?.data?.detail || "Error marking as fulfilled";
+      toast.error(detail);
+    } finally {
+      setFulfilling(false);
+    }
+  };
+
+  const supName = supplierId !== null
+    ? (suppliers as any[]).find((s) => s.id === supplierId)?.name ?? "supplier"
+    : "all suppliers";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="card w-full max-w-sm p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="font-semibold text-lg">Bulk Print Labels</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="label">Date</label>
+            <input
+              type="date"
+              className="input"
+              value={date}
+              onChange={(e) => { setDate(e.target.value); setPrinted(false); }}
+            />
+          </div>
+          <div>
+            <label className="label">Supplier</label>
+            <select
+              className="input"
+              value={supplierId ?? ""}
+              onChange={(e) => { setSupplierId(e.target.value ? Number(e.target.value) : null); setPrinted(false); }}
+            >
+              <option value="">All suppliers (zip)</option>
+              {(suppliers as any[]).map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {confirmFulfill && (
+          <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm">
+            <p className="font-medium text-amber-800 mb-2">
+              Mark all orders as fulfilled?
+            </p>
+            <p className="text-amber-700 text-xs mb-3">
+              All processing orders with labels on <strong>{date}</strong> for <strong>{supName}</strong> will be marked as shipped.
+            </p>
+            <div className="flex gap-2">
+              <button className="btn-secondary text-xs py-1" onClick={() => setConfirmFulfill(false)}>Cancel</button>
+              <button className="btn-primary text-xs py-1 bg-amber-600 hover:bg-amber-700" onClick={handleFulfill} disabled={fulfilling}>
+                {fulfilling ? "Processing…" : "Confirm"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 mt-6">
+          <button className="btn-secondary" onClick={onClose}>Close</button>
+          {printed && !confirmFulfill && (
+            <button
+              className="btn-secondary text-green-700 border-green-300 hover:bg-green-50"
+              onClick={() => setConfirmFulfill(true)}
+              disabled={fulfilling}
+            >
+              Mark as Fulfilled
+            </button>
+          )}
+          <button className="btn-primary" onClick={handleDownload} disabled={loading || !date}>
+            {loading ? "Preparing…" : supplierId !== null ? "Open PDF" : "Download Zip"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function CreateOrderModal({ onClose }: { onClose: () => void }) {
   const router = useRouter();

@@ -6,6 +6,7 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.api.v1.router import api_router
+from app.core.scheduler import scheduler, fill_short_names
 import app.models  # ensure all models are imported before create_all
 
 
@@ -17,6 +18,50 @@ async def _init_db():
     await _seed_admin()
 
 
+async def _auto_sync_loop():
+    """Sync orders for all active connections every 60 minutes.
+    First run happens 5 minutes after server start."""
+    print("Auto-sync: started (first run in 5 minutes)", flush=True)
+    try:
+        await asyncio.sleep(5 * 60)
+    except asyncio.CancelledError:
+        return
+
+    while True:
+        try:
+            from sqlalchemy import select as _select
+            from app.core.database import AsyncSessionLocal
+            from app.models.marketplace import MarketplaceConnection, ConnectionStatus
+
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    _select(MarketplaceConnection).where(
+                        MarketplaceConnection.status == ConnectionStatus.active
+                    )
+                )
+                conn_ids = [c.id for c in result.scalars().all()]
+
+            print(f"Auto-sync: syncing {len(conn_ids)} active connection(s)...", flush=True)
+            from app.api.v1.marketplace import _do_sync_orders
+            for conn_id in conn_ids:
+                print(f"Auto-sync: syncing connection {conn_id}...", flush=True)
+                try:
+                    await _do_sync_orders(conn_id)
+                except Exception as e:
+                    print(f"Auto-sync: connection {conn_id} failed — {e}", flush=True)
+            print(f"Auto-sync done: {len(conn_ids)} connection(s) processed", flush=True)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"Auto-sync: unexpected error — {e}", flush=True)
+
+        try:
+            await asyncio.sleep(60 * 60)
+        except asyncio.CancelledError:
+            return
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -25,7 +70,21 @@ async def lifespan(app: FastAPI):
         print("WARNING: DB init timed out after 20s -- app will start without DB init.", flush=True)
     except Exception as e:
         print(f"WARNING: DB init failed: {e}", flush=True)
+
+    sync_task = asyncio.create_task(_auto_sync_loop())
+    scheduler.start()
+    async def _delayed_fill():
+        await asyncio.sleep(30)  # wait 30s for DB to be ready
+        await fill_short_names()
+    asyncio.create_task(_delayed_fill())
     yield
+    sync_task.cancel()
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
+    print("Auto-sync: stopped", flush=True)
+    scheduler.shutdown(wait=False)
 
 
 async def _seed_admin():
@@ -70,13 +129,27 @@ async def _run_migrations():
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS length NUMERIC(10, 2)",
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS width NUMERIC(10, 2)",
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS height NUMERIC(10, 2)",
+        # shipping_labels: refund timestamp
+        "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ",
+        # order_line_items: label tracking fields
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS label_id INTEGER REFERENCES shipping_labels(id)",
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS tracking_number VARCHAR(255)",
+        "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS fulfilled_at TIMESTAMPTZ",
         # order_line_items: Amazon ASIN identifier
         "ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS asin VARCHAR(20)",
+        # order_fulfillment_items: label tracking fields
+        "ALTER TABLE order_fulfillment_items ADD COLUMN IF NOT EXISTS tracking_number VARCHAR(255)",
+        "ALTER TABLE order_fulfillment_items ADD COLUMN IF NOT EXISTS label_id INTEGER REFERENCES shipping_labels(id)",
+        "ALTER TABLE order_fulfillment_items ADD COLUMN IF NOT EXISTS fulfilled_at TIMESTAMPTZ",
         # convert native PostgreSQL ENUM columns to VARCHAR so asyncpg ::VARCHAR binding works
         # (older DBs had native ENUM types; models now use String(50))
         "ALTER TABLE order_fulfillment_items ALTER COLUMN fulfill_status TYPE VARCHAR(50) USING fulfill_status::text",
         "ALTER TABLE order_line_items ALTER COLUMN fulfill_status TYPE VARCHAR(50) USING fulfill_status::text",
         "ALTER TABLE orders ALTER COLUMN status TYPE VARCHAR(50) USING status::text",
+        # daily_balances: manual deposit ("nạp thêm") recorded per day
+        "ALTER TABLE daily_balances ADD COLUMN IF NOT EXISTS top_up NUMERIC(12, 2) NOT NULL DEFAULT 0",
+        # daily_balances: manual COGS for externally-fulfilled (Amazon) orders without recorded cost
+        "ALTER TABLE daily_balances ADD COLUMN IF NOT EXISTS external_cogs NUMERIC(12, 2) NOT NULL DEFAULT 0",
     ]
     ok, failed = 0, 0
     for sql in migrations:

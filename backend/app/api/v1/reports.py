@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from app.core.database import get_db
-from app.models.order import Order, OrderLineItem, OrderStatus
+from app.models.order import Order, OrderLineItem, OrderStatus, OrderFulfillmentItem
 from app.models.product import Product, ProductSupplier, ProductComponent
 from app.models.supplier import Supplier, SupplierProduct
 
@@ -112,7 +112,92 @@ async def inventory_alert(threshold: int = Query(5), db: AsyncSession = Depends(
     return output
 
 
-# ── Daily balance endpoints ──────────────────────────────────────────────────
+@router.get("/stock-insights")
+async def stock_insights(
+    days: int = Query(30, description="velocity window in days"),
+    threshold: int = Query(5),
+    target_days: int = Query(14, description="desired days of cover for reorder suggestion"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reorder-planning insight per supplier catalog item (read-only):
+    stock vs pending demand, recent sales velocity, projected days of cover,
+    and a suggested reorder quantity. Returns only at-risk items (low available
+    or running out within target_days), most-urgent first."""
+    import math
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Open (pending) demand per catalog item.
+    pend_rows = (await db.execute(
+        select(
+            OrderFulfillmentItem.supplier_product_id,
+            func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0),
+        )
+        .where(OrderFulfillmentItem.fulfill_status.in_(["unfulfilled", "pending"]))
+        .group_by(OrderFulfillmentItem.supplier_product_id)
+    )).all()
+    pending = {spid: int(q or 0) for spid, q in pend_rows}
+
+    # Units demanded within the window → sales velocity.
+    sold_rows = (await db.execute(
+        select(
+            OrderFulfillmentItem.supplier_product_id,
+            func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0),
+        )
+        .join(OrderLineItem, OrderLineItem.id == OrderFulfillmentItem.order_line_item_id)
+        .join(Order, Order.id == OrderLineItem.order_id)
+        .where(Order.ordered_at >= cutoff)
+        .group_by(OrderFulfillmentItem.supplier_product_id)
+    )).all()
+    sold = {spid: int(q or 0) for spid, q in sold_rows}
+
+    sp_rows = (await db.execute(
+        select(
+            SupplierProduct.id, SupplierProduct.name, SupplierProduct.short_name,
+            SupplierProduct.sku, SupplierProduct.stock_quantity,
+            SupplierProduct.supplier_id, Supplier.name,
+        )
+        .join(Supplier, Supplier.id == SupplierProduct.supplier_id)
+    )).all()
+
+    items = []
+    for spid, name, short_name, sku, stock, sup_id, sup_name in sp_rows:
+        stock = int(stock or 0)
+        pend = pending.get(spid, 0)
+        available = stock - pend
+        sold_window = sold.get(spid, 0)
+        velocity = (sold_window / days) if days else 0.0
+        days_cover = (available / velocity) if velocity > 0 else None
+
+        reorder = 0
+        if velocity > 0:
+            reorder = max(0, math.ceil(velocity * target_days) - available)
+        elif available < 0:
+            reorder = -available
+
+        at_risk = (available <= threshold) or (days_cover is not None and days_cover <= target_days)
+        if not at_risk:
+            continue
+        items.append({
+            "supplier_product_id": spid,
+            "name": short_name or name,
+            "sku": sku,
+            "supplier_id": sup_id,
+            "supplier_name": sup_name,
+            "stock": stock,
+            "pending": pend,
+            "available": available,
+            "sold_window": sold_window,
+            "velocity_per_day": round(velocity, 2),
+            "days_of_cover": round(days_cover, 1) if days_cover is not None else None,
+            "suggested_reorder": int(reorder),
+        })
+
+    items.sort(key=lambda x: (
+        x["days_of_cover"] if x["days_of_cover"] is not None else float("inf"),
+        x["available"],
+    ))
+    return {"days": days, "target_days": target_days, "count": len(items), "items": items}
 
 from decimal import Decimal
 from datetime import date as Date

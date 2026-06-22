@@ -3,8 +3,9 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { reportsApi, ordersApi } from "@/lib/api";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { TrendingUp, ShoppingCart, Package, AlertTriangle, Copy, Check } from "lucide-react";
+import { TrendingUp, ShoppingCart, Package, AlertTriangle, Copy, Check, ChevronRight } from "lucide-react";
 import Link from "next/link";
+import DrillDownDrawer from "@/components/DrillDownDrawer";
 
 // ─── Date range helpers ────────────────────────────────────────────────────────
 
@@ -110,6 +111,7 @@ export default function DashboardPage() {
   const [period, setPeriod] = useState<Period>("today");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [openDrawer, setOpenDrawer] = useState<string | null>(null);
 
   const { from, to } = useMemo(
     () => computeDateRange(period, customFrom, customTo),
@@ -252,10 +254,19 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         <BySupplierWidget bySupplier={bySupplier as any[] | undefined} />
 
-        <div className="card p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <AlertTriangle className="w-4 h-4 text-yellow-500" />
-            <h2 className="text-sm font-semibold text-gray-700">Low Stock Alerts</h2>
+        <div
+          className="card p-5 cursor-pointer hover:shadow-md transition-shadow"
+          onClick={() => setOpenDrawer("lowstock")}
+          title="Click for reorder detail"
+        >
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-yellow-500" />
+              <h2 className="text-sm font-semibold text-gray-700">Low Stock Alerts</h2>
+            </div>
+            <span className="flex items-center text-xs text-blue-500">
+              Reorder view <ChevronRight className="w-3 h-3" />
+            </span>
           </div>
           {!alerts?.length ? (
             <p className="text-sm text-gray-400">No low stock items.</p>
@@ -279,6 +290,103 @@ export default function DashboardPage() {
 
       {/* Row 4: Order Summary */}
       <OrderSummaryWidget period={period} fromISO={fromISO} toISO={toISO_} from={from} />
+
+      {/* Drill-down: Low Stock & Reorder */}
+      <DrillDownDrawer
+        open={openDrawer === "lowstock"}
+        onClose={() => setOpenDrawer(null)}
+        title="Low Stock & Reorder"
+        subtitle="Stock vs pending demand · sales velocity · projected days of cover"
+        footer={
+          <Link href="/suppliers" className="text-sm text-blue-600 hover:underline">
+            Open Suppliers to update stock / reorder →
+          </Link>
+        }
+      >
+        <StockInsightsContent />
+      </DrillDownDrawer>
+    </div>
+  );
+}
+
+// ─── Stock Insights (Low Stock drill-down) ──────────────────────────────────────
+
+function StockStat({ label, value, tone = "" }: { label: string; value: any; tone?: string }) {
+  return (
+    <div>
+      <div className={`text-sm font-bold ${tone || "text-gray-800"}`}>{value}</div>
+      <div className="text-[10px] text-gray-400 uppercase tracking-wide">{label}</div>
+    </div>
+  );
+}
+
+function StockInsightsContent() {
+  const { data, isLoading } = useQuery({
+    queryKey: ["stock-insights"],
+    queryFn: () => reportsApi.stockInsights({ days: 30, threshold: 5, target_days: 14 }),
+  });
+  const items: any[] = data?.items ?? [];
+  const outOfStock = items.filter((i) => i.available <= 0).length;
+  const urgent = items.filter((i) => i.days_of_cover != null && i.days_of_cover <= 7).length;
+
+  if (isLoading) return <p className="text-sm text-gray-400">Loading…</p>;
+  if (!items.length)
+    return <p className="text-sm text-gray-400">No items at risk — stock looks healthy. 🎉</p>;
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-4 flex-wrap items-center">
+        <span className="badge badge-red">{outOfStock} out / oversold</span>
+        <span className="badge badge-yellow">{urgent} running out ≤7d</span>
+        <span className="text-xs text-gray-400">
+          window {data.days}d · target {data.target_days}d cover
+        </span>
+      </div>
+      <div className="space-y-2">
+        {items.map((it) => {
+          const dc = it.days_of_cover;
+          const tone =
+            it.available <= 0
+              ? "border-red-200 bg-red-50"
+              : dc != null && dc <= 7
+              ? "border-amber-200 bg-amber-50"
+              : "border-gray-100";
+          return (
+            <div key={it.supplier_product_id} className={`border rounded-lg p-3 ${tone}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-gray-800 truncate">{it.name}</div>
+                  <div className="text-xs text-gray-500 font-mono truncate">
+                    {it.supplier_name} · {it.sku}
+                  </div>
+                </div>
+                {it.suggested_reorder > 0 && (
+                  <span className="shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                    reorder {it.suggested_reorder}
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-4 gap-2 mt-2 text-center">
+                <StockStat label="Stock" value={it.stock} />
+                <StockStat label="Pending" value={it.pending} />
+                <StockStat
+                  label="Available"
+                  value={it.available}
+                  tone={it.available < 0 ? "text-red-600" : ""}
+                />
+                <StockStat
+                  label="Days left"
+                  value={dc == null ? "∞" : dc}
+                  tone={dc != null && dc <= 7 ? "text-amber-600" : ""}
+                />
+              </div>
+              <div className="text-[11px] text-gray-400 mt-1.5">
+                Sold {it.sold_window} in {data.days}d · {it.velocity_per_day}/day
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

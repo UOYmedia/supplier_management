@@ -307,7 +307,7 @@ export default function ReportsPage() {
 
         <div className="card p-5">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs text-gray-500 font-medium">Nạp thêm (Top-up)</span>
+            <span className="text-xs text-gray-500 font-medium">Top-up</span>
             <PlusCircle className="w-4 h-4 text-emerald-500" />
           </div>
           <div className="relative mt-1">
@@ -339,20 +339,20 @@ export default function ReportsPage() {
       <div className="card mb-4 px-5 py-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="text-sm">
-            <div className="font-medium text-gray-700">COGS ngoài / chưa có giá vốn (Amazon…)</div>
+            <div className="font-medium text-gray-700">External / un-costed COGS (Amazon…)</div>
             <div className="text-xs text-gray-500 mt-0.5">
-              COGS tự động: <span className="font-semibold text-gray-700">${totalCOGS.toFixed(0)}</span>
+              Auto COGS: <span className="font-semibold text-gray-700">${totalCOGS.toFixed(0)}</span>
               {uncountedGroups.length > 0 ? (
                 <span className="text-amber-600">
-                  {"  ·  "}⚠️ {uncountedGroups.length} sản phẩm chưa có giá vốn ({uncountedQty} cây) — chưa tính vào COGS
+                  {"  ·  "}⚠️ {uncountedGroups.length} product{uncountedGroups.length !== 1 ? "s" : ""} with no recorded cost ({uncountedQty} unit{uncountedQty !== 1 ? "s" : ""}) — not counted in COGS
                 </span>
               ) : (
-                <span className="text-green-600">{"  ·  "}✓ tất cả sản phẩm đã có giá vốn</span>
+                <span className="text-green-600">{"  ·  "}✓ all products have a recorded cost</span>
               )}
             </div>
           </div>
           <div className="shrink-0">
-            <label className="block text-[11px] text-gray-500 mb-1">Bù giá vốn cho các đơn chưa map ở trên</label>
+            <label className="block text-[11px] text-gray-500 mb-1">Cover cost for the un-costed orders above</label>
             <div className="relative w-44">
               <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
               <input
@@ -366,7 +366,7 @@ export default function ReportsPage() {
           </div>
         </div>
         <p className="text-[11px] text-gray-400 mt-2">
-          Chỉ nhập giá vốn của những đơn fulfill ngoài (Amazon) <strong>chưa</strong> có giá vốn ở trên, để tránh trừ trùng với phần COGS tự động.
+          Only enter the cost of externally-fulfilled (Amazon) orders that have <strong>no</strong> recorded cost above, to avoid double-counting the auto COGS.
         </p>
       </div>
 
@@ -380,7 +380,7 @@ export default function ReportsPage() {
             <>
               <span className="text-gray-400 font-medium">+</span>
               <span className="font-medium text-gray-700">
-                Nạp <span className="text-emerald-600 font-bold">${topUpNum.toLocaleString()}</span>
+                Top-up <span className="text-emerald-600 font-bold">${topUpNum.toLocaleString()}</span>
               </span>
             </>
           )}
@@ -392,7 +392,7 @@ export default function ReportsPage() {
             <>
               <span className="text-gray-400 font-medium">−</span>
               <span className="font-medium text-gray-700">
-                COGS ngoài <span className="text-red-500 font-bold">${extCogsNum.toLocaleString()}</span>
+                External COGS <span className="text-red-500 font-bold">${extCogsNum.toLocaleString()}</span>
               </span>
             </>
           )}

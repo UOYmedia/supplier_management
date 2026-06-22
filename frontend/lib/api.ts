@@ -183,7 +183,7 @@ export const reportsApi = {
   bySupplier: () => api.get("/reports/by-supplier").then((r) => r.data),
   inventoryAlert: (threshold?: number) => api.get("/reports/inventory-alert", { params: { threshold } }).then((r) => r.data),
   getDailyBalance: (date: string) => api.get("/reports/daily-balance", { params: { date } }).then((r) => r.data).catch(() => null),
-  saveDailyBalance: (date: string, ending_balance: number, top_up: number = 0) => api.post("/reports/daily-balance", { date, ending_balance, top_up }).then((r) => r.data).catch(() => null),
+  saveDailyBalance: (date: string, ending_balance: number, top_up: number = 0, external_cogs: number = 0) => api.post("/reports/daily-balance", { date, ending_balance, top_up, external_cogs }).then((r) => r.data).catch(() => null),
 };
 
 // EasyPost (admin)

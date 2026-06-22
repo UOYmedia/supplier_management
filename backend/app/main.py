@@ -148,6 +148,8 @@ async def _run_migrations():
         "ALTER TABLE orders ALTER COLUMN status TYPE VARCHAR(50) USING status::text",
         # daily_balances: manual deposit ("nạp thêm") recorded per day
         "ALTER TABLE daily_balances ADD COLUMN IF NOT EXISTS top_up NUMERIC(12, 2) NOT NULL DEFAULT 0",
+        # daily_balances: manual COGS for externally-fulfilled (Amazon) orders without recorded cost
+        "ALTER TABLE daily_balances ADD COLUMN IF NOT EXISTS external_cogs NUMERIC(12, 2) NOT NULL DEFAULT 0",
     ]
     ok, failed = 0, 0
     for sql in migrations:

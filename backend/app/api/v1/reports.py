@@ -126,34 +126,55 @@ class DailyBalanceIn(BaseModel):
     date: Date
     ending_balance: Decimal
     top_up: Decimal = Decimal(0)
+    external_cogs: Decimal = Decimal(0)
 
 
 class DailyBalanceOut(BaseModel):
     date: Date
     ending_balance: Decimal
     top_up: Decimal = Decimal(0)
+    external_cogs: Decimal = Decimal(0)
 
 
 @router.get("/daily-balance", response_model=DailyBalanceOut | None)
 async def get_daily_balance(date: Date = Query(...), db: AsyncSession = Depends(get_db)):
-    """Return the stored ending balance + manual top-up for a given date, or null if none."""
+    """Return the stored ending balance + manual top-up + external COGS for a date, or null."""
     row = (await db.execute(select(DailyBalance).where(DailyBalance.date == date))).scalar_one_or_none()
     if not row:
         return None
-    return DailyBalanceOut(date=row.date, ending_balance=row.ending_balance, top_up=row.top_up or Decimal(0))
+    return DailyBalanceOut(
+        date=row.date,
+        ending_balance=row.ending_balance,
+        top_up=row.top_up or Decimal(0),
+        external_cogs=getattr(row, "external_cogs", None) or Decimal(0),
+    )
 
 
 @router.post("/daily-balance", response_model=DailyBalanceOut)
 async def upsert_daily_balance(body: DailyBalanceIn, db: AsyncSession = Depends(get_db)):
-    """Save (upsert) ending balance + manual top-up for a date."""
+    """Save (upsert) ending balance + manual top-up + external COGS for a date."""
     stmt = (
         pg_insert(DailyBalance)
-        .values(date=body.date, ending_balance=body.ending_balance, top_up=body.top_up)
+        .values(
+            date=body.date,
+            ending_balance=body.ending_balance,
+            top_up=body.top_up,
+            external_cogs=body.external_cogs,
+        )
         .on_conflict_do_update(
             index_elements=["date"],
-            set_={"ending_balance": body.ending_balance, "top_up": body.top_up},
+            set_={
+                "ending_balance": body.ending_balance,
+                "top_up": body.top_up,
+                "external_cogs": body.external_cogs,
+            },
         )
     )
     await db.execute(stmt)
     await db.commit()
-    return DailyBalanceOut(date=body.date, ending_balance=body.ending_balance, top_up=body.top_up)
+    return DailyBalanceOut(
+        date=body.date,
+        ending_balance=body.ending_balance,
+        top_up=body.top_up,
+        external_cogs=body.external_cogs,
+    )

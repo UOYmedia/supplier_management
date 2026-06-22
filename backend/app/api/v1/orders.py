@@ -1295,6 +1295,12 @@ async def _auto_assign_line_item(li: OrderLineItem, db: AsyncSession) -> bool:
     # Step 3: assign supplier to line item
     li.supplier_id = sp.supplier_id
 
+    # Record the supplier cost so this order's COGS shows in the Daily Report
+    # balance even when fulfilled externally (e.g. Amazon). Mirrors the manual
+    # assign formula (unit_price × units). Only runs on a confirmed SKU→catalog
+    # match, so no fuzzy/guessed costs.
+    li.base_cost = sp.unit_price * comp.quantity
+
     # Step 4: upsert OrderFulfillmentItem
     ofi_res = await db.execute(
         select(OrderFulfillmentItem).where(
@@ -1345,3 +1351,47 @@ async def backfill_auto_assign(db: AsyncSession = Depends(get_db)):
             skipped += 1
     await db.commit()
     return {"assigned": assigned, "skipped": skipped, "total": len(items)}
+
+
+@router.post("/backfill-base-cost")
+async def backfill_base_cost(db: AsyncSession = Depends(get_db)):
+    """Fill base_cost (giá vốn) for line items that have a supplier mapping but
+    base_cost = 0 — e.g. Amazon orders auto-assigned before cost was recorded —
+    so their COGS shows up in the Daily Report balance.
+
+    Recomputes from existing fulfillment items (unit_price × qty ÷ line qty);
+    runs auto-assign for still-unassigned items. Idempotent and never overwrites
+    a line item that already has a non-zero base_cost.
+    """
+    from decimal import Decimal
+    from sqlalchemy import or_
+
+    rows = (await db.execute(
+        select(OrderLineItem).where(
+            or_(OrderLineItem.base_cost == 0, OrderLineItem.base_cost.is_(None)),
+            OrderLineItem.fulfill_status != FulfillStatus.shipped,
+        )
+    )).scalars().all()
+
+    updated = 0
+    auto_assigned = 0
+    for li in rows:
+        if not li.quantity:
+            continue
+        ofis = (await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )).scalars().all()
+        if ofis:
+            total = Decimal(0)
+            for ofi in ofis:
+                sp = await db.get(SupplierProduct, ofi.supplier_product_id)
+                if sp and sp.unit_price:
+                    total += Decimal(sp.unit_price) * int(ofi.quantity or 0)
+            if total > 0:
+                li.base_cost = (total / li.quantity).quantize(Decimal("0.01"))
+                updated += 1
+        elif li.supplier_id is None and li.sku:
+            if await _auto_assign_line_item(li, db):
+                auto_assigned += 1
+    await db.commit()
+    return {"updated": updated, "auto_assigned": auto_assigned, "scanned": len(rows)}

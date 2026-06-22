@@ -14,6 +14,9 @@ class DailyBalance(Base):
     ending_balance: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     # Manual deposit ("nạp thêm") recorded for this day; already folded into ending_balance.
     top_up: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0, server_default="0")
+    # Manual COGS for orders fulfilled externally (e.g. Amazon) that have no
+    # recorded base_cost yet; subtracted from the balance, folded into ending_balance.
+    external_cogs: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

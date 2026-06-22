@@ -77,6 +77,7 @@ export default function ReportsPage() {
   const [customTo, setCustomTo] = useState("");
   const [startingBalance, setStartingBalance] = useState("");
   const [topUp, setTopUp] = useState("");
+  const [extCogs, setExtCogs] = useState("");
   const [balanceAutoLoaded, setBalanceAutoLoaded] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -96,6 +97,7 @@ export default function ReportsPage() {
     const currentDate = from.toISOString().split("T")[0];
     reportsApi.getDailyBalance(currentDate).then((data: any) => {
       setTopUp(data?.top_up != null && Number(data.top_up) !== 0 ? String(data.top_up) : "");
+      setExtCogs(data?.external_cogs != null && Number(data.external_cogs) !== 0 ? String(data.external_cogs) : "");
     });
     reportsApi.getDailyBalance(prevDate).then((data: any) => {
       if (data?.ending_balance != null) {
@@ -165,18 +167,24 @@ export default function ReportsPage() {
   const totalCOGS = groups.reduce((s, g) => s + g.total, 0);
   const startNum = parseFloat(startingBalance.replace(/[^0-9.]/g, "")) || 0;
   const topUpNum = parseFloat((topUp || "").replace(/[^0-9.]/g, "")) || 0;
-  const ending = startNum + topUpNum - totalCOGS;
+  const extCogsNum = parseFloat((extCogs || "").replace(/[^0-9.]/g, "")) || 0;
+  const ending = startNum + topUpNum - totalCOGS - extCogsNum;
   const dateLabel = fmtDateLabel(period, from, to);
+
+  // Guardrail: products whose supplier cost is not recorded yet (base_cost 0) —
+  // these contribute $0 to the auto COGS and are what the manual field covers.
+  const uncountedGroups = groups.filter((g) => g.total === 0);
+  const uncountedQty = uncountedGroups.reduce((s, g) => s + g.qty, 0);
 
   // Auto-save ending balance to server whenever it changes (debounced)
   useEffect(() => {
     if (!startingBalance.trim() || isLoading) return;
     const todayDate = from.toISOString().split("T")[0];
     const timer = setTimeout(() => {
-      reportsApi.saveDailyBalance(todayDate, ending, topUpNum);
+      reportsApi.saveDailyBalance(todayDate, ending, topUpNum, extCogsNum);
     }, 1500);
     return () => clearTimeout(timer);
-  }, [ending, startingBalance, topUpNum, from, isLoading]);
+  }, [ending, startingBalance, topUpNum, extCogsNum, from, isLoading]);
 
   const handleCopy = () => {
     const lines = [
@@ -185,6 +193,7 @@ export default function ReportsPage() {
       ...(topUpNum ? [`Top-up: $${topUpNum.toLocaleString()}`] : []),
       ...groups.map((g) => `• ${g.orders} order${g.orders !== 1 ? "s" : ""} of ${g.qty} ${g.name} => $${g.total.toFixed(0)}`),
       `TOTAL: $${totalCOGS.toFixed(0)}`,
+      ...(extCogsNum ? [`External COGS (Amazon): $${extCogsNum.toLocaleString()}`] : []),
       `Ending balance: $${ending.toLocaleString()}`,
     ];
     navigator.clipboard.writeText(lines.join("\n"));
@@ -193,7 +202,7 @@ export default function ReportsPage() {
     // Save today's ending balance to server so tomorrow auto-loads it
     if (startingBalance.trim()) {
       const todayDate = from.toISOString().split("T")[0];
-      reportsApi.saveDailyBalance(todayDate, ending, topUpNum);
+      reportsApi.saveDailyBalance(todayDate, ending, topUpNum, extCogsNum);
       // Also keep localStorage as fallback
       if (typeof window !== "undefined") {
         localStorage.setItem(LS_BALANCE_KEY, ending.toFixed(2));
@@ -326,6 +335,41 @@ export default function ReportsPage() {
         </div>
       </div>
 
+      {/* External / unmapped COGS guardrail + manual entry */}
+      <div className="card mb-4 px-5 py-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="text-sm">
+            <div className="font-medium text-gray-700">COGS ngoài / chưa có giá vốn (Amazon…)</div>
+            <div className="text-xs text-gray-500 mt-0.5">
+              COGS tự động: <span className="font-semibold text-gray-700">${totalCOGS.toFixed(0)}</span>
+              {uncountedGroups.length > 0 ? (
+                <span className="text-amber-600">
+                  {"  ·  "}⚠️ {uncountedGroups.length} sản phẩm chưa có giá vốn ({uncountedQty} cây) — chưa tính vào COGS
+                </span>
+              ) : (
+                <span className="text-green-600">{"  ·  "}✓ tất cả sản phẩm đã có giá vốn</span>
+              )}
+            </div>
+          </div>
+          <div className="shrink-0">
+            <label className="block text-[11px] text-gray-500 mb-1">Bù giá vốn cho các đơn chưa map ở trên</label>
+            <div className="relative w-44">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+              <input
+                type="number"
+                className="input pl-6 w-full font-semibold"
+                placeholder="0"
+                value={extCogs}
+                onChange={(e) => setExtCogs(e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+        <p className="text-[11px] text-gray-400 mt-2">
+          Chỉ nhập giá vốn của những đơn fulfill ngoài (Amazon) <strong>chưa</strong> có giá vốn ở trên, để tránh trừ trùng với phần COGS tự động.
+        </p>
+      </div>
+
       {/* Balance summary row */}
       {startingBalance.trim() && (
         <div className="card mb-4 px-5 py-3 flex items-center gap-3 text-sm flex-wrap">
@@ -344,6 +388,14 @@ export default function ReportsPage() {
           <span className="font-medium text-gray-700">
             COGS <span className="text-red-500 font-bold">${totalCOGS.toFixed(0)}</span>
           </span>
+          {extCogsNum > 0 && (
+            <>
+              <span className="text-gray-400 font-medium">−</span>
+              <span className="font-medium text-gray-700">
+                COGS ngoài <span className="text-red-500 font-bold">${extCogsNum.toLocaleString()}</span>
+              </span>
+            </>
+          )}
           <span className="text-gray-400 font-medium">=</span>
           <span className={`font-bold text-base ${ending >= 0 ? "text-green-700" : "text-red-600"}`}>
             Ending ${ending.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}

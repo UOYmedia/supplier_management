@@ -804,7 +804,7 @@ function DelayBySupplierContent({ delayed }: { delayed: any[] }) {
     const map = new Map<string, { supplier: string; orders: any[]; urgent: number; warning: number }>();
     for (const o of delayed) {
       const key = o.supplier_name || "—";
-      const g = map.get(key) ?? { supplier: key, orders: [], urgent: 0, warning: 0 };
+      const g = map.get(key) ?? { supplier: key, orders: [] as any[], urgent: 0, warning: 0 };
       g.orders.push(o);
       if (o.status === "urgent") g.urgent++;
       else if (o.status === "warning") g.warning++;

@@ -382,13 +382,28 @@ async def orders_breakdown(
 
     revenue = sum(float(o.total or 0) for o in orders)
     n = len(orders)
+
+    # Fill every day in the selected range (days with no orders → 0) so the trend
+    # line spans the whole filter, not just days that happen to have orders.
+    if from_date and to_date:
+        daily_list = []
+        cur = from_date.date()
+        end = to_date.date()
+        while cur <= end:
+            k = cur.isoformat()
+            v = daily.get(k, {"revenue": 0.0, "orders": 0})
+            daily_list.append({"date": k, "revenue": round(v["revenue"], 2), "orders": v["orders"]})
+            cur += timedelta(days=1)
+    else:
+        daily_list = [{"date": k, "revenue": round(v["revenue"], 2), "orders": v["orders"]}
+                      for k, v in sorted(daily.items())]
+
     return {
         "revenue": round(revenue, 2),
         "orders": n,
         "units": units,
         "aov": round(revenue / n, 2) if n else 0,
-        "daily": [{"date": k, "revenue": round(v["revenue"], 2), "orders": v["orders"]}
-                  for k, v in sorted(daily.items())],
+        "daily": daily_list,
         "status_counts": status_counts,
         "by_marketplace": [{"marketplace": k, "revenue": round(v["revenue"], 2), "orders": v["orders"]}
                            for k, v in sorted(by_mkt.items(), key=lambda kv: kv[1]["revenue"], reverse=True)],

@@ -273,6 +273,74 @@ async def supplier_scorecard(
         "top_products": top_products,
     }
 
+
+@router.get("/margin-breakdown")
+async def margin_breakdown(
+    from_date: datetime | None = Query(None),
+    to_date: datetime | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Profit detail for the period (read-only). Mirrors /summary totals and
+    flags line items with no recorded cost (base_cost = 0) — these inflate
+    gross profit/margin, so they're the items to map/cost. Also returns the
+    biggest COGS products and the products still missing a cost."""
+    oq = select(Order)
+    if from_date:
+        oq = oq.where(Order.ordered_at >= from_date)
+    if to_date:
+        oq = oq.where(Order.ordered_at <= to_date)
+    orders = (await db.execute(oq)).scalars().all()
+    revenue = sum(float(o.total) for o in orders)
+
+    liq = select(OrderLineItem).join(Order, Order.id == OrderLineItem.order_id)
+    if from_date:
+        liq = liq.where(Order.ordered_at >= from_date)
+    if to_date:
+        liq = liq.where(Order.ordered_at <= to_date)
+    lis = (await db.execute(liq)).scalars().all()
+
+    cost = sum(float(li.base_cost or 0) * (li.quantity or 0) for li in lis)
+    gross_profit = revenue - cost
+    total_li = len(lis)
+
+    missing_units = 0
+    missing_count = 0
+    miss_prod: dict[str, int] = {}
+    cost_prod: dict[str, float] = {}
+    for li in lis:
+        qty = li.quantity or 0
+        bc = float(li.base_cost or 0)
+        name = li.product_name or "Unknown"
+        if bc == 0 and qty > 0:
+            missing_count += 1
+            missing_units += qty
+            miss_prod[name] = miss_prod.get(name, 0) + qty
+        elif bc > 0:
+            cost_prod[name] = cost_prod.get(name, 0.0) + bc * qty
+
+    top_missing = sorted(
+        ({"name": n, "units": u} for n, u in miss_prod.items()),
+        key=lambda x: x["units"], reverse=True,
+    )[:8]
+    top_cost_products = sorted(
+        ({"name": n, "cogs": round(c, 2)} for n, c in cost_prod.items()),
+        key=lambda x: x["cogs"], reverse=True,
+    )[:5]
+
+    return {
+        "revenue": round(revenue, 2),
+        "cost": round(cost, 2),
+        "gross_profit": round(gross_profit, 2),
+        "margin_pct": round(gross_profit / revenue * 100, 1) if revenue else 0,
+        "line_items_total": total_li,
+        "missing_cost_count": missing_count,
+        "missing_cost_units": missing_units,
+        "products_missing_cost": len(miss_prod),
+        "cost_coverage_pct": round((total_li - missing_count) / total_li * 100, 1) if total_li else 100,
+        "top_missing": top_missing,
+        "top_cost_products": top_cost_products,
+    }
+
 from decimal import Decimal
 from datetime import date as Date
 from fastapi import HTTPException

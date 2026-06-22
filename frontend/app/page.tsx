@@ -216,10 +216,18 @@ export default function DashboardPage() {
         {kpis.map((k) => {
           const pct = pctChange(k.cur, k.prev);
           const pctStr = fmtPct(pct);
+          const drawerKey = (k.label === "Gross Profit" || k.label === "Margin") ? "margin" : null;
           return (
-            <div key={k.label} className="card p-5">
+            <div
+              key={k.label}
+              onClick={drawerKey ? () => setOpenDrawer(drawerKey) : undefined}
+              className={`card p-5 ${drawerKey ? "cursor-pointer hover:shadow-md transition-shadow" : ""}`}
+            >
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs text-gray-500 font-medium">{k.label}</span>
+                <span className="text-xs text-gray-500 font-medium flex items-center gap-1">
+                  {k.label}
+                  {drawerKey && <ChevronRight className="w-3 h-3 text-blue-400" />}
+                </span>
                 <k.icon className={`w-4 h-4 ${k.color}`} />
               </div>
               <div className="text-2xl font-bold text-gray-900">{k.fmt(k.cur)}</div>
@@ -340,6 +348,21 @@ export default function DashboardPage() {
         }
       >
         <DelayBySupplierContent delayed={delayed as any[]} />
+      </DrillDownDrawer>
+
+      {/* Drill-down: Margin / profit accuracy */}
+      <DrillDownDrawer
+        open={openDrawer === "margin"}
+        onClose={() => setOpenDrawer(null)}
+        title="Gross Profit & Margin"
+        subtitle="Profit for the selected period · cost coverage flag"
+        footer={
+          <Link href="/products" className="text-sm text-blue-600 hover:underline">
+            Open Products to map / set cost →
+          </Link>
+        }
+      >
+        <MarginBreakdownContent fromISO={fromISO} toISO={toISO_} />
       </DrillDownDrawer>
     </div>
   );
@@ -857,6 +880,91 @@ function DelayBySupplierContent({ delayed }: { delayed: any[] }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── Margin / Profit accuracy (drill-down) ──────────────────────────────────────
+
+function MarginBreakdownContent({ fromISO, toISO }: { fromISO: string; toISO: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["margin-breakdown", fromISO, toISO],
+    queryFn: () => reportsApi.marginBreakdown({ from_date: fromISO, to_date: toISO }),
+  });
+  if (isLoading || !data) return <p className="text-sm text-gray-400">Loading…</p>;
+
+  const hasMissing = data.missing_cost_count > 0;
+
+  return (
+    <div>
+      {/* Totals */}
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <div className="rounded-lg border border-gray-100 p-3">
+          <div className="text-base font-bold text-gray-800">${Number(data.revenue).toLocaleString()}</div>
+          <div className="text-[10px] text-gray-400 uppercase tracking-wide">Revenue</div>
+        </div>
+        <div className="rounded-lg border border-gray-100 p-3">
+          <div className="text-base font-bold text-gray-800">${Number(data.cost).toLocaleString()}</div>
+          <div className="text-[10px] text-gray-400 uppercase tracking-wide">COGS</div>
+        </div>
+        <div className="rounded-lg border border-gray-100 p-3">
+          <div className={`text-base font-bold ${data.gross_profit >= 0 ? "text-green-700" : "text-red-600"}`}>
+            ${Number(data.gross_profit).toLocaleString()}
+          </div>
+          <div className="text-[10px] text-gray-400 uppercase tracking-wide">Gross profit</div>
+        </div>
+        <div className="rounded-lg border border-gray-100 p-3">
+          <div className="text-base font-bold text-gray-800">{data.margin_pct}%</div>
+          <div className="text-[10px] text-gray-400 uppercase tracking-wide">Margin</div>
+        </div>
+      </div>
+
+      {/* Cost coverage flag */}
+      <div className={`rounded-lg border p-3 mb-4 ${hasMissing ? "border-amber-200 bg-amber-50" : "border-green-200 bg-green-50"}`}>
+        {hasMissing ? (
+          <>
+            <div className="text-sm font-medium text-amber-800">
+              ⚠️ Margin may be overstated
+            </div>
+            <div className="text-xs text-amber-700 mt-1">
+              {data.missing_cost_count} of {data.line_items_total} line items ({data.missing_cost_units} units) have no
+              recorded cost — counted as 100% profit. Cost coverage: {data.cost_coverage_pct}%.
+            </div>
+          </>
+        ) : (
+          <div className="text-sm font-medium text-green-700">✓ All line items have a recorded cost.</div>
+        )}
+      </div>
+
+      {/* Products missing cost */}
+      {hasMissing && data.top_missing?.length > 0 && (
+        <div className="mb-4">
+          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Products missing cost</h3>
+          <div className="space-y-1.5">
+            {data.top_missing.map((p: any) => (
+              <div key={p.name} className="flex items-center justify-between text-sm">
+                <span className="text-gray-700 truncate pr-2">{p.name}</span>
+                <span className="text-amber-600 shrink-0">{p.units} units</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Top COGS products */}
+      {data.top_cost_products?.length > 0 && (
+        <div>
+          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Top COGS products</h3>
+          <div className="space-y-1.5">
+            {data.top_cost_products.map((p: any) => (
+              <div key={p.name} className="flex items-center justify-between text-sm">
+                <span className="text-gray-700 truncate pr-2">{p.name}</span>
+                <span className="text-gray-500 shrink-0">${Number(p.cogs).toFixed(0)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

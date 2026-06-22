@@ -316,7 +316,11 @@ def stamp_label(carrier_pdf: bytes, entry: LabelEntry) -> bytes:
             out = stamp_fn(carrier_pdf, lines)
             if out:
                 return out
-        except Exception:
+        except Exception as e:
+            # Log why a strategy was skipped — the crop/band path (fitz) silently
+            # falling back to the plain overlay is what leaves the product name at
+            # the page bottom with the oversized gap intact (e.g. pymupdf missing).
+            print(f"stamp_label: {stamp_fn.__name__} failed — {type(e).__name__}: {e}", flush=True)
             continue
     return carrier_pdf
 

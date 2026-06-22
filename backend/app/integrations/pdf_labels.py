@@ -146,14 +146,18 @@ def _crop_and_stamp_fitz(carrier_pdf: bytes, lines: list[str]) -> bytes:
         page_w, page_h = page.rect.width, page.rect.height
 
         # Union of all drawn content (vectors + text + images) → content bbox.
+        # Each source is independent so one failing doesn't abort the crop.
         content = fitz.Rect(1e9, 1e9, -1e9, -1e9)
-        for d in page.get_drawings():
-            content |= fitz.Rect(d["rect"])
-        for bl in page.get_text("blocks"):
-            content |= fitz.Rect(bl[:4])
-        for im in page.get_images(full=True):
-            for rc in page.get_image_rects(im[0]):
-                content |= fitz.Rect(rc)
+        for getter in (
+            lambda: [fitz.Rect(d["rect"]) for d in page.get_drawings()],
+            lambda: [fitz.Rect(bl[:4]) for bl in page.get_text("blocks")],
+            lambda: [fitz.Rect(rc) for im in page.get_images(full=True) for rc in page.get_image_rects(im[0])],
+        ):
+            try:
+                for r in getter():
+                    content |= r
+            except Exception:
+                continue
         if content.is_empty or content.is_infinite or content.y1 <= 0:
             raise ValueError("no content bbox")
 
@@ -170,15 +174,22 @@ def _crop_and_stamp_fitz(carrier_pdf: bytes, lines: list[str]) -> bytes:
         # (the UPS case). Only then do we crop; normal 4x6 labels keep their size.
         oversized = below_blank > 75
 
-        band_bottom = _find_blank_band(page, page_h, content_bottom, need)
+        # Blank-band detection needs a rendered pixmap and is the most likely
+        # step to fail on an odd carrier PDF — never let it abort the crop.
+        try:
+            band_bottom = _find_blank_band(page, page_h, content_bottom, need)
+        except Exception as e:
+            print(f"_crop_and_stamp_fitz: blank-band scan skipped — {type(e).__name__}: {e}", flush=True)
+            band_bottom = None
 
         if band_bottom is not None:
             # Drop the text into the label's existing blank band.
             if oversized:
                 page.set_cropbox(fitz.Rect(0, 0, page_w, content_bottom + 3))
             y = band_bottom - 3 - (len(lines) - 1) * line_h
-        elif oversized and below_blank >= need + 10:
-            # No usable band — trim the oversized gap to a tight footer strip.
+        elif oversized:
+            # No usable band — trim the oversized gap to a tight footer strip and
+            # stamp just below the content (fixes the wrong label size).
             page.set_cropbox(fitz.Rect(0, 0, page_w, content_bottom + need + 8))
             y = content_bottom + 14
         elif below_blank >= need + 10:

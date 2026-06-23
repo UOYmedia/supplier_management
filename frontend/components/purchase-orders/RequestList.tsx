@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import toast from "react-hot-toast"
 import { Plus, X } from "lucide-react"
-import { purchaseRequestsApi } from "@/lib/api"
+import { purchaseRequestsApi, suppliersApi } from "@/lib/api"
 
 interface PurchaseRequest {
   id: number
@@ -181,6 +181,7 @@ const EMPTY_FORM = {
   qty_available: "",
   unit_cost: "",
   po_number: "",
+  pic: "",
   requested_date: today(),
   notes: "",
 }
@@ -195,6 +196,12 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
   const isJenny = username.toLowerCase() === "jenny"
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(EMPTY_FORM)
+
+  const { data: suppliers = [] } = useQuery<{ id: number; name: string }[]>({
+    queryKey: ["suppliers-list"],
+    queryFn: () => suppliersApi.list(),
+    select: (data: any[]) => data.map((s) => ({ id: s.id, name: s.name })),
+  })
 
   const { data: requests = [], isLoading } = useQuery<PurchaseRequest[]>({
     queryKey: ["purchase-requests"],
@@ -229,18 +236,18 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.supplier || !form.sku || !form.qty_ordered || !form.unit_cost || !form.po_number) {
+    if (!form.supplier || !form.sku || !form.qty_ordered || !form.unit_cost || !form.po_number || !form.pic) {
       toast.error("Please fill in all required fields")
       return
     }
     createMut.mutate({
-      supplier: form.supplier.trim().toUpperCase(),
+      supplier: form.supplier,
       sku: form.sku.trim(),
       qty_ordered: parseInt(form.qty_ordered),
       qty_available: form.qty_available ? parseInt(form.qty_available) : 0,
       unit_cost: parseFloat(form.unit_cost),
       po_number: form.po_number.trim(),
-      pic: username,
+      pic: form.pic.trim(),
       requested_date: form.requested_date || today(),
       notes: form.notes.trim() || null,
     })
@@ -259,7 +266,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
         </p>
         <button
           className="btn-primary flex items-center gap-1.5 text-sm"
-          onClick={() => { setShowForm(true); setForm({ ...EMPTY_FORM, requested_date: today() }) }}
+          onClick={() => setShowForm(true)}
         >
           <Plus className="w-4 h-4" />
           Add Request
@@ -281,21 +288,25 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">Supplier <span className="text-red-500">*</span></label>
-                  <input
-                    type="text"
+                  <select
                     value={form.supplier}
                     onChange={(e) => set("supplier", e.target.value)}
-                    placeholder="e.g. JOE"
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  >
+                    <option value="">Select supplier…</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.name}>{s.name}</option>
+                    ))}
+                  </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">PIC</label>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">PIC <span className="text-red-500">*</span></label>
                   <input
                     type="text"
-                    value={username}
-                    disabled
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 text-gray-500"
+                    value={form.pic}
+                    onChange={(e) => set("pic", e.target.value)}
+                    placeholder="Your name"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               </div>

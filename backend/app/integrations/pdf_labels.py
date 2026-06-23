@@ -33,9 +33,7 @@ def _smart_clip(text: str, n: int) -> str:
     text = text or ""
     if len(text) <= n:
         return text
-    head = (n * 2) // 3
-    tail = n - head - 1
-    return text[:head] + "…" + text[len(text) - tail:]
+    return text[:n - 1] + "…"
 
 
 def _build_label_lines(entry: LabelEntry) -> list[str]:

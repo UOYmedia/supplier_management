@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useQuery } from "@tanstack/react-query"
 import { Plus, Copy, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react"
 import toast from "react-hot-toast"
@@ -37,12 +38,21 @@ function POSkeleton() {
   )
 }
 
-export default function PurchaseOrdersPage() {
+function PurchaseOrdersPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [selectedDate, setSelectedDate] = useState<Date>(new Date())
   const [activeSupplier, setActiveSupplier] = useState<Filter>("ALL")
-  const [pageTab, setPageTab] = useState<PageTab>("orders")
+  const pageTab = (searchParams.get("tab") === "requests" ? "requests" : "orders") as PageTab
   const [username, setUsername] = useState("")
   const [userRole, setUserRole] = useState("")
+
+  function setPageTab(tab: PageTab) {
+    const params = new URLSearchParams(searchParams.toString())
+    if (tab === "requests") params.set("tab", "requests")
+    else params.delete("tab")
+    router.push(`/purchase-orders?${params.toString()}`)
+  }
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem("admin_user") || "{}")
@@ -131,7 +141,7 @@ export default function PurchaseOrdersPage() {
               <h1 className="page-title">Purchase Requests</h1>
             </div>
           </div>
-          <RequestList username={username} canApprove={userRole === "admin" || username.toLowerCase() === "jenny"} onPaidSuccess={() => refetch()} />
+          <RequestList username={username} canApprove={userRole === "admin" || username.toLowerCase() === "jenny" || username.toLowerCase() === "admin"} onPaidSuccess={() => refetch()} />
         </div>
       ) : null}
 
@@ -239,5 +249,14 @@ export default function PurchaseOrdersPage() {
       )}
       </>}
     </div>
+  )
+}
+
+import { Suspense } from "react"
+export default function PurchaseOrdersPageWrapper() {
+  return (
+    <Suspense>
+      <PurchaseOrdersPage />
+    </Suspense>
   )
 }

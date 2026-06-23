@@ -195,6 +195,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
   const isJenny = username.toLowerCase() === "jenny"
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(EMPTY_FORM)
+  const [errors, setErrors] = useState<Record<string, boolean>>({})
 
   const { data: suppliers = [] } = useQuery<{ id: number; name: string }[]>({
     queryKey: ["suppliers-list"],
@@ -225,6 +226,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
       toast.success("Request created")
       setShowForm(false)
       setForm(EMPTY_FORM)
+      setErrors({})
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to create request"),
   })
@@ -235,10 +237,15 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.supplier || !form.sku || !form.qty_ordered || !form.unit_cost || !form.pic) {
-      toast.error("Please fill in all required fields")
-      return
+    const newErrors: Record<string, boolean> = {
+      supplier: !form.supplier,
+      sku: !form.sku.trim(),
+      qty_ordered: !form.qty_ordered,
+      unit_cost: !form.unit_cost,
+      pic: !form.pic.trim(),
     }
+    setErrors(newErrors)
+    if (Object.values(newErrors).some(Boolean)) return
     createMut.mutate({
       supplier: form.supplier,
       sku: form.sku.trim(),
@@ -253,6 +260,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
 
   function set(field: string, value: string) {
     setForm((f) => ({ ...f, [field]: value }))
+    if (errors[field]) setErrors((e) => ({ ...e, [field]: false }))
   }
 
   return (
@@ -289,7 +297,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
                   <select
                     value={form.supplier}
                     onChange={(e) => set("supplier", e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white ${errors.supplier ? "border-red-500" : "border-gray-300"}`}
                   >
                     <option value="">Select supplier…</option>
                     {suppliers.map((s) => (
@@ -304,7 +312,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
                     value={form.pic}
                     onChange={(e) => set("pic", e.target.value)}
                     placeholder="Your name"
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.pic ? "border-red-500" : "border-gray-300"}`}
                   />
                 </div>
               </div>
@@ -316,7 +324,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
                   value={form.sku}
                   onChange={(e) => set("sku", e.target.value)}
                   placeholder="e.g. Meyer Lemon Tree"
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.sku ? "border-red-500" : "border-gray-300"}`}
                 />
               </div>
 
@@ -328,7 +336,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
                     min={1}
                     value={form.qty_ordered}
                     onChange={(e) => set("qty_ordered", e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.qty_ordered ? "border-red-500" : "border-gray-300"}`}
                     placeholder="0"
                   />
                 </div>
@@ -351,7 +359,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
                     step="0.01"
                     value={form.unit_cost}
                     onChange={(e) => set("unit_cost", e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.unit_cost ? "border-red-500" : "border-gray-300"}`}
                     placeholder="0.00"
                   />
                 </div>

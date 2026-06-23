@@ -61,12 +61,8 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
       if (res.ok && contentType.includes("application/pdf")) {
         const blob = await res.blob()
         const url = URL.createObjectURL(blob)
-        const a = document.createElement("a")
-        a.href = url
-        a.download = `PO-${poNumber}.pdf`
-        a.click()
-        URL.revokeObjectURL(url)
-        toast.success("PDF downloaded")
+        window.open(url, "_blank")
+        toast.success("PDF opened in new tab")
       } else {
         const json = await res.json()
         if (json.status === "mock") {

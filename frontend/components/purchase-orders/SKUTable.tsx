@@ -32,6 +32,7 @@ export default function SKUTable({ items }: Props) {
             <th>Ordered</th>
             <th>Available</th>
             <th>Gap</th>
+            <th className="text-center">Oversold</th>
             <th>Unit $</th>
             <th>Total</th>
             <th>Status</th>
@@ -55,6 +56,11 @@ export default function SKUTable({ items }: Props) {
               <td>{item.ordered}</td>
               <td>{item.avail_final}</td>
               <td><GapCell item={item} /></td>
+              <td className="text-center">
+                {item.gap < 0
+                  ? <span className="text-red-700 font-semibold">{item.oversold}</span>
+                  : <span className="text-gray-300">—</span>}
+              </td>
               <td>${fmt(item.unit_cost)}</td>
               <td className="font-medium">${fmt(item.total_cost)}</td>
               <td><StatusBadge item={item} /></td>

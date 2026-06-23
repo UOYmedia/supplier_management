@@ -1,45 +1,119 @@
 "use client"
 
-import { useState, useMemo } from "react"
-import { Plus, Copy } from "lucide-react"
-import { computeItem, computeBalance, RAW_ITEMS, Supplier } from "@/lib/purchase-orders"
+import { useState } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { Plus, Copy, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react"
+import toast from "react-hot-toast"
+import { Supplier, PODailyResponse, fmtDate, toISODate } from "@/lib/purchase-orders"
 import POMetrics from "@/components/purchase-orders/POMetrics"
 import BalanceBar from "@/components/purchase-orders/BalanceBar"
 import SupplierPOCard from "@/components/purchase-orders/SupplierPOCard"
 
 const SUPPLIERS: Supplier[] = ["JOE", "SKY", "FAIRY"]
-const PO_NUMBERS: Record<Supplier, string> = {
-  JOE:   "PO-2024-JOE-001",
-  SKY:   "PO-2024-SKY-001",
-  FAIRY: "PO-2024-FAI-001",
-}
-
-const today = new Date()
-const DATE_LABEL = today.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })
 
 type Filter = "ALL" | Supplier
 
-export default function PurchaseOrdersPage() {
-  const [activeSupplier, setActiveSupplier] = useState<Filter>("ALL")
-  const startingBalance = 1000
+async function fetchDailyPO(dateStr: string): Promise<PODailyResponse> {
+  const res = await fetch(`/api/v1/purchase-orders/daily?date=${dateStr}`)
+  if (!res.ok) throw new Error(`Server error ${res.status}`)
+  return res.json()
+}
 
-  const items = useMemo(() => RAW_ITEMS.map(computeItem), [])
-  const balance = useMemo(() => computeBalance(items, startingBalance), [items])
+function POSkeleton() {
+  return (
+    <div className="animate-pulse space-y-4">
+      <div className="grid grid-cols-3 gap-4">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="card p-4 h-24 bg-gray-100 rounded-xl" />
+        ))}
+      </div>
+      <div className="card p-4 h-14 bg-gray-100 rounded-xl" />
+      <div className="card p-6 h-48 bg-gray-100 rounded-xl" />
+      <div className="card p-6 h-48 bg-gray-100 rounded-xl" />
+    </div>
+  )
+}
+
+export default function PurchaseOrdersPage() {
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date())
+  const [activeSupplier, setActiveSupplier] = useState<Filter>("ALL")
+
+  const dateStr = toISODate(selectedDate)
+
+  const { data, isLoading, isError, error, refetch } = useQuery<PODailyResponse>({
+    queryKey: ["purchase-orders-daily", dateStr],
+    queryFn: () => fetchDailyPO(dateStr),
+    retry: 1,
+  })
+
+  function shiftDate(days: number) {
+    setSelectedDate((d) => {
+      const next = new Date(d)
+      next.setDate(next.getDate() + days)
+      return next
+    })
+  }
+
+  const items = data?.items ?? []
+  const balance = data?.balance ?? {
+    starting_balance: 0,
+    total_cost: 0,
+    available_value: 0,
+    oversold_value: 0,
+    ending_balance: 0,
+  }
 
   const visibleSuppliers = activeSupplier === "ALL" ? SUPPLIERS : [activeSupplier]
-
   const uniqueSupplierCount = new Set(items.map((i) => i.supplier)).size
+
+  const PO_NUMBERS: Record<Supplier, string> = {
+    JOE:   `PO-${dateStr.replace(/-/g, "").slice(0, 8)}-JOE`,
+    SKY:   `PO-${dateStr.replace(/-/g, "").slice(0, 8)}-SKY`,
+    FAIRY: `PO-${dateStr.replace(/-/g, "").slice(0, 8)}-FAIRY`,
+  }
+
+  if (isError) {
+    toast.error(`Failed to load: ${(error as Error).message}`, { id: "po-error" })
+  }
 
   return (
     <div>
       <div className="page-header">
         <div>
-          <h1 className="page-title">Purchase Orders — {DATE_LABEL}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="page-title">Purchase Orders</h1>
+            {/* Date navigator */}
+            <div className="flex items-center gap-1 ml-3 bg-white border border-gray-200 rounded-lg px-2 py-1">
+              <button
+                onClick={() => shiftDate(-1)}
+                className="p-0.5 text-gray-400 hover:text-gray-700 transition-colors"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <input
+                type="date"
+                value={dateStr}
+                onChange={(e) => setSelectedDate(new Date(e.target.value + "T00:00:00"))}
+                className="text-sm font-medium text-gray-700 border-none outline-none bg-transparent cursor-pointer"
+              />
+              <button
+                onClick={() => shiftDate(1)}
+                className="p-0.5 text-gray-400 hover:text-gray-700 transition-colors"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
           <p className="text-sm text-gray-500 mt-1">
-            {items.length} SKUs · {uniqueSupplierCount} suppliers · NET 0
+            {isLoading
+              ? "Loading…"
+              : `${items.length} SKUs · ${uniqueSupplierCount} suppliers · NET 0`}
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button className="btn-secondary" onClick={() => refetch()}>
+            <RefreshCw className="w-4 h-4" /> Refresh
+          </button>
           <button className="btn-secondary">
             <Plus className="w-4 h-4" /> Add SKU
           </button>
@@ -49,36 +123,59 @@ export default function PurchaseOrdersPage() {
         </div>
       </div>
 
-      <POMetrics balance={balance} items={items} />
-      <BalanceBar balance={balance} />
-
-      <div className="flex items-center gap-1 mb-5 border-b border-gray-200">
-        {(["ALL", ...SUPPLIERS] as Filter[]).map((s) => (
-          <button
-            key={s}
-            onClick={() => setActiveSupplier(s)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeSupplier === s
-                ? "border-blue-600 text-blue-700"
-                : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            {s === "ALL" ? "All Suppliers" : s}
+      {isLoading ? (
+        <POSkeleton />
+      ) : isError ? (
+        <div className="card p-8 text-center">
+          <p className="text-red-600 font-medium mb-2">Failed to load purchase orders</p>
+          <p className="text-sm text-gray-500 mb-4">{(error as Error).message}</p>
+          <button className="btn-secondary" onClick={() => refetch()}>
+            <RefreshCw className="w-4 h-4" /> Retry
           </button>
-        ))}
-      </div>
+        </div>
+      ) : (
+        <>
+          <POMetrics balance={balance} items={items} />
+          <BalanceBar balance={balance} />
 
-      {visibleSuppliers.map((supplier) => {
-        const supplierItems = items.filter((i) => i.supplier === supplier)
-        return (
-          <SupplierPOCard
-            key={supplier}
-            supplier={supplier}
-            items={supplierItems}
-            poNumber={PO_NUMBERS[supplier]}
-          />
-        )
-      })}
+          <div className="flex items-center gap-1 mb-5 border-b border-gray-200">
+            {(["ALL", ...SUPPLIERS] as Filter[]).map((s) => (
+              <button
+                key={s}
+                onClick={() => setActiveSupplier(s)}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                  activeSupplier === s
+                    ? "border-blue-600 text-blue-700"
+                    : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                {s === "ALL" ? "All Suppliers" : s}
+              </button>
+            ))}
+          </div>
+
+          {items.length === 0 ? (
+            <div className="card p-12 text-center">
+              <p className="text-gray-400 font-medium">No purchase orders for {fmtDate(selectedDate)}</p>
+              <p className="text-sm text-gray-400 mt-1">Add SKUs or select a different date</p>
+            </div>
+          ) : (
+            visibleSuppliers.map((supplier) => {
+              const supplierItems = items.filter((i) => i.supplier === supplier)
+              if (supplierItems.length === 0) return null
+              return (
+                <SupplierPOCard
+                  key={supplier}
+                  supplier={supplier}
+                  items={supplierItems}
+                  poNumber={PO_NUMBERS[supplier]}
+                  date={fmtDate(selectedDate)}
+                />
+              )
+            })
+          )}
+        </>
+      )}
     </div>
   )
 }

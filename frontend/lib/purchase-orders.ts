@@ -13,6 +13,8 @@ export interface SKUItem {
   oversold_value: number
   avail_value: number
   status: "ok" | "exact" | "low" | "oversold"
+  po_id: number
+  po_status: string
 }
 
 export interface POBalance {
@@ -21,6 +23,12 @@ export interface POBalance {
   available_value: number
   oversold_value: number
   ending_balance: number
+}
+
+export interface PODailyResponse {
+  date: string
+  items: SKUItem[]
+  balance: POBalance
 }
 
 export function computeItem(
@@ -56,20 +64,14 @@ export const SUPPLIER_INFO: Record<Supplier, { name: string; address: string; ci
   FAIRY: { name: "Fairy Garden Nursery",  address: "456 Bloom Ave",    city: "Knoxville, TN 37902"   },
 }
 
-export const RAW_ITEMS: Omit<SKUItem, "gap" | "oversold" | "avail_final" | "total_cost" | "oversold_value" | "avail_value" | "status">[] = [
-  { sku: "Meyer Lemon Tree",       supplier: "JOE",   ordered: 5,  available: 8,  unit_cost: 15.00 },
-  { sku: "Baby Breath",            supplier: "JOE",   ordered: 6,  available: 4,  unit_cost: 5.00  },
-  { sku: "Crown of Thorn Red",     supplier: "JOE",   ordered: 10, available: 7,  unit_cost: 7.50  },
-  { sku: "French Tarragon",        supplier: "JOE",   ordered: 4,  available: 12, unit_cost: 5.00  },
-  { sku: "Spanish Lavender",       supplier: "SKY",   ordered: 8,  available: 8,  unit_cost: 5.00  },
-  { sku: "English Lavender",       supplier: "SKY",   ordered: 4,  available: 10, unit_cost: 5.00  },
-  { sku: "Night Blooming Jasmine", supplier: "SKY",   ordered: 6,  available: 6,  unit_cost: 6.50  },
-  { sku: "Rasp Buddleia",          supplier: "SKY",   ordered: 5,  available: 3,  unit_cost: 6.50  },
-  { sku: "Peppermint",             supplier: "FAIRY", ordered: 3,  available: 5,  unit_cost: 5.00  },
-  { sku: "Confederate Jasmine",    supplier: "FAIRY", ordered: 7,  available: 7,  unit_cost: 6.50  },
-  { sku: "Thai Constellation",     supplier: "FAIRY", ordered: 2,  available: 4,  unit_cost: 13.50 },
-]
-
 export function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+export function fmtDate(d: Date): string {
+  return d.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })
+}
+
+export function toISODate(d: Date): string {
+  return d.toISOString().slice(0, 10)
 }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Plus, Copy, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react"
 import toast from "react-hot-toast"
@@ -8,10 +8,13 @@ import { Supplier, PODailyResponse, SKUItem, computeItem, computeBalance, fmtDat
 import POMetrics from "@/components/purchase-orders/POMetrics"
 import BalanceBar from "@/components/purchase-orders/BalanceBar"
 import SupplierPOCard from "@/components/purchase-orders/SupplierPOCard"
+import RequestList from "@/components/purchase-orders/RequestList"
+import { purchaseRequestsApi } from "@/lib/api"
 
 const SUPPLIERS: Supplier[] = ["JOE", "SKY", "FAIRY"]
 
 type Filter = "ALL" | Supplier
+type PageTab = "orders" | "requests"
 
 async function fetchDailyPO(dateStr: string): Promise<PODailyResponse> {
   const res = await fetch(`/api/v1/purchase-orders/daily?date=${dateStr}`)
@@ -37,6 +40,19 @@ function POSkeleton() {
 export default function PurchaseOrdersPage() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date())
   const [activeSupplier, setActiveSupplier] = useState<Filter>("ALL")
+  const [pageTab, setPageTab] = useState<PageTab>("orders")
+  const [username, setUsername] = useState("")
+
+  useEffect(() => {
+    const user = JSON.parse(localStorage.getItem("admin_user") || "{}")
+    setUsername(user.username || "")
+  }, [])
+
+  const { data: pendingRequests = [] } = useQuery({
+    queryKey: ["purchase-requests"],
+    queryFn: () => purchaseRequestsApi.list(),
+    select: (data: any[]) => data.filter((r) => r.status === "PENDING"),
+  })
 
   const dateStr = toISODate(selectedDate)
 
@@ -77,6 +93,48 @@ export default function PurchaseOrdersPage() {
 
   return (
     <div>
+      {/* Page-level tabs */}
+      <div className="flex items-center gap-1 mb-0 border-b border-gray-200">
+        <button
+          onClick={() => setPageTab("orders")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            pageTab === "orders"
+              ? "border-blue-600 text-blue-700"
+              : "border-transparent text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Daily Orders
+        </button>
+        <button
+          onClick={() => setPageTab("requests")}
+          className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            pageTab === "requests"
+              ? "border-blue-600 text-blue-700"
+              : "border-transparent text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Requests
+          {pendingRequests.length > 0 && (
+            <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold bg-red-500 text-white">
+              {pendingRequests.length}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {pageTab === "requests" ? (
+        <div className="mt-6">
+          <div className="page-header">
+            <div>
+              <h1 className="page-title">Purchase Requests</h1>
+              <p className="text-sm text-gray-500 mt-1">{pendingRequests.length} pending</p>
+            </div>
+          </div>
+          <RequestList username={username} onPaidSuccess={() => refetch()} />
+        </div>
+      ) : null}
+
+      {pageTab === "orders" && <>
       <div className="page-header">
         <div>
           <div className="flex items-center gap-2">
@@ -178,6 +236,7 @@ export default function PurchaseOrdersPage() {
           )}
         </>
       )}
+      </>}
     </div>
   )
 }

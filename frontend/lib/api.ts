@@ -197,6 +197,14 @@ export const easypostApi = {
   refundLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/refund`, data).then((r) => r.data),
 };
 
+// Purchase Requests
+export const purchaseRequestsApi = {
+  list: () => api.get("/purchase-orders/requests").then((r) => r.data),
+  create: (data: object) => api.post("/purchase-orders/requests", data).then((r) => r.data),
+  updateStatus: (id: number, data: { status: string; amount_paid?: number; approved_by?: string }) =>
+    api.patch(`/purchase-orders/requests/${id}/status`, data).then((r) => r.data),
+};
+
 // Amazon Shipping (admin)
 export const amazonShippingApi = {
   getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon/rates`, data).then((r) => r.data),

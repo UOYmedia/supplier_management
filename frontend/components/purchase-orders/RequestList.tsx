@@ -61,11 +61,14 @@ function StatusDropdown({
   const [open, setOpen] = useState(false)
   const [partialAmt, setPartialAmt] = useState("")
   const [showPartialInput, setShowPartialInput] = useState(false)
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0 })
   const ref = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      if (ref.current && !ref.current.contains(e.target as Node) &&
+          btnRef.current && !btnRef.current.contains(e.target as Node)) {
         setOpen(false)
         setShowPartialInput(false)
       }
@@ -73,6 +76,15 @@ function StatusDropdown({
     document.addEventListener("mousedown", handleClick)
     return () => document.removeEventListener("mousedown", handleClick)
   }, [])
+
+  function handleOpen() {
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setDropdownPos({ top: rect.bottom + window.scrollY + 4, left: rect.left + window.scrollX })
+    }
+    setOpen((o) => !o)
+    setShowPartialInput(false)
+  }
 
   const canClick = request.status === "PENDING" || request.status === "PARTIALLY_PAID"
   if (!canClick) {
@@ -86,9 +98,10 @@ function StatusDropdown({
   }
 
   return (
-    <div className="relative inline-block" ref={ref}>
+    <div className="inline-block">
       <button
-        onClick={() => { setOpen((o) => !o); setShowPartialInput(false) }}
+        ref={btnRef}
+        onClick={handleOpen}
         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${STATUS_STYLES[request.status] ?? "bg-gray-100 text-gray-600"}`}
       >
         {STATUS_LABELS[request.status] ?? request.status}
@@ -98,7 +111,10 @@ function StatusDropdown({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[170px] py-1">
+        <div
+          ref={ref}
+          style={{ position: "fixed", top: dropdownPos.top, left: dropdownPos.left }}
+          className="z-50 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[170px] py-1">
           <button
             className="w-full text-left px-3 py-2 text-sm text-green-700 hover:bg-green-50 transition-colors"
             onClick={() => {

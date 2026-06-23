@@ -206,5 +206,6 @@ export default function SKUTable({ items }: Props) {
         </tbody>
       </table>
     </div>
+    </div>
   )
 }

@@ -11,7 +11,16 @@ interface Props {
 type SortKey = "sku" | "available" | "ordered" | "gap" | "oversold" | "total_cost" | "avail_value" | "status"
 type SortDir = "asc" | "desc" | null
 
-const STATUS_ORDER: Record<string, number> = { oversold: 0, exact: 1, low: 2, ok: 3 }
+const STATUS_ORDER: Record<string, number> = { oversold: 0, low: 1, ok: 2 }
+
+type StatusFilter = "all" | "ok" | "low" | "oversold"
+
+const FILTER_OPTS: { key: StatusFilter; label: string; cls: string; active: string }[] = [
+  { key: "all",      label: "All",      cls: "text-gray-500 hover:text-gray-700",              active: "bg-gray-800 text-white" },
+  { key: "ok",       label: "OK",       cls: "text-green-600 hover:bg-green-50",               active: "bg-green-600 text-white" },
+  { key: "low",      label: "Low",      cls: "text-yellow-600 hover:bg-yellow-50",             active: "bg-yellow-500 text-white" },
+  { key: "oversold", label: "Oversold", cls: "text-red-600 hover:bg-red-50",                   active: "bg-red-500 text-white" },
+]
 
 function sortItems(items: SKUItem[], key: SortKey, dir: SortDir): SKUItem[] {
   if (!dir) return items
@@ -72,15 +81,45 @@ function StatusBadge({ status, gap, oversold }: { status: string; gap: number; o
 export default function SKUTable({ items }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("sku")
   const [sortDir, setSortDir] = useState<SortDir>(null)
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
 
   function handleSort(key: SortKey) {
     if (sortKey !== key) { setSortKey(key); setSortDir("asc"); return }
     setSortDir((d) => d === "asc" ? "desc" : d === "desc" ? null : "asc")
   }
 
-  const sorted = sortItems(items, sortKey, sortDir)
+  const counts: Record<StatusFilter, number> = {
+    all: items.length,
+    ok: items.filter((i) => i.status === "ok").length,
+    low: items.filter((i) => i.status === "low").length,
+    oversold: items.filter((i) => i.status === "oversold").length,
+  }
+
+  const filtered = statusFilter === "all" ? items : items.filter((i) => i.status === statusFilter)
+  const sorted = sortItems(filtered, sortKey, sortDir)
 
   return (
+    <div>
+      {/* Status quick filter */}
+      <div className="flex items-center gap-1 mb-2">
+        {FILTER_OPTS.map(({ key, label, cls, active }) => (
+          <button
+            key={key}
+            onClick={() => setStatusFilter(key)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors border ${
+              statusFilter === key
+                ? `${active} border-transparent`
+                : `bg-white border-gray-200 ${cls}`
+            }`}
+          >
+            {label}
+            <span className={`text-[10px] font-semibold ${statusFilter === key ? "opacity-80" : "text-gray-400"}`}>
+              {counts[key]}
+            </span>
+          </button>
+        ))}
+      </div>
+
     <div className="overflow-x-auto rounded-lg border border-gray-100">
       <table className="w-full text-sm">
         <thead>

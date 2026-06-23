@@ -64,6 +64,20 @@ export const SUPPLIER_INFO: Record<Supplier, { name: string; address: string; ci
   FAIRY: { name: "Fairy Garden Nursery",  address: "456 Bloom Ave",    city: "Knoxville, TN 37902"   },
 }
 
+export const RAW_ITEMS: Omit<SKUItem, "gap" | "oversold" | "avail_final" | "total_cost" | "oversold_value" | "avail_value" | "status">[] = [
+  { sku: "Meyer Lemon Tree",       supplier: "JOE",   ordered: 5,  available: 8,  unit_cost: 15.00, po_id: 0, po_status: "PAID" },
+  { sku: "Baby Breath",            supplier: "JOE",   ordered: 6,  available: 4,  unit_cost: 5.00,  po_id: 0, po_status: "PAID" },
+  { sku: "Crown of Thorn Red",     supplier: "JOE",   ordered: 10, available: 7,  unit_cost: 7.50,  po_id: 0, po_status: "PAID" },
+  { sku: "French Tarragon",        supplier: "JOE",   ordered: 4,  available: 12, unit_cost: 5.00,  po_id: 0, po_status: "PAID" },
+  { sku: "Spanish Lavender",       supplier: "SKY",   ordered: 8,  available: 8,  unit_cost: 5.00,  po_id: 0, po_status: "PAID" },
+  { sku: "English Lavender",       supplier: "SKY",   ordered: 4,  available: 10, unit_cost: 5.00,  po_id: 0, po_status: "PAID" },
+  { sku: "Night Blooming Jasmine", supplier: "SKY",   ordered: 6,  available: 6,  unit_cost: 6.50,  po_id: 0, po_status: "PAID" },
+  { sku: "Rasp Buddleia",          supplier: "SKY",   ordered: 5,  available: 3,  unit_cost: 6.50,  po_id: 0, po_status: "PAID" },
+  { sku: "Peppermint",             supplier: "FAIRY", ordered: 3,  available: 5,  unit_cost: 5.00,  po_id: 0, po_status: "PAID" },
+  { sku: "Confederate Jasmine",    supplier: "FAIRY", ordered: 7,  available: 7,  unit_cost: 6.50,  po_id: 0, po_status: "PAID" },
+  { sku: "Thai Constellation",     supplier: "FAIRY", ordered: 2,  available: 4,  unit_cost: 13.50, po_id: 0, po_status: "PAID" },
+]
+
 export function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }

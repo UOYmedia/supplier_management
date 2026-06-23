@@ -4,7 +4,7 @@ import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Plus, Copy, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react"
 import toast from "react-hot-toast"
-import { Supplier, PODailyResponse, fmtDate, toISODate } from "@/lib/purchase-orders"
+import { Supplier, PODailyResponse, SKUItem, computeItem, computeBalance, fmtDate, toISODate, RAW_ITEMS } from "@/lib/purchase-orders"
 import POMetrics from "@/components/purchase-orders/POMetrics"
 import BalanceBar from "@/components/purchase-orders/BalanceBar"
 import SupplierPOCard from "@/components/purchase-orders/SupplierPOCard"
@@ -54,14 +54,13 @@ export default function PurchaseOrdersPage() {
     })
   }
 
-  const items = data?.items ?? []
-  const balance = data?.balance ?? {
-    starting_balance: 0,
-    total_cost: 0,
-    available_value: 0,
-    oversold_value: 0,
-    ending_balance: 0,
-  }
+  const SAMPLE_ITEMS: SKUItem[] = RAW_ITEMS.map(computeItem)
+  const SAMPLE_BALANCE = computeBalance(SAMPLE_ITEMS, 1000)
+
+  const apiItems = data?.items ?? []
+  const items: SKUItem[] = apiItems.length > 0 ? apiItems : SAMPLE_ITEMS
+  const balance = apiItems.length > 0 ? (data?.balance ?? SAMPLE_BALANCE) : SAMPLE_BALANCE
+  const isUsingFallback = !isLoading && !isError && apiItems.length === 0
 
   const visibleSuppliers = activeSupplier === "ALL" ? SUPPLIERS : [activeSupplier]
   const uniqueSupplierCount = new Set(items.map((i) => i.supplier)).size
@@ -104,10 +103,13 @@ export default function PurchaseOrdersPage() {
               </button>
             </div>
           </div>
-          <p className="text-sm text-gray-500 mt-1">
+          <p className="text-sm text-gray-500 mt-1 flex items-center gap-2">
             {isLoading
               ? "Loading…"
               : `${items.length} SKUs · ${uniqueSupplierCount} suppliers · NET 0`}
+            {isUsingFallback && (
+              <span className="badge-yellow">Sample data — no DB records for this date</span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2">

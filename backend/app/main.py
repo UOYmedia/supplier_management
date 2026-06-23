@@ -150,6 +150,12 @@ async def _run_migrations():
         "ALTER TABLE daily_balances ADD COLUMN IF NOT EXISTS top_up NUMERIC(12, 2) NOT NULL DEFAULT 0",
         # daily_balances: manual COGS for externally-fulfilled (Amazon) orders without recorded cost
         "ALTER TABLE daily_balances ADD COLUMN IF NOT EXISTS external_cogs NUMERIC(12, 2) NOT NULL DEFAULT 0",
+        # purchase_orders: PIC-driven request workflow fields
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS pic VARCHAR(100) NOT NULL DEFAULT ''",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS amount_paid FLOAT NOT NULL DEFAULT 0.0",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS requested_date DATE NOT NULL DEFAULT CURRENT_DATE",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_by VARCHAR(100)",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_date DATE",
     ]
     ok, failed = 0, 0
     for sql in migrations:

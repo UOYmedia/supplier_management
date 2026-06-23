@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import toast from "react-hot-toast"
+import { Plus, X } from "lucide-react"
 import { purchaseRequestsApi } from "@/lib/api"
 
 interface PurchaseRequest {
@@ -169,6 +170,21 @@ function fmtDate(d: string) {
   })
 }
 
+function today() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+const EMPTY_FORM = {
+  supplier: "",
+  sku: "",
+  qty_ordered: "",
+  qty_available: "",
+  unit_cost: "",
+  po_number: "",
+  requested_date: today(),
+  notes: "",
+}
+
 interface RequestListProps {
   username: string
   onPaidSuccess?: () => void
@@ -177,6 +193,8 @@ interface RequestListProps {
 export default function RequestList({ username, onPaidSuccess }: RequestListProps) {
   const qc = useQueryClient()
   const isJenny = username.toLowerCase() === "jenny"
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState(EMPTY_FORM)
 
   const { data: requests = [], isLoading } = useQuery<PurchaseRequest[]>({
     queryKey: ["purchase-requests"],
@@ -189,86 +207,265 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ["purchase-requests"] })
       toast.success(`Marked as ${STATUS_LABELS[vars.status] ?? vars.status}`)
-      if (vars.status === "PAID") {
-        onPaidSuccess?.()
-      }
+      if (vars.status === "PAID") onPaidSuccess?.()
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || "Update failed"),
+  })
+
+  const createMut = useMutation({
+    mutationFn: (data: object) => purchaseRequestsApi.create(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["purchase-requests"] })
+      toast.success("Request created")
+      setShowForm(false)
+      setForm(EMPTY_FORM)
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to create request"),
   })
 
   function handleUpdate(id: number, status: string, extra?: { amount_paid?: number }) {
     mut.mutate({ id, status, extra })
   }
 
-  if (isLoading) {
-    return (
-      <div className="animate-pulse space-y-2">
-        {[0, 1, 2].map((i) => (
-          <div key={i} className="h-10 bg-gray-100 rounded-lg" />
-        ))}
-      </div>
-    )
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!form.supplier || !form.sku || !form.qty_ordered || !form.unit_cost || !form.po_number) {
+      toast.error("Please fill in all required fields")
+      return
+    }
+    createMut.mutate({
+      supplier: form.supplier.trim().toUpperCase(),
+      sku: form.sku.trim(),
+      qty_ordered: parseInt(form.qty_ordered),
+      qty_available: form.qty_available ? parseInt(form.qty_available) : 0,
+      unit_cost: parseFloat(form.unit_cost),
+      po_number: form.po_number.trim(),
+      pic: username,
+      requested_date: form.requested_date || today(),
+      notes: form.notes.trim() || null,
+    })
   }
 
-  if (requests.length === 0) {
-    return (
-      <div className="card p-12 text-center">
-        <p className="text-gray-400 font-medium">No purchase requests yet</p>
-      </div>
-    )
+  function set(field: string, value: string) {
+    setForm((f) => ({ ...f, [field]: value }))
   }
 
   return (
-    <div className="card overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-100 bg-gray-50">
-              {["DATE", "PIC", "SUPPLIER", "PRODUCT", "QTY", "COST", "AMOUNT PAID", "STATUS"].map((h) => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-50">
-            {requests.map((r) => {
-              const unitCost = parseFloat(r.unit_cost)
-              const total = unitCost * r.qty_ordered
-              return (
-                <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fmtDate(r.requested_date)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <PicBadge name={r.pic} />
-                  </td>
-                  <td className="px-4 py-3 font-medium text-gray-800">{r.supplier}</td>
-                  <td className="px-4 py-3 text-gray-700 max-w-[200px] truncate" title={r.sku}>{r.sku}</td>
-                  <td className="px-4 py-3 text-gray-700 text-right">{r.qty_ordered}</td>
-                  <td className="px-4 py-3 text-gray-700 text-right">${fmt(total)}</td>
-                  <td className="px-4 py-3 text-right">
-                    {r.amount_paid > 0 ? (
-                      <span className="text-green-700 font-medium">${fmt(r.amount_paid)}</span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    {isJenny ? (
-                      <StatusDropdown request={r} onUpdate={handleUpdate} />
-                    ) : (
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_STYLES[r.status] ?? "bg-gray-100 text-gray-600"}`}
-                      >
-                        {STATUS_LABELS[r.status] ?? r.status}
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+    <div>
+      {/* Header row */}
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm text-gray-500">
+          {requests.filter((r) => r.status === "PENDING").length} pending
+        </p>
+        <button
+          className="btn-primary flex items-center gap-1.5 text-sm"
+          onClick={() => { setShowForm(true); setForm({ ...EMPTY_FORM, requested_date: today() }) }}
+        >
+          <Plus className="w-4 h-4" />
+          Add Request
+        </button>
       </div>
+
+      {/* Add Request modal */}
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-base font-semibold text-gray-900">New Purchase Request</h2>
+              <button onClick={() => setShowForm(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Supplier <span className="text-red-500">*</span></label>
+                  <input
+                    type="text"
+                    value={form.supplier}
+                    onChange={(e) => set("supplier", e.target.value)}
+                    placeholder="e.g. JOE"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">PIC</label>
+                  <input
+                    type="text"
+                    value={username}
+                    disabled
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 text-gray-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Product / SKU <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  value={form.sku}
+                  onChange={(e) => set("sku", e.target.value)}
+                  placeholder="e.g. Meyer Lemon Tree"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Qty Ordered <span className="text-red-500">*</span></label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={form.qty_ordered}
+                    onChange={(e) => set("qty_ordered", e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Qty Available</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={form.qty_available}
+                    onChange={(e) => set("qty_available", e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Unit Cost ($) <span className="text-red-500">*</span></label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={form.unit_cost}
+                    onChange={(e) => set("unit_cost", e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="0.00"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">PO Number <span className="text-red-500">*</span></label>
+                  <input
+                    type="text"
+                    value={form.po_number}
+                    onChange={(e) => set("po_number", e.target.value)}
+                    placeholder="e.g. PO-2026-0623-JOE"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
+                  <input
+                    type="date"
+                    value={form.requested_date}
+                    onChange={(e) => set("requested_date", e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Notes</label>
+                <textarea
+                  value={form.notes}
+                  onChange={(e) => set("notes", e.target.value)}
+                  rows={2}
+                  placeholder="Optional notes..."
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowForm(false)}
+                  className="btn-secondary text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={createMut.isPending}
+                  className="btn-primary text-sm"
+                >
+                  {createMut.isPending ? "Saving…" : "Submit Request"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* List */}
+      {isLoading ? (
+        <div className="animate-pulse space-y-2">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="h-10 bg-gray-100 rounded-lg" />
+          ))}
+        </div>
+      ) : requests.length === 0 ? (
+        <div className="card p-12 text-center">
+          <p className="text-gray-400 font-medium">No purchase requests yet</p>
+        </div>
+      ) : (
+        <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 bg-gray-50">
+                  {["DATE", "PIC", "SUPPLIER", "PRODUCT", "QTY", "COST", "AMOUNT PAID", "STATUS"].map((h) => (
+                    <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {requests.map((r) => {
+                  const unitCost = parseFloat(r.unit_cost)
+                  const total = unitCost * r.qty_ordered
+                  return (
+                    <tr key={r.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fmtDate(r.requested_date)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <PicBadge name={r.pic} />
+                      </td>
+                      <td className="px-4 py-3 font-medium text-gray-800">{r.supplier}</td>
+                      <td className="px-4 py-3 text-gray-700 max-w-[200px] truncate" title={r.sku}>{r.sku}</td>
+                      <td className="px-4 py-3 text-gray-700 text-right">{r.qty_ordered}</td>
+                      <td className="px-4 py-3 text-gray-700 text-right">${fmt(total)}</td>
+                      <td className="px-4 py-3 text-right">
+                        {r.amount_paid > 0 ? (
+                          <span className="text-green-700 font-medium">${fmt(r.amount_paid)}</span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {isJenny ? (
+                          <StatusDropdown request={r} onUpdate={handleUpdate} />
+                        ) : (
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_STYLES[r.status] ?? "bg-gray-100 text-gray-600"}`}
+                          >
+                            {STATUS_LABELS[r.status] ?? r.status}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

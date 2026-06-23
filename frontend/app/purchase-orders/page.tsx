@@ -127,7 +127,6 @@ export default function PurchaseOrdersPage() {
           <div className="page-header">
             <div>
               <h1 className="page-title">Purchase Requests</h1>
-              <p className="text-sm text-gray-500 mt-1">{pendingRequests.length} pending</p>
             </div>
           </div>
           <RequestList username={username} onPaidSuccess={() => refetch()} />

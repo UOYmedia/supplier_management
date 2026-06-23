@@ -180,7 +180,6 @@ const EMPTY_FORM = {
   qty_ordered: "",
   qty_available: "",
   unit_cost: "",
-  po_number: "",
   pic: "",
   requested_date: today(),
   notes: "",
@@ -236,7 +235,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.supplier || !form.sku || !form.qty_ordered || !form.unit_cost || !form.po_number || !form.pic) {
+    if (!form.supplier || !form.sku || !form.qty_ordered || !form.unit_cost || !form.pic) {
       toast.error("Please fill in all required fields")
       return
     }
@@ -246,7 +245,6 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
       qty_ordered: parseInt(form.qty_ordered),
       qty_available: form.qty_available ? parseInt(form.qty_available) : 0,
       unit_cost: parseFloat(form.unit_cost),
-      po_number: form.po_number.trim(),
       pic: form.pic.trim(),
       requested_date: form.requested_date || today(),
       notes: form.notes.trim() || null,
@@ -359,26 +357,14 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">PO Number <span className="text-red-500">*</span></label>
-                  <input
-                    type="text"
-                    value={form.po_number}
-                    onChange={(e) => set("po_number", e.target.value)}
-                    placeholder="e.g. PO-2026-0623-JOE"
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
-                  <input
-                    type="date"
-                    value={form.requested_date}
-                    onChange={(e) => set("requested_date", e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
+                <input
+                  type="date"
+                  value={form.requested_date}
+                  onChange={(e) => set("requested_date", e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
               </div>
 
               <div>

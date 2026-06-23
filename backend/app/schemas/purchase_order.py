@@ -51,7 +51,7 @@ class RequestCreate(BaseModel):
     qty_ordered: int
     qty_available: int = 0
     unit_cost: Decimal
-    po_number: str
+    po_number: str = ""
     pic: str
     requested_date: date | None = None
     notes: str | None = None

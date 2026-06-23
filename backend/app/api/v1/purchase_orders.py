@@ -116,7 +116,8 @@ async def get_daily_po(
 
     result = await db.execute(
         select(PurchaseOrder)
-        .where(PurchaseOrder.created_date == ref_date)
+        .where(PurchaseOrder.created_date == ref_date,
+               PurchaseOrder.record_type == "daily")
         .order_by(PurchaseOrder.supplier, PurchaseOrder.sku)
     )
     pos = result.scalars().all()
@@ -162,7 +163,8 @@ async def get_today_balance(db: AsyncSession = Depends(get_db)):
     starting_balance = await _get_starting_balance(db, today)
 
     result = await db.execute(
-        select(PurchaseOrder).where(PurchaseOrder.created_date == today)
+        select(PurchaseOrder).where(PurchaseOrder.created_date == today,
+                                   PurchaseOrder.record_type == "daily")
     )
     pos = result.scalars().all()
 
@@ -224,7 +226,9 @@ async def update_po_status(
 @router.get("/requests", response_model=list[RequestRead])
 async def list_requests(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(PurchaseOrder).order_by(PurchaseOrder.requested_date.desc())
+        select(PurchaseOrder)
+        .where(PurchaseOrder.record_type == "request")
+        .order_by(PurchaseOrder.requested_date.desc())
     )
     return result.scalars().all()
 
@@ -247,6 +251,7 @@ async def create_request(body: RequestCreate, db: AsyncSession = Depends(get_db)
         requested_date=body.requested_date or today,
         created_date=today,
         notes=body.notes,
+        record_type="request",
     )
     db.add(po)
     await db.commit()

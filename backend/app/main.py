@@ -156,6 +156,7 @@ async def _run_migrations():
         "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS requested_date DATE NOT NULL DEFAULT CURRENT_DATE",
         "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_by VARCHAR(100)",
         "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_date DATE",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS record_type VARCHAR(10) NOT NULL DEFAULT 'daily'",
     ]
     ok, failed = 0, 0
     for sql in migrations:

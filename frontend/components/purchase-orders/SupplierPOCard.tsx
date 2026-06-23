@@ -62,14 +62,8 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
         const blob = await res.blob()
         const url = URL.createObjectURL(blob)
         window.open(url, "_blank")
-        toast.success("PDF opened in new tab")
       } else {
-        const json = await res.json()
-        if (json.status === "mock") {
-          toast("PDF export coming soon — data logged to console", { icon: "📋" })
-        } else {
-          toast.error("PDF generation failed")
-        }
+        toast.error("PDF generation failed")
       }
     } catch {
       toast.error("Could not reach server")

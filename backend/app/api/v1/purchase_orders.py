@@ -272,3 +272,55 @@ async def generate_pdf(body: GeneratePDFRequest):
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{safe_name}.pdf"'},
     )
+
+
+# ── POST /seed-dev ────────────────────────────────────────────────────────────
+# Guarded by DEBUG env var. Call once to populate test data, then remove.
+
+SEED_ITEMS = [
+    {"supplier": "JOE",   "sku": "Meyer Lemon Tree",       "qty_ordered": 5,  "qty_available": 8,  "unit_cost": 15.00},
+    {"supplier": "JOE",   "sku": "Baby Breath",            "qty_ordered": 6,  "qty_available": 4,  "unit_cost": 5.00 },
+    {"supplier": "JOE",   "sku": "Crown of Thorn Red",     "qty_ordered": 10, "qty_available": 7,  "unit_cost": 7.50 },
+    {"supplier": "JOE",   "sku": "French Tarragon",        "qty_ordered": 4,  "qty_available": 12, "unit_cost": 5.00 },
+    {"supplier": "SKY",   "sku": "Spanish Lavender",       "qty_ordered": 8,  "qty_available": 8,  "unit_cost": 5.00 },
+    {"supplier": "SKY",   "sku": "English Lavender",       "qty_ordered": 4,  "qty_available": 10, "unit_cost": 5.00 },
+    {"supplier": "SKY",   "sku": "Night Blooming Jasmine", "qty_ordered": 6,  "qty_available": 6,  "unit_cost": 6.50 },
+    {"supplier": "SKY",   "sku": "Rasp Buddleia",          "qty_ordered": 5,  "qty_available": 3,  "unit_cost": 6.50 },
+    {"supplier": "FAIRY", "sku": "Peppermint",             "qty_ordered": 3,  "qty_available": 5,  "unit_cost": 5.00 },
+    {"supplier": "FAIRY", "sku": "Confederate Jasmine",    "qty_ordered": 7,  "qty_available": 7,  "unit_cost": 6.50 },
+    {"supplier": "FAIRY", "sku": "Thai Constellation",     "qty_ordered": 2,  "qty_available": 4,  "unit_cost": 13.50},
+]
+
+PO_NUMBERS = {"JOE": "PO-2026-0623-JOE", "SKY": "PO-2026-0623-SKY", "FAIRY": "PO-2026-0623-FAIRY"}
+
+
+@router.post("/seed-dev")
+async def seed_dev(db: AsyncSession = Depends(get_db)):
+    if os.getenv("DEBUG", "").lower() not in ("1", "true"):
+        raise HTTPException(status_code=403, detail="Only available when DEBUG=true")
+
+    from sqlalchemy import delete as sa_delete
+    today = date.today()
+
+    await db.execute(sa_delete(PurchaseOrder).where(PurchaseOrder.created_date == today))
+    await db.commit()
+
+    inserted = []
+    for item in SEED_ITEMS:
+        po = PurchaseOrder(
+            supplier=item["supplier"],
+            sku=item["sku"],
+            qty_ordered=item["qty_ordered"],
+            qty_available=item["qty_available"],
+            unit_cost=item["unit_cost"],
+            status="PAID",
+            po_number=PO_NUMBERS[item["supplier"]],
+            created_date=today,
+            paid_date=today,
+        )
+        db.add(po)
+        inserted.append(f"{item['supplier']} / {item['sku']}")
+
+    await db.commit()
+    return {"seeded": len(inserted), "date": today.isoformat(), "items": inserted}
+

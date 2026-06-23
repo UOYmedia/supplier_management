@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from sqlalchemy import Date, DateTime, Integer, Numeric, String, Text
+from sqlalchemy import Date, DateTime, Float, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
@@ -19,6 +19,11 @@ class PurchaseOrder(Base):
     po_number: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     created_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     paid_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    pic: Mapped[str] = mapped_column(String(100), nullable=False)
+    amount_paid: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    requested_date: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
+    approved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    approved_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

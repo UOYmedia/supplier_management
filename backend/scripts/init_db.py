@@ -32,30 +32,12 @@ async def run_migrations():
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS hashed_password VARCHAR(255)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_suppliers_username ON suppliers(username) WHERE username IS NOT NULL",
         "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ",
-        # purchase_orders table (created by create_all; these guard existing DBs)
-        """
-        CREATE TABLE IF NOT EXISTS purchase_orders (
-            id SERIAL PRIMARY KEY,
-            supplier VARCHAR(20) NOT NULL,
-            sku VARCHAR(255) NOT NULL,
-            qty_ordered INTEGER NOT NULL,
-            qty_available INTEGER NOT NULL DEFAULT 0,
-            unit_cost NUMERIC(10,2) NOT NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-            po_number VARCHAR(100) NOT NULL,
-            created_date DATE NOT NULL,
-            paid_date DATE,
-            notes TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW()
-        )
-        """,
-        "CREATE INDEX IF NOT EXISTS ix_purchase_orders_supplier ON purchase_orders(supplier)",
-        "CREATE INDEX IF NOT EXISTS ix_purchase_orders_sku ON purchase_orders(sku)",
-        "CREATE INDEX IF NOT EXISTS ix_purchase_orders_created_date ON purchase_orders(created_date)",
-        "CREATE INDEX IF NOT EXISTS ix_purchase_orders_po_number ON purchase_orders(po_number)",
-        # qty_available column for existing purchase_orders tables
-        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS qty_available INTEGER NOT NULL DEFAULT 0",
+        # new columns added 2026-06-23
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS pic VARCHAR(100) NOT NULL DEFAULT ''",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS amount_paid FLOAT NOT NULL DEFAULT 0.0",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS requested_date DATE NOT NULL DEFAULT CURRENT_DATE",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_by VARCHAR(100)",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_date DATE",
     ]
     async with engine.begin() as conn:
         for sql in migrations:

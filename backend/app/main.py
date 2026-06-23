@@ -157,6 +157,8 @@ async def _run_migrations():
         "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_by VARCHAR(100)",
         "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_date DATE",
         "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS record_type VARCHAR(10) NOT NULL DEFAULT 'daily'",
+        # Backfill: rows with a non-empty pic were created as requests, not daily POs
+        "UPDATE purchase_orders SET record_type = 'request' WHERE pic IS NOT NULL AND pic != '' AND record_type = 'daily'",
     ]
     ok, failed = 0, 0
     for sql in migrations:

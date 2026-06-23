@@ -187,12 +187,12 @@ const EMPTY_FORM = {
 
 interface RequestListProps {
   username: string
+  canApprove?: boolean
   onPaidSuccess?: () => void
 }
 
-export default function RequestList({ username, onPaidSuccess }: RequestListProps) {
+export default function RequestList({ username, canApprove = false, onPaidSuccess }: RequestListProps) {
   const qc = useQueryClient()
-  const isJenny = username.toLowerCase() === "jenny"
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(EMPTY_FORM)
   const [errors, setErrors] = useState<Record<string, boolean>>({})
@@ -453,7 +453,7 @@ export default function RequestList({ username, onPaidSuccess }: RequestListProp
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        {isJenny ? (
+                        {canApprove ? (
                           <StatusDropdown request={r} onUpdate={handleUpdate} />
                         ) : (
                           <span

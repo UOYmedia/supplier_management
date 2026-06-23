@@ -42,10 +42,12 @@ export default function PurchaseOrdersPage() {
   const [activeSupplier, setActiveSupplier] = useState<Filter>("ALL")
   const [pageTab, setPageTab] = useState<PageTab>("orders")
   const [username, setUsername] = useState("")
+  const [userRole, setUserRole] = useState("")
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem("admin_user") || "{}")
     setUsername(user.username || "")
+    setUserRole(user.role || "")
   }, [])
 
   const { data: pendingRequests = [] } = useQuery({
@@ -129,7 +131,7 @@ export default function PurchaseOrdersPage() {
               <h1 className="page-title">Purchase Requests</h1>
             </div>
           </div>
-          <RequestList username={username} onPaidSuccess={() => refetch()} />
+          <RequestList username={username} canApprove={userRole === "admin" || username.toLowerCase() === "jenny"} onPaidSuccess={() => refetch()} />
         </div>
       ) : null}
 

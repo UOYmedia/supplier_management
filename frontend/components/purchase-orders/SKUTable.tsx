@@ -54,7 +54,7 @@ export default function SKUTable({ items }: Props) {
             >
               <td className="font-medium text-gray-800">{item.sku}</td>
               <td>{item.ordered}</td>
-              <td>{item.avail_final}</td>
+              <td>{item.available}</td>
               <td><GapCell item={item} /></td>
               <td className="text-center">
                 {item.gap < 0

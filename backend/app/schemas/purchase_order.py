@@ -40,6 +40,50 @@ class PORead(BaseModel):
     notes: str | None
 
 
+# ── Purchase Request (PIC-driven workflow) ────────────────────────────────────
+
+RequestStatus = Literal["PENDING", "PAID", "PARTIALLY_PAID", "CANCELLED"]
+
+
+class RequestCreate(BaseModel):
+    supplier: str
+    sku: str
+    qty_ordered: int
+    qty_available: int = 0
+    unit_cost: Decimal
+    po_number: str
+    pic: str
+    requested_date: date | None = None
+    notes: str | None = None
+
+
+class RequestStatusUpdate(BaseModel):
+    status: RequestStatus
+    amount_paid: float | None = None
+    approved_by: str | None = None
+
+
+class RequestRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    supplier: str
+    sku: str
+    qty_ordered: int
+    qty_available: int
+    unit_cost: Decimal
+    status: str
+    po_number: str
+    pic: str
+    amount_paid: float
+    requested_date: date
+    approved_by: str | None
+    approved_date: date | None
+    created_date: date
+    paid_date: date | None
+    notes: str | None
+
+
 # ── Daily view ────────────────────────────────────────────────────────────────
 
 class SKUItemOut(BaseModel):

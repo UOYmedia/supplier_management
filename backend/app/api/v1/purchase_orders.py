@@ -22,6 +22,9 @@ from app.schemas.purchase_order import (
     PODailyResponse,
     PORead,
     POStatusUpdate,
+    RequestCreate,
+    RequestRead,
+    RequestStatusUpdate,
     SKUItemOut,
 )
 from generate_po import generate_po_pdf
@@ -210,6 +213,72 @@ async def update_po_status(
     po.status = body.status
     if body.status == "PAID" and po.paid_date is None:
         po.paid_date = date.today()
+
+    await db.commit()
+    await db.refresh(po)
+    return po
+
+
+# ── GET /requests ─────────────────────────────────────────────────────────────
+
+@router.get("/requests", response_model=list[RequestRead])
+async def list_requests(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(PurchaseOrder).order_by(PurchaseOrder.requested_date.desc())
+    )
+    return result.scalars().all()
+
+
+# ── POST /requests ─────────────────────────────────────────────────────────────
+
+@router.post("/requests", response_model=RequestRead, status_code=201)
+async def create_request(body: RequestCreate, db: AsyncSession = Depends(get_db)):
+    today = date.today()
+    po = PurchaseOrder(
+        supplier=body.supplier,
+        sku=body.sku,
+        qty_ordered=body.qty_ordered,
+        qty_available=body.qty_available,
+        unit_cost=body.unit_cost,
+        po_number=body.po_number,
+        pic=body.pic,
+        status="PENDING",
+        amount_paid=0.0,
+        requested_date=body.requested_date or today,
+        created_date=today,
+        notes=body.notes,
+    )
+    db.add(po)
+    await db.commit()
+    await db.refresh(po)
+    return po
+
+
+# ── PATCH /requests/{id}/status ───────────────────────────────────────────────
+
+@router.patch("/requests/{po_id}/status", response_model=RequestRead)
+async def update_request_status(
+    po_id: int,
+    body: RequestStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(PurchaseOrder).where(PurchaseOrder.id == po_id))
+    po = result.scalar_one_or_none()
+    if not po:
+        raise HTTPException(status_code=404, detail="PurchaseOrder not found")
+
+    po.status = body.status
+
+    if body.status == "PAID":
+        po.approved_date = date.today()
+        po.paid_date = date.today()
+        if body.approved_by:
+            po.approved_by = body.approved_by
+    elif body.status == "PARTIALLY_PAID":
+        if body.amount_paid is not None:
+            po.amount_paid = body.amount_paid
+        if body.approved_by:
+            po.approved_by = body.approved_by
 
     await db.commit()
     await db.refresh(po)

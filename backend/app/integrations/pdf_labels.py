@@ -55,11 +55,11 @@ def _build_label_lines(entry: LabelEntry) -> list[str]:
         line = " ".join(p for p in parts if p)
         if date_str:
             line += f" - {date_str}"
-        lines.append(_smart_clip(line, 55))
+        lines.append(_smart_clip(line, 40))
 
     # Fallback: order_label when no catalog items
     if not lines and entry.order_label:
-        lines.append(_smart_clip(entry.order_label.upper(), 55))
+        lines.append(_smart_clip(entry.order_label.upper(), 40))
     return lines
 
 

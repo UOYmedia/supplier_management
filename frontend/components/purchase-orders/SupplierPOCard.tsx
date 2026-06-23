@@ -1,5 +1,9 @@
-import { Copy, Download } from "lucide-react"
-import { Supplier, SKUItem, fmt } from "@/lib/purchase-orders"
+"use client"
+
+import { useState } from "react"
+import { Copy, Download, Loader2 } from "lucide-react"
+import toast from "react-hot-toast"
+import { Supplier, SKUItem, SUPPLIER_INFO, computeBalance, fmt } from "@/lib/purchase-orders"
 import SKUTable from "./SKUTable"
 import OversoldNotice from "./OversoldNotice"
 import RemittanceSlip from "./RemittanceSlip"
@@ -8,6 +12,7 @@ interface Props {
   supplier: Supplier
   items: SKUItem[]
   poNumber: string
+  date?: string
 }
 
 const PILL: Record<Supplier, string> = {
@@ -22,8 +27,60 @@ const SUPPLIER_NAME: Record<Supplier, string> = {
   FAIRY: "Fairy Garden Nursery",
 }
 
-export default function SupplierPOCard({ supplier, items, poNumber }: Props) {
+const BUYER_INFO = {
+  name:    "Purchasing Manager",
+  company: "Maga Fulfillment",
+  email:   "purchasing@maga.com",
+  address: "123 Fulfillment Blvd, Nashville, TN 37201",
+}
+
+export default function SupplierPOCard({ supplier, items, poNumber, date }: Props) {
+  const [pdfLoading, setPdfLoading] = useState(false)
   const total = items.reduce((s, i) => s + i.total_cost, 0)
+  const balance = computeBalance(items, 0)
+
+  async function handlePDF() {
+    setPdfLoading(true)
+    try {
+      const res = await fetch("/api/v1/purchase-orders/generate-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          supplier,
+          po_number: poNumber,
+          date: date ?? new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }),
+          items,
+          supplier_info: SUPPLIER_INFO[supplier],
+          buyer_info: BUYER_INFO,
+          balance,
+        }),
+      })
+
+      const contentType = res.headers.get("content-type") ?? ""
+
+      if (res.ok && contentType.includes("application/pdf")) {
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = `PO-${poNumber}.pdf`
+        a.click()
+        URL.revokeObjectURL(url)
+        toast.success("PDF downloaded")
+      } else {
+        const json = await res.json()
+        if (json.status === "mock") {
+          toast("PDF export coming soon — data logged to console", { icon: "📋" })
+        } else {
+          toast.error("PDF generation failed")
+        }
+      }
+    } catch {
+      toast.error("Could not reach server")
+    } finally {
+      setPdfLoading(false)
+    }
+  }
 
   return (
     <div className="card mb-5 overflow-hidden">
@@ -40,8 +97,15 @@ export default function SupplierPOCard({ supplier, items, poNumber }: Props) {
           <button className="btn-secondary py-1.5 text-xs">
             <Copy className="w-3.5 h-3.5" /> Copy
           </button>
-          <button className="btn-primary py-1.5 text-xs">
-            <Download className="w-3.5 h-3.5" /> PDF
+          <button
+            className="btn-primary py-1.5 text-xs"
+            onClick={handlePDF}
+            disabled={pdfLoading}
+          >
+            {pdfLoading
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <Download className="w-3.5 h-3.5" />}
+            PDF
           </button>
         </div>
       </div>

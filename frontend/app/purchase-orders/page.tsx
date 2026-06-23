@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useMemo } from "react"
-import { Download, Plus, Copy } from "lucide-react"
+import { Plus, Copy } from "lucide-react"
 import { computeItem, computeBalance, RAW_ITEMS, Supplier } from "@/lib/purchase-orders"
 import POMetrics from "@/components/purchase-orders/POMetrics"
 import BalanceBar from "@/components/purchase-orders/BalanceBar"
@@ -45,9 +45,6 @@ export default function PurchaseOrdersPage() {
           </button>
           <button className="btn-secondary">
             <Copy className="w-4 h-4" /> Copy Summary
-          </button>
-          <button className="btn-primary">
-            <Download className="w-4 h-4" /> Download PDF
           </button>
         </div>
       </div>

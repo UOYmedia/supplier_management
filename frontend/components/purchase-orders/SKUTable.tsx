@@ -64,9 +64,8 @@ function Th({
 }
 
 function StatusBadge({ status, gap, oversold }: { status: string; gap: number; oversold: number }) {
-  if (status === "ok")       return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">OK</span>
-  if (status === "low")      return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">Low +{gap}</span>
-  if (status === "exact")    return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700">Exact</span>
+  if (status === "ok")  return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">OK</span>
+  if (status === "low") return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">Low {gap > 0 ? `+${gap}` : ""}</span>
   return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Oversold {oversold}</span>
 }
 
@@ -100,14 +99,13 @@ export default function SKUTable({ items }: Props) {
           {sorted.map((item) => {
             const rowBg =
               item.status === "oversold" ? "bg-red-50 hover:bg-red-100/60" :
-              item.status === "exact"    ? "bg-amber-50/50 hover:bg-amber-50" :
               item.status === "low"      ? "bg-yellow-50/30 hover:bg-yellow-50/60" :
                                           "bg-white hover:bg-gray-50"
 
             const stockLeftColor =
-              item.gap < 0 ? "text-red-600 font-semibold" :
-              item.gap === 0 ? "text-amber-600 font-semibold" :
-              item.gap <= 3 ? "text-yellow-700" : "text-green-700"
+              item.status === "oversold" ? "text-red-600 font-semibold" :
+              item.status === "low"      ? "text-amber-600 font-semibold" :
+                                          "text-green-700"
 
             const amtLeftColor =
               item.avail_value < 0 ? "text-red-600 font-semibold" :
@@ -135,9 +133,9 @@ export default function SKUTable({ items }: Props) {
                   {item.ordered}
                 </td>
 
-                {/* Stock Left */}
+                {/* Stock Left — show 0 when oversold, never show negative */}
                 <td className={`px-3 py-2.5 text-right ${stockLeftColor}`}>
-                  {item.gap}
+                  {Math.max(0, item.gap)}
                 </td>
 
                 {/* Oversold */}

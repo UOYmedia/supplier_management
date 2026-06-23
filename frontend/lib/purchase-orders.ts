@@ -12,7 +12,7 @@ export interface SKUItem {
   total_cost: number
   oversold_value: number
   avail_value: number
-  status: "ok" | "exact" | "low" | "oversold"
+  status: "ok" | "low" | "oversold"
   po_id: number
   po_status: string
 }
@@ -42,9 +42,8 @@ export function computeItem(
   const avail_value = avail_final * raw.unit_cost
 
   let status: SKUItem["status"]
-  if (gap > 3) status = "ok"
-  else if (gap > 0) status = "low"
-  else if (gap === 0) status = "exact"
+  if (gap > 5) status = "ok"
+  else if (gap >= 0) status = "low"
   else status = "oversold"
 
   return { ...raw, gap, oversold, avail_final, total_cost, oversold_value, avail_value, status }

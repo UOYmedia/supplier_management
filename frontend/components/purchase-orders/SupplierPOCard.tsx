@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Copy, Download, Loader2 } from "lucide-react"
 import toast from "react-hot-toast"
+
 import { Supplier, SKUItem, SUPPLIER_INFO, computeBalance, fmt } from "@/lib/purchase-orders"
 import SKUTable from "./SKUTable"
 import OversoldNotice from "./OversoldNotice"
@@ -38,6 +39,25 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
   const [pdfLoading, setPdfLoading] = useState(false)
   const total = items.reduce((s, i) => s + i.total_cost, 0)
   const balance = computeBalance(items, 0)
+
+  function handleCopy() {
+    const header = `${SUPPLIER_NAME[supplier]} — ${poNumber} — ${date ?? ""}`
+    const divider = "─".repeat(48)
+    const rows = items.map((i) =>
+      `${i.sku.padEnd(28)} x${String(i.ordered).padStart(3)}  $${fmt(i.unit_cost).padStart(7)}  Total: $${fmt(i.total_cost)}`
+    )
+    const oversoldRows = items
+      .filter((i) => i.oversold > 0)
+      .map((i) => `  ⚠ ${i.sku}: short ${i.oversold} × $${fmt(i.unit_cost)} = $${fmt(i.oversold_value)}`)
+    const subtotal = `Subtotal: $${fmt(total)}`
+    const balanceDue = `Balance Due: $${fmt(total - items.reduce((s, i) => s + i.oversold_value, 0))}`
+    const parts = [header, divider, ...rows]
+    if (oversoldRows.length) parts.push("", "Oversold:", ...oversoldRows)
+    parts.push("", divider, subtotal, balanceDue)
+    navigator.clipboard.writeText(parts.join("\n"))
+      .then(() => toast.success("Copied to clipboard"))
+      .catch(() => toast.error("Copy failed"))
+  }
 
   async function handlePDF() {
     setPdfLoading(true)
@@ -84,7 +104,7 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
         </div>
         <div className="flex items-center gap-3">
           <span className="font-bold text-gray-900">${fmt(total)}</span>
-          <button className="btn-secondary py-1.5 text-xs">
+          <button className="btn-secondary py-1.5 text-xs" onClick={handleCopy}>
             <Copy className="w-3.5 h-3.5" /> Copy
           </button>
           <button

@@ -47,12 +47,12 @@ def _compute_item(
     oversold_value = oversold * unit_cost
     avail_value = avail_final * unit_cost
 
-    if gap > 3:
+    if gap > 5:
         status = "ok"
     elif gap > 0:
         status = "low"
     elif gap == 0:
-        status = "exact"
+        status = "low"
     else:
         status = "oversold"
 

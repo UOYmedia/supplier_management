@@ -323,13 +323,16 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">PIC <span className="text-red-500">*</span></label>
-                  <input
-                    type="text"
+                  <select
                     value={form.pic}
                     onChange={(e) => set("pic", e.target.value)}
-                    placeholder="Your name"
-                    className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.pic ? "border-red-500" : "border-gray-300"}`}
-                  />
+                    className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white ${errors.pic ? "border-red-500" : "border-gray-300"}`}
+                  >
+                    <option value="">Select PIC…</option>
+                    <option value="Zoe">Zoe</option>
+                    <option value="Grace">Grace</option>
+                    <option value="Jenny">Jenny</option>
+                  </select>
                 </div>
               </div>
 

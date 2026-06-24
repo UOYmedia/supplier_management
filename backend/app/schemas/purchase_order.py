@@ -98,7 +98,7 @@ class SKUItemOut(BaseModel):
     total_cost: float
     oversold_value: float
     avail_value: float
-    status: Literal["ok", "low", "exact", "oversold"]
+    status: Literal["ok", "low", "oversold"]
     po_id: int
     po_status: str
 
@@ -113,5 +113,12 @@ class BalanceOut(BaseModel):
 
 class PODailyResponse(BaseModel):
     date: str
+    items: list[SKUItemOut]
+    balance: BalanceOut
+
+
+class POPeriodResponse(BaseModel):
+    from_date: str
+    to_date: str
     items: list[SKUItemOut]
     balance: BalanceOut

@@ -20,6 +20,7 @@ from app.schemas.purchase_order import (
     BalanceOut,
     POCreate,
     PODailyResponse,
+    POPeriodResponse,
     PORead,
     POStatusUpdate,
     RequestCreate,
@@ -150,6 +151,79 @@ async def get_daily_po(
 
     return PODailyResponse(
         date=ref_date.isoformat(),
+        items=items,
+        balance=balance,
+    )
+
+
+# ── GET /period ───────────────────────────────────────────────────────────────
+
+@router.get("/period", response_model=POPeriodResponse)
+async def get_period_po(
+    from_date: str = Query(...),
+    to_date: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        fd = date.fromisoformat(from_date)
+        td = date.fromisoformat(to_date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="dates must be YYYY-MM-DD")
+
+    if fd > td:
+        raise HTTPException(status_code=422, detail="from_date must be <= to_date")
+
+    result = await db.execute(
+        select(PurchaseOrder)
+        .where(
+            PurchaseOrder.created_date >= fd,
+            PurchaseOrder.created_date <= td,
+            PurchaseOrder.record_type == "daily",
+        )
+        .order_by(PurchaseOrder.supplier, PurchaseOrder.sku)
+    )
+    pos = result.scalars().all()
+
+    # Aggregate per (supplier, sku): sum ordered and available across days
+    agg: dict[tuple[str, str], dict] = {}
+    for po in pos:
+        key = (po.supplier, po.sku)
+        if key not in agg:
+            agg[key] = {
+                "po": po,
+                "ordered": 0,
+                "available": 0,
+                "unit_cost": float(po.unit_cost),
+            }
+        agg[key]["ordered"] += po.qty_ordered
+        agg[key]["available"] += po.qty_available
+
+    items: list[SKUItemOut] = []
+    for (supplier, sku), d in agg.items():
+        items.append(_compute_item(
+            po=d["po"],
+            available=d["available"],
+            ordered=d["ordered"],
+            unit_cost=d["unit_cost"],
+        ))
+
+    starting_balance = await _get_starting_balance(db, fd)
+    total_cost = sum(i.total_cost for i in items)
+    available_value = sum(i.avail_value for i in items)
+    oversold_value = sum(i.oversold_value for i in items)
+    ending_balance = starting_balance - total_cost
+
+    balance = BalanceOut(
+        starting_balance=starting_balance,
+        total_cost=total_cost,
+        available_value=available_value,
+        oversold_value=oversold_value,
+        ending_balance=ending_balance,
+    )
+
+    return POPeriodResponse(
+        from_date=fd.isoformat(),
+        to_date=td.isoformat(),
         items=items,
         balance=balance,
     )

@@ -82,24 +82,39 @@ export default function SKUTable({ items }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("sku")
   const [sortDir, setSortDir] = useState<SortDir>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
+  const [search, setSearch] = useState("")
 
   function handleSort(key: SortKey) {
     if (sortKey !== key) { setSortKey(key); setSortDir("asc"); return }
     setSortDir((d) => d === "asc" ? "desc" : d === "desc" ? null : "asc")
   }
 
+  const searched = search.trim()
+    ? items.filter((i) => i.sku.toLowerCase().includes(search.trim().toLowerCase()))
+    : items
+
   const counts: Record<StatusFilter, number> = {
-    all: items.length,
-    ok: items.filter((i) => i.status === "ok").length,
-    low: items.filter((i) => i.status === "low").length,
-    oversold: items.filter((i) => i.status === "oversold").length,
+    all: searched.length,
+    ok: searched.filter((i) => i.status === "ok").length,
+    low: searched.filter((i) => i.status === "low").length,
+    oversold: searched.filter((i) => i.status === "oversold").length,
   }
 
-  const filtered = statusFilter === "all" ? items : items.filter((i) => i.status === statusFilter)
+  const filtered = statusFilter === "all" ? searched : searched.filter((i) => i.status === statusFilter)
   const sorted = sortItems(filtered, sortKey, sortDir)
 
   return (
     <div>
+      {/* Search + Status filter row */}
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <input
+          type="text"
+          placeholder="Search item…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="h-7 px-2.5 text-xs border border-gray-200 rounded-md outline-none focus:border-blue-400 bg-white w-40"
+        />
+      </div>
       {/* Status quick filter */}
       <div className="flex items-center gap-1 mb-2">
         {FILTER_OPTS.map(({ key, label, cls, active }) => (

@@ -133,8 +133,8 @@ function FilterInput({
 
 function StatusBadge({ status, gap, oversold }: { status: string; gap: number; oversold: number }) {
   if (status === "ok")  return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">OK</span>
-  if (status === "low") return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">Low {gap > 0 ? `+${gap}` : ""}</span>
-  return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Oversold {oversold}</span>
+  if (status === "low") return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">Low</span>
+  return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Oversold</span>
 }
 
 export default function SKUTable({ items }: Props) {

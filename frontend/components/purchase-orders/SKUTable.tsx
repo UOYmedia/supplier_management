@@ -240,10 +240,7 @@ export default function SKUTable({ items }: Props) {
                 </td>
               </tr>
             ) : sorted.map((item) => {
-              const rowBg =
-                item.status === "oversold" ? "bg-red-50 hover:bg-red-100/60" :
-                item.status === "low"      ? "bg-yellow-50/30 hover:bg-yellow-50/60" :
-                                            "bg-white hover:bg-gray-50"
+              const rowBg = "hover:bg-gray-50"
 
               const stockLeftColor =
                 item.status === "oversold" ? "text-red-600 font-semibold" :

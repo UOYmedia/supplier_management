@@ -138,6 +138,20 @@ export const ordersApi = {
     return `/api/v1/orders/bulk-labels?${qs}`;
   },
   listDelayed: () => api.get("/orders/delayed").then((r) => r.data),
+  scanLabel: (orderId: string, file: File) => {
+    return new Promise<any>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const b64 = result.includes(",") ? result.split(",")[1] : result;
+        api.post("/orders/scan-label", { order_id: orderId, image_b64: b64 })
+          .then((r) => resolve(r.data))
+          .catch(reject);
+      };
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsDataURL(file);
+    });
+  },
 };
 
 // Marketplace

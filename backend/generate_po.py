@@ -130,8 +130,6 @@ def generate_po_pdf(
         "oversold": (_RED,   None),
     }
 
-    row_bg: list[tuple[int, colors.Color]] = []
-
     for row_idx, item in enumerate(items, start=1):
         gap: int = item.get("gap", 0)
         oversold: int = item.get("oversold", 0)
@@ -159,13 +157,6 @@ def generate_po_pdf(
             status_para,
         ])
 
-        if status == "oversold":
-            row_bg.append((row_idx, colors.HexColor("#FEF2F2")))
-        elif status == "exact":
-            row_bg.append((row_idx, colors.HexColor("#FFFBEB")))
-        elif row_idx % 2 == 0:
-            row_bg.append((row_idx, _LIGHT))
-
     sku_table = Table(table_data, colWidths=col_widths, repeatRows=1)
     ts = [
         ("BACKGROUND", (0, 0), (-1, 0), _BLUE),
@@ -173,7 +164,6 @@ def generate_po_pdf(
         ("FONTSIZE",   (0, 0), (-1, 0), 8),
         ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
         ("TOPPADDING",    (0, 0), (-1, 0), 6),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, _LIGHT]),
         ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.lightgrey),
         ("LEFTPADDING",  (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
@@ -181,8 +171,6 @@ def generate_po_pdf(
         ("BOTTOMPADDING",(0, 1), (-1, -1), 4),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]
-    for row_idx, bg in row_bg:
-        ts.append(("BACKGROUND", (0, row_idx), (-1, row_idx), bg))
 
     sku_table.setStyle(TableStyle(ts))
     story.append(sku_table)

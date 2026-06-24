@@ -180,11 +180,13 @@ async def get_period_po(
             PurchaseOrder.created_date <= td,
             PurchaseOrder.record_type == "daily",
         )
-        .order_by(PurchaseOrder.supplier, PurchaseOrder.sku)
+        .order_by(PurchaseOrder.supplier, PurchaseOrder.sku, PurchaseOrder.created_date)
     )
     pos = result.scalars().all()
 
-    # Aggregate per (supplier, sku): sum ordered and available across days
+    # Aggregate per (supplier, sku):
+    # - ordered: sum across all days in period
+    # - available: latest day's value (snapshot, not cumulative)
     agg: dict[tuple[str, str], dict] = {}
     for po in pos:
         key = (po.supplier, po.sku)
@@ -196,7 +198,8 @@ async def get_period_po(
                 "unit_cost": float(po.unit_cost),
             }
         agg[key]["ordered"] += po.qty_ordered
-        agg[key]["available"] += po.qty_available
+        # always overwrite with latest (rows ordered by created_date asc)
+        agg[key]["available"] = po.qty_available
 
     items: list[SKUItemOut] = []
     for (supplier, sku), d in agg.items():

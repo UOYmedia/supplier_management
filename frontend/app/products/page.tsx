@@ -33,7 +33,7 @@ export default function ProductsPage() {
     setSuggestions([])
     setLoadingSuggestions(true)
     try {
-      const res = await fetch(`/api/suppliers/supplier-products/${spId}/suggest-name`)
+      const res = await fetch(`/api/v1/suppliers/supplier-products/${spId}/suggest-name`)
       const data = await res.json()
       setSuggestions(data.suggestions || [])
       if (data.suggestions?.[0]) setShortNameInput(data.suggestions[0])
@@ -47,7 +47,7 @@ export default function ProductsPage() {
   const saveShortName = async () => {
     if (!editingShortName || !shortNameInput) return
     try {
-      await fetch(`/api/suppliers/supplier-products/${editingShortName.id}/short-name`, {
+      await fetch(`/api/v1/suppliers/supplier-products/${editingShortName.id}/short-name`, {
         method: "PATCH",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({short_name: shortNameInput})

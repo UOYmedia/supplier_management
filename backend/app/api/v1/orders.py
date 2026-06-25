@@ -1477,73 +1477,141 @@ async def _order_out(order: Order, db: AsyncSession) -> OrderOut:
 
 
 async def _auto_assign_line_item(li: OrderLineItem, db: AsyncSession) -> bool:
-    """Auto-assign supplier product to a line item by matching li.sku → Product.sku → ProductComponent.
+    """Auto-assign a supplier catalog item to a line item by SKU.
 
-    Returns True if assignment was made, False if skipped (no match or already assigned).
-    Idempotent: skips if li.supplier_id is already set.
+    Two strategies, tried in order:
+      A. order SKU → Product.sku → ProductComponent → SupplierProduct (configured mapping)
+      B. order SKU == SupplierProduct.sku directly — only when EXACTLY ONE catalog
+         item matches; multiple suppliers with the same SKU are skipped to avoid
+         guessing wrong.
+
+    Returns True if assignment was made, False if skipped (no/ambiguous match or
+    already assigned). Idempotent: skips if li.supplier_id is already set.
     """
     if li.supplier_id or not li.sku:
         return False
 
     from sqlalchemy import func as sqlfunc
+    sku_norm = li.sku.strip().lower()
 
-    # Step 1: find Product by SKU (case-insensitive)
-    prod_res = await db.execute(
-        select(Product).where(sqlfunc.lower(sqlfunc.trim(Product.sku)) == li.sku.strip().lower())
-    )
-    product = prod_res.scalar_one_or_none()
+    sp = None
+    units = 1   # supplier-catalog units per ordered unit
+    via = None
+
+    # Strategy A: via configured Product → ProductComponent mapping
+    product = (await db.execute(
+        select(Product).where(sqlfunc.lower(sqlfunc.trim(Product.sku)) == sku_norm)
+    )).scalar_one_or_none()
     if product and not li.product_id:
         li.product_id = product.id
-    elif not product and not li.product_id:
+    if li.product_id:
+        comp = (await db.execute(
+            select(ProductComponent).where(ProductComponent.product_id == li.product_id)
+        )).scalars().first()
+        if comp:
+            sp = await db.get(SupplierProduct, comp.supplier_product_id)
+            if sp:
+                units = comp.quantity
+                via = "product"
+
+    # Strategy B: direct match against supplier catalog SKU (unique only)
+    if sp is None:
+        matches = (await db.execute(
+            select(SupplierProduct).where(sqlfunc.lower(sqlfunc.trim(SupplierProduct.sku)) == sku_norm)
+        )).scalars().all()
+        if len(matches) == 1:
+            sp = matches[0]
+            units = 1
+            via = "direct"
+        elif len(matches) > 1:
+            print(
+                f"auto_assign: line item {li.id} sku={li.sku!r} matches "
+                f"{len(matches)} catalog items — skipped (ambiguous)",
+                flush=True,
+            )
+            return False
+
+    if sp is None:
         return False
 
-    product_id = li.product_id
-
-    # Step 2: find ProductComponent for this product
-    comp_res = await db.execute(
-        select(ProductComponent).where(ProductComponent.product_id == product_id)
-    )
-    comp = comp_res.scalars().first()
-    if not comp:
-        return False
-
-    sp = await db.get(SupplierProduct, comp.supplier_product_id)
-    if not sp:
-        return False
-
-    # Step 3: assign supplier to line item
+    # Assign supplier to line item
     li.supplier_id = sp.supplier_id
 
     # Record the supplier cost so this order's COGS shows in the Daily Report
     # balance even when fulfilled externally (e.g. Amazon). Mirrors the manual
     # assign formula (unit_price × units). Only runs on a confirmed SKU→catalog
     # match, so no fuzzy/guessed costs.
-    li.base_cost = sp.unit_price * comp.quantity
+    li.base_cost = sp.unit_price * units
 
-    # Step 4: upsert OrderFulfillmentItem
+    # Upsert OrderFulfillmentItem
     ofi_res = await db.execute(
         select(OrderFulfillmentItem).where(
             OrderFulfillmentItem.order_line_item_id == li.id,
-            OrderFulfillmentItem.supplier_product_id == comp.supplier_product_id,
+            OrderFulfillmentItem.supplier_product_id == sp.id,
         )
     )
     ofi = ofi_res.scalar_one_or_none()
-    qty = li.quantity * comp.quantity
+    qty = li.quantity * units
     if ofi:
         ofi.quantity = qty
     else:
         db.add(OrderFulfillmentItem(
             order_line_item_id=li.id,
-            supplier_product_id=comp.supplier_product_id,
+            supplier_product_id=sp.id,
             quantity=qty,
         ))
 
     print(
-        f"Auto-assigned line item {li.id} (sku={li.sku!r}) → "
+        f"Auto-assigned line item {li.id} (sku={li.sku!r}) via {via} → "
         f"supplier_product {sp.id} (supplier_id={sp.supplier_id})",
         flush=True,
     )
     return True
+
+
+async def _post_scan_assign(order: Order, db: AsyncSession) -> dict:
+    """Advance an order right after its label was scanned.
+
+    - If every active line item already has a supplier → mark the order
+      "processing".
+    - Otherwise auto-assign suppliers by SKU (li.sku → catalog item); if that
+      completes the assignment, also mark it "processing".
+
+    Only promotes a "pending" order — never downgrades shipped/fulfilled/
+    cancelled ones. Does NOT commit; the caller owns the transaction.
+    Returns a small summary for the scan result.
+    """
+    items = (await db.execute(
+        select(OrderLineItem).where(OrderLineItem.order_id == order.id)
+    )).scalars().all()
+    active = [li for li in items if li.fulfill_status != FulfillStatus.cancelled]
+    if not active:
+        return {"assigned_before": False, "auto_assigned": 0,
+                "fully_assigned": False, "moved_to_processing": False}
+
+    assigned_before = all(li.supplier_id for li in active)
+
+    auto_assigned = 0
+    if not assigned_before:
+        for li in active:
+            if not li.supplier_id and await _auto_assign_line_item(li, db):
+                auto_assigned += 1
+
+    fully_assigned = all(li.supplier_id for li in active)
+    moved = False
+    if fully_assigned and order.status == OrderStatus.pending.value:
+        order.status = OrderStatus.processing.value
+        order.updated_at = datetime.now(timezone.utc)
+        moved = True
+
+    print(
+        f"post_scan_assign: order={order.external_order_id} "
+        f"assigned_before={assigned_before} auto_assigned={auto_assigned} "
+        f"fully_assigned={fully_assigned} -> processing={moved}",
+        flush=True,
+    )
+    return {"assigned_before": assigned_before, "auto_assigned": auto_assigned,
+            "fully_assigned": fully_assigned, "moved_to_processing": moved}
 
 
 @router.post("/backfill-auto-assign")

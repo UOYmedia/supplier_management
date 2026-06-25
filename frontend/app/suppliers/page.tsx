@@ -39,7 +39,7 @@ export default function SuppliersPage() {
         {search && <button onClick={() => setSearch("")}><X className="w-4 h-4 text-gray-400" /></button>}
       </div>
 
-      <div className="card table-wrapper">
+      <div className="card table-wrapper table-scroll max-h-[calc(100vh-165px)]">
         <table>
           <thead><tr>
             <th>Name</th>

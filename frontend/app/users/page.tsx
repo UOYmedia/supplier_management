@@ -37,7 +37,12 @@ export default function UsersPage() {
       <div className="card table-wrapper">
         <table>
           <thead><tr>
-            <th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th></th>
+            <th>Username</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th className="flex justify-end">Actions</th>
           </tr></thead>
           <tbody>
             {isLoading ? (
@@ -73,7 +78,7 @@ export default function UsersPage() {
                       <Pencil className="w-4 h-4" />
                     </button>
                     {u.id !== currentUser.id && (
-                      <button className="p-1 hover:text-red-500 text-gray-400"
+                      <button className="p-1 hover:text-red-500 text-gray-400 ml-3"
                         onClick={() => confirm("Delete this user?") && deleteMut.mutate(u.id)}>
                         <Trash2 className="w-4 h-4" />
                       </button>

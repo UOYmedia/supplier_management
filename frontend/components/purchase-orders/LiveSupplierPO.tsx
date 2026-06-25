@@ -54,8 +54,46 @@ function toSKUItem(p: CatalogProduct, supplierName: string): SKUItem {
   }
 }
 
+type LivePeriod = "today" | "this_week" | "this_month" | "all"
+
+const PERIOD_OPTS: { key: LivePeriod; label: string }[] = [
+  { key: "today",      label: "Today" },
+  { key: "this_week",  label: "This Week" },
+  { key: "this_month", label: "This Month" },
+  { key: "all",        label: "All time" },
+]
+
+function getMonday(d: Date): Date {
+  const day = d.getDay()
+  const diff = day === 0 ? -6 : 1 - day
+  const m = new Date(d)
+  m.setDate(d.getDate() + diff)
+  return m
+}
+
+// Returns ISO start/end-of-day strings for the chosen period, or null for "all".
+function periodRange(period: LivePeriod): { from: string; to: string } | null {
+  if (period === "all") return null
+  const now = new Date()
+  let from = new Date(now)
+  let to = new Date(now)
+  if (period === "this_week") {
+    from = getMonday(now)
+    to = new Date(from)
+    to.setDate(from.getDate() + 6)
+  } else if (period === "this_month") {
+    from = new Date(now.getFullYear(), now.getMonth(), 1)
+    to = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+  }
+  from.setHours(0, 0, 0, 0)
+  to.setHours(23, 59, 59, 999)
+  return { from: from.toISOString(), to: to.toISOString() }
+}
+
 export default function LiveSupplierPO() {
   const [activeId, setActiveId] = useState<number | null>(null)
+  const [period, setPeriod] = useState<LivePeriod>("today")
+  const range = periodRange(period)
 
   const suppliersQuery = useQuery<RealSupplier[]>({
     queryKey: ["live-suppliers"],
@@ -75,8 +113,12 @@ export default function LiveSupplierPO() {
   const activeSupplier = suppliers.find((s) => s.id === activeId) ?? null
 
   const productsQuery = useQuery<CatalogProduct[]>({
-    queryKey: ["live-catalog", activeId],
-    queryFn: () => suppliersApi.listProducts(activeId as number),
+    queryKey: ["live-catalog", activeId, period],
+    queryFn: () =>
+      suppliersApi.listProducts(
+        activeId as number,
+        range ? { date_from: range.from, date_to: range.to } : undefined
+      ),
     enabled: activeId !== null,
   })
 
@@ -126,6 +168,24 @@ export default function LiveSupplierPO() {
         >
           <RefreshCw className="w-3.5 h-3.5" /> Refresh
         </button>
+      </div>
+
+      {/* Period filter — ordered/sold counts are scoped to Order.ordered_at in this range */}
+      <div className="flex items-center gap-1.5 mb-4">
+        <span className="text-xs text-gray-400 mr-1">Period</span>
+        {PERIOD_OPTS.map((p) => (
+          <button
+            key={p.key}
+            onClick={() => setPeriod(p.key)}
+            className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
+              period === p.key
+                ? "bg-gray-800 text-white border-transparent"
+                : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
       </div>
 
       {activeSupplier && (

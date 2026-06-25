@@ -147,13 +147,18 @@ async def update_stock(
 # --- Supplier product catalog ---
 
 @router.get("/{supplier_id}/products", response_model=list[SupplierProductOut])
-async def list_supplier_products(supplier_id: int, db: AsyncSession = Depends(get_db)):
+async def list_supplier_products(
+    supplier_id: int,
+    date_from: datetime | None = Query(None, description="Filter ordered/sold counts by Order.ordered_at >= this"),
+    date_to: datetime | None = Query(None, description="Filter ordered/sold counts by Order.ordered_at <= this"),
+    db: AsyncSession = Depends(get_db),
+):
     await _get_or_404(supplier_id, db)
     result = await db.execute(
         select(SupplierProduct).where(SupplierProduct.supplier_id == supplier_id)
     )
     products = result.scalars().all()
-    return [await _supplier_product_out(sp, db) for sp in products]
+    return [await _supplier_product_out(sp, db, date_from, date_to) for sp in products]
 
 
 @router.post("/{supplier_id}/products", response_model=SupplierProductOut, status_code=201)
@@ -771,18 +776,36 @@ async def _get_sp_or_404(supplier_id: int, sp_id: int, db: AsyncSession) -> Supp
     return sp
 
 
-async def _supplier_product_out(sp: SupplierProduct, db: AsyncSession) -> SupplierProductOut:
-    pending_result = await db.execute(
-        select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
+async def _supplier_product_out(
+    sp: SupplierProduct,
+    db: AsyncSession,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> SupplierProductOut:
+    # When a date range is given, filter fulfillment by the parent order's
+    # ordered_at (join OrderFulfillmentItem -> OrderLineItem -> Order). This is
+    # what lets the PO page honour the Today / This Week / This Month pills.
+    def _qty_for(statuses):
+        q = select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
             OrderFulfillmentItem.supplier_product_id == sp.id,
-            OrderFulfillmentItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+            OrderFulfillmentItem.fulfill_status.in_(statuses),
         )
+        if date_from is not None or date_to is not None:
+            q = (
+                q.join(OrderLineItem, OrderFulfillmentItem.order_line_item_id == OrderLineItem.id)
+                .join(Order, OrderLineItem.order_id == Order.id)
+            )
+            if date_from is not None:
+                q = q.where(Order.ordered_at >= date_from)
+            if date_to is not None:
+                q = q.where(Order.ordered_at <= date_to)
+        return q
+
+    pending_result = await db.execute(
+        _qty_for([FulfillStatus.unfulfilled, FulfillStatus.pending])
     )
     sold_result = await db.execute(
-        select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
-            OrderFulfillmentItem.supplier_product_id == sp.id,
-            OrderFulfillmentItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
-        )
+        _qty_for([FulfillStatus.shipped, FulfillStatus.delivered])
     )
     return SupplierProductOut(
         id=sp.id,

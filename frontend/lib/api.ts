@@ -72,7 +72,8 @@ export const suppliersApi = {
   invoices: (id: number) => api.get(`/suppliers/${id}/invoices`).then((r) => r.data),
   createInvoice: (id: number, data: object) => api.post(`/suppliers/${id}/invoices`, data).then((r) => r.data),
   updateInvoice: (id: number, invId: number, data: object) => api.patch(`/suppliers/${id}/invoices/${invId}`, data).then((r) => r.data),
-  listProducts: (id: number) => api.get(`/suppliers/${id}/products`).then((r) => r.data),
+  listProducts: (id: number, params?: { date_from?: string; date_to?: string }) =>
+    api.get(`/suppliers/${id}/products`, { params }).then((r) => r.data),
   createProduct: (id: number, data: object) => api.post(`/suppliers/${id}/products`, data).then((r) => r.data),
   updateProduct: (id: number, spId: number, data: object) => api.patch(`/suppliers/${id}/products/${spId}`, data).then((r) => r.data),
   deleteProduct: (id: number, spId: number) => api.delete(`/suppliers/${id}/products/${spId}`),

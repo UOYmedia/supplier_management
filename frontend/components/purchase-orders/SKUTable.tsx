@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { ChevronUp, ChevronDown, ChevronsUpDown, X } from "lucide-react"
+import { ChevronUp, ChevronDown, ChevronsUpDown, X, Eye, EyeOff } from "lucide-react"
 import { SKUItem, fmt } from "@/lib/purchase-orders"
 
 interface Props {
@@ -142,6 +142,7 @@ export default function SKUTable({ items }: Props) {
   const [sortDir, setSortDir] = useState<SortDir>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
   const [col, setCol] = useState<ColFilters>(EMPTY_COL)
+  const [showUnitPrice, setShowUnitPrice] = useState(false)
 
   function handleSort(key: SortKey) {
     if (sortKey !== key) { setSortKey(key); setSortDir("asc"); return }
@@ -185,6 +186,17 @@ export default function SKUTable({ items }: Props) {
             </span>
           </button>
         ))}
+        <button
+          onClick={() => setShowUnitPrice((v) => !v)}
+          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+            showUnitPrice
+              ? "bg-indigo-600 text-white border-transparent"
+              : "bg-white border-gray-200 text-gray-500 hover:text-indigo-600 hover:border-indigo-200"
+          }`}
+        >
+          {showUnitPrice ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+          Unit Price
+        </button>
         {hasColFilter && (
           <button
             onClick={() => setCol(EMPTY_COL)}
@@ -202,6 +214,11 @@ export default function SKUTable({ items }: Props) {
               <Th label="Item"        colKey="sku"         sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[160px]" />
               <Th label="Stock Avail" colKey="available"   sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="text-blue-600" />
               <Th label="Ordered"     colKey="ordered"     sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+              {showUnitPrice && (
+                <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
+                  Unit Price
+                </th>
+              )}
               <Th label="Stock Left"  colKey="gap"         sub="avail − ordered" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
               <Th label="Oversold"    colKey="oversold"    sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="text-red-500" />
               <Th label="Today Cost"  colKey="total_cost"  sub="price × ordered" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
@@ -220,6 +237,7 @@ export default function SKUTable({ items }: Props) {
               <td className="px-2 py-1">
                 <FilterInput type="number" value={col.ordered} onChange={(v) => setColField("ordered", v)} placeholder="≥" />
               </td>
+              {showUnitPrice && <td />}
               <td className="px-2 py-1">
                 <FilterInput type="number" value={col.gap} onChange={(v) => setColField("gap", v)} placeholder="≥" />
               </td>
@@ -235,7 +253,7 @@ export default function SKUTable({ items }: Props) {
           <tbody className="divide-y divide-gray-50">
             {sorted.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-3 py-8 text-center text-sm text-gray-400">
+                <td colSpan={showUnitPrice ? 9 : 8} className="px-3 py-8 text-center text-sm text-gray-400">
                   No items match the current filters
                 </td>
               </tr>
@@ -254,12 +272,18 @@ export default function SKUTable({ items }: Props) {
               return (
                 <tr key={item.sku} className={`transition-colors ${rowBg}`}>
                   <td className="px-3 py-2.5">
-                    <span className="font-medium text-gray-800 cursor-default" title={`Unit price: $${fmt(item.unit_cost)}`}>
+                    <span
+                      className="font-medium text-gray-800 cursor-default"
+                      title={showUnitPrice ? undefined : `Unit price: $${fmt(item.unit_cost)}`}
+                    >
                       {item.sku}
                     </span>
                   </td>
                   <td className="px-3 py-2.5 text-blue-700 font-medium text-right">{item.available}</td>
                   <td className="px-3 py-2.5 text-gray-700 text-right">{item.ordered}</td>
+                  {showUnitPrice && (
+                    <td className="px-3 py-2.5 text-right text-indigo-700 font-medium">${fmt(item.unit_cost)}</td>
+                  )}
                   <td className={`px-3 py-2.5 text-right ${stockLeftColor}`}>{Math.max(0, item.gap)}</td>
                   <td className="px-3 py-2.5 text-right">
                     {item.oversold > 0

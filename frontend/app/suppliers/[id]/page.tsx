@@ -266,6 +266,155 @@ export default function SupplierDetailPage() {
         </div>
       )}
 
+      {tab === "orders" && (() => {
+        const grouped = groupOrders(orders);
+        const allGroupOrderIds = grouped.map((g: any) => g.order_id);
+        const allSelected = allGroupOrderIds.length > 0 && allGroupOrderIds.every((id: number) => selectedOrderIds.has(id));
+        const someSelected = selectedOrderIds.size > 0;
+
+        const toggleOrder = (orderId: number) => {
+          setSelectedOrderIds((prev) => {
+            const next = new Set(prev);
+            next.has(orderId) ? next.delete(orderId) : next.add(orderId);
+            return next;
+          });
+        };
+
+        const toggleAll = () => {
+          if (allSelected) {
+            setSelectedOrderIds(new Set());
+          } else {
+            setSelectedOrderIds(new Set(allGroupOrderIds));
+          }
+        };
+
+        return (
+          <div>
+            {/* Toolbar */}
+            <div className="flex items-center gap-3 mb-3 flex-wrap">
+              <label className="flex items-center gap-1.5 cursor-pointer select-none text-sm text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                  onChange={toggleAll}
+                  disabled={grouped.length === 0}
+                />
+                Select all
+              </label>
+
+              <select
+                className="input text-sm py-1 w-40"
+                value={orderStatusFilter}
+                onChange={(e) => { setOrderStatusFilter(e.target.value); setSelectedOrderIds(new Set()); }}
+              >
+                <option value="all">All statuses</option>
+                <option value="unfulfilled">Unfulfilled</option>
+                <option value="pending">Pending</option>
+                <option value="drop_off">Drop off</option>
+                <option value="shipped">Shipped</option>
+              </select>
+
+              {someSelected && (
+                <span className="text-xs text-gray-500">{selectedOrderIds.size} order(s) selected</span>
+              )}
+
+              <button
+                className="btn-primary ml-auto"
+                disabled={!someSelected}
+                onClick={() => setShowSendOrders(true)}
+              >
+                <Send className="w-4 h-4" /> Send Orders ({selectedOrderIds.size})
+              </button>
+            </div>
+
+            {grouped.length === 0 ? (
+              <div className="card p-6 text-center text-gray-400">No orders.</div>
+            ) : grouped.map((group: any) => {
+              const unshipped = group.items.filter((i: any) => i.fulfill_status === "unfulfilled" || i.fulfill_status === "pending" || i.fulfill_status === "drop_off");
+              const needsLabel = Array.from(new Map(unshipped.filter((i: any) => !i.label_id).map((i: any) => [i.order_line_item_id, i])).values());
+              const labeled = group.items.filter((i: any) => i.label_id);
+              const uniqueLIs = Array.from(new Map(group.items.map((i: any) => [i.order_line_item_id, i])).values());
+              const subtotal = uniqueLIs.reduce((s: number, i: any) => s + i.base_cost * i.li_quantity, 0);
+              const isSelected = selectedOrderIds.has(group.order_id);
+
+              return (
+                <div key={group.order_id} className={`card mb-4 transition-shadow ${isSelected ? "ring-2 ring-blue-400" : ""}`}>
+                  <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleOrder(group.order_id)}
+                        className="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Link href={`/orders/${group.order_id}`} className="text-blue-600 hover:underline font-semibold text-sm">
+                            Order #{group.order_id}
+                          </Link>
+                          {group.external_order_id && <span className="font-mono text-xs text-gray-400">{group.external_order_id}</span>}
+                          {group.marketplace && <span className="text-xs text-gray-400 capitalize">{group.marketplace}</span>}
+                          {group.order_status && <OrderStatusBadge status={group.order_status} />}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {group.items.length} item(s) · {group.buyer_name || "—"} · {group.ordered_at ? new Date(group.ordered_at).toLocaleDateString() : "—"} · subtotal ${subtotal.toFixed(2)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      {labeled.length > 0 && (
+                        <button
+                          type="button"
+                          className="btn-primary text-xs py-1 whitespace-nowrap"
+                          onClick={() => printAndMarkShipped(group.order_id, labeled, qc, sid)}
+                        >
+                          <Printer className="w-3 h-3" /> Print Label
+                        </button>
+                      )}
+                      {needsLabel.length > 0 && (
+                        <Link
+                          href={`/orders/${group.order_id}?buy_label_supplier=${sid}`}
+                          className="btn-secondary text-xs py-1 whitespace-nowrap"
+                        >
+                          <Truck className="w-3 h-3" /> Buy Label ({needsLabel.length})
+                        </Link>
+                      )}
+                    </div>
+                  </div>
+                  <div className="table-wrapper">
+                    <table>
+                      <thead><tr><th className="w-12"></th><th>Catalog Product</th><th>Supplier SKU</th><th>Qty</th><th>Cost</th><th>Status</th><th>Tracking</th></tr></thead>
+                      <tbody>
+                        {group.items.map((o: any) => (
+                          <tr key={o.item_key}>
+                            <td>
+                              {o.image_url ? (
+                                <img src={o.image_url} alt={o.product_name} className="w-9 h-9 rounded object-cover border border-gray-200" />
+                              ) : (
+                                <div className="w-9 h-9 rounded bg-gray-100 flex items-center justify-center border border-gray-200">
+                                  <Package className="w-4 h-4 text-gray-300" />
+                                </div>
+                              )}
+                            </td>
+                            <td>{o.product_name}</td>
+                            <td className="font-mono text-xs">{o.sku || "—"}</td>
+                            <td>{o.quantity}</td>
+                            <td>${o.base_cost.toFixed(2)}</td>
+                            <td><FulfillBadge status={o.fulfill_status} /></td>
+                            <td className="text-xs text-gray-500">{o.tracking_number || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
       {tab === "invoices" && (
         <div>
           <div className="flex justify-end mb-3">
@@ -713,4 +862,122 @@ function FulfillBadge({ status }: { status: string }) {
 function InvoiceBadge({ status }: { status: string }) {
   const map: Record<string, string> = { pending: "badge-yellow", sent: "badge-blue", paid: "badge-green", overdue: "badge-red" };
   return <span className={map[status] || "badge-gray"}>{status}</span>;
+}
+
+function SendOrdersModal({
+  supplierId,
+  supplier,
+  selectedOrderIds,
+  onClose,
+  onDone,
+}: {
+  supplierId: number;
+  supplier: any;
+  selectedOrderIds: number[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [notes, setNotes] = useState("");
+  const [result, setResult] = useState<any>(null);
+
+  const mut = useMutation({
+    mutationFn: (data: object) => suppliersApi.sendOrders(supplierId, data),
+    onSuccess: (data) => {
+      setResult(data);
+      if (data.email_sent) {
+        toast.success(`Sent! Invoice ${data.invoice_number} emailed to ${supplier.email}`);
+      } else {
+        toast(`Invoice ${data.invoice_number} created.${data.email_error ? " Email failed — see result." : ""}`, { icon: "⚠️" });
+      }
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to send orders"),
+  });
+
+  const handleSend = () => {
+    mut.mutate({ order_ids: selectedOrderIds, notes: notes.trim() || undefined });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="card w-full max-w-lg p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Send Orders to Supplier</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        {!result ? (
+          <>
+            <div className="space-y-3 mb-5">
+              <div className="rounded-lg bg-blue-50 border border-blue-200 p-3 text-sm space-y-1">
+                <div><span className="font-medium">Supplier:</span> {supplier.name}</div>
+                <div className="flex items-center gap-1.5">
+                  <Mail className="w-3.5 h-3.5 text-blue-500" />
+                  {supplier.email ? (
+                    <span className="text-blue-700">{supplier.email}</span>
+                  ) : (
+                    <span className="text-amber-600 font-medium">No email — invoice will be created but not sent</span>
+                  )}
+                </div>
+                <div><span className="font-medium">Orders selected:</span> {selectedOrderIds.length}</div>
+              </div>
+
+              <div className="text-sm text-gray-600 space-y-1">
+                <p>This will:</p>
+                <ul className="list-disc list-inside text-gray-500 space-y-0.5 text-xs ml-1">
+                  <li>Merge all shipping labels for the selected orders into one PDF</li>
+                  <li>Create an invoice/purchase order document</li>
+                  <li>Email both attachments to the supplier</li>
+                </ul>
+              </div>
+
+              <div>
+                <label className="label">Notes (optional)</label>
+                <input
+                  className="input"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="e.g. Please ship by Friday"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary" onClick={onClose}>Cancel</button>
+              <button
+                className="btn-primary"
+                disabled={mut.isPending}
+                onClick={handleSend}
+              >
+                {mut.isPending ? "Sending…" : <><Send className="w-4 h-4" /> Send Orders</>}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="rounded-lg bg-gray-50 border border-gray-200 p-4 space-y-2 text-sm mb-4">
+              <div className="flex items-center gap-2">
+                {result.email_sent ? (
+                  <span className="text-green-600 font-medium">✓ Email sent to {supplier.email}</span>
+                ) : (
+                  <span className="text-amber-600 font-medium">⚠ Email not sent</span>
+                )}
+              </div>
+              {result.email_error && (
+                <p className="text-red-600 text-xs font-mono bg-red-50 rounded px-2 py-1">{result.email_error}</p>
+              )}
+              <div className="text-gray-600 space-y-0.5">
+                <div>Invoice: <span className="font-mono font-medium">{result.invoice_number}</span></div>
+                <div>Orders: {result.orders_count} · Items: {result.items_count} · Total: <strong>${result.total_amount.toFixed(2)}</strong></div>
+                {result.label_pages > 0 && <div>Label pages included: {result.label_pages}</div>}
+                {result.label_pages === 0 && <div className="text-amber-600 text-xs">No shipping labels found for these orders</div>}
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button className="btn-primary" onClick={onDone}>Done</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }

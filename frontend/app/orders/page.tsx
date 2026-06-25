@@ -1,9 +1,9 @@
 "use client";
-import { useState, useRef, Suspense } from "react";
+import { useState, Suspense } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ordersApi, suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, ChevronRight, RefreshCw, X, Trash2, Printer, AlertTriangle, Upload, Search } from "lucide-react";
+import { Plus, ChevronRight, RefreshCw, X, Trash2, Printer, AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { OrderStatusBadge } from "./order-status-badge";
@@ -31,87 +31,6 @@ function OrdersPageInner() {
   const [showCreate, setShowCreate] = useState(false);
   const [showBulkPrint, setShowBulkPrint] = useState(false);
   const [showDelayed, setShowDelayed] = useState(false);
-  const [searchId, setSearchId] = useState("");
-  const [searching, setSearching] = useState(false);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const handleSearchOrder = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const term = searchId.trim();
-    if (!term) return;
-    setSearching(true);
-    try {
-      // Số thuần → có thể là ID nội bộ, thử mở thẳng order detail trước.
-      if (/^\d+$/.test(term)) {
-        router.push(`/orders/${term}`);
-        return;
-      }
-      // Ngược lại tìm theo external order id (vd: 112-0195210-4951447) hoặc order name.
-      const matches = (await ordersApi.list({ search: term, limit: 1 })) as any[];
-      if (matches.length > 0) {
-        router.push(`/orders/${matches[0].id}`);
-      } else {
-        toast.error(`Không tìm thấy order "${term}"`);
-      }
-    } catch {
-      toast.error("Tìm kiếm thất bại, vui lòng thử lại");
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const handleUploadFiles = async (fileList: FileList | null) => {
-    if (!fileList || fileList.length === 0) return;
-
-    const files = Array.from(fileList);
-    // Chỉ chấp nhận PNG
-    const pngFiles = files.filter(
-      (f) => f.type === "image/png" || f.name.toLowerCase().endsWith(".png")
-    );
-    const rejected = files.length - pngFiles.length;
-    if (rejected > 0) {
-      toast.error(`${rejected} file bị bỏ qua (chỉ chấp nhận file PNG)`);
-    }
-    if (pngFiles.length === 0) return;
-
-    const toastId = toast.loading(`Đang xử lý 0/${pngFiles.length} ảnh…`);
-    const tally = { updated: 0, already: 0, notFound: 0, failed: 0, assigned: 0, processing: 0 };
-
-    // Xử lý lần lượt từng ảnh: tên file = Amazon orderId, scan địa chỉ SHIP TO
-    for (let i = 0; i < pngFiles.length; i++) {
-      const file = pngFiles[i];
-      // Bỏ phần mở rộng .png để lấy orderId
-      const orderId = file.name.replace(/\.png$/i, "").trim();
-      try {
-        const res = await ordersApi.scanLabel(orderId, file);
-        switch (res?.status) {
-          case "updated": tally.updated++; break;
-          case "already_has_address": tally.already++; break;
-          case "not_found": tally.notFound++; break;
-          default: tally.failed++;
-        }
-        // Kết quả gán supplier / chuyển trạng thái (nếu có)
-        const a = res?.assignment;
-        if (a?.auto_assigned) tally.assigned += a.auto_assigned;
-        if (a?.moved_to_processing) tally.processing++;
-      } catch (e) {
-        tally.failed++;
-      }
-      toast.loading(`Đang xử lý ${i + 1}/${pngFiles.length} ảnh…`, { id: toastId });
-    }
-
-    const parts: string[] = [];
-    if (tally.updated) parts.push(`${tally.updated} cập nhật địa chỉ`);
-    if (tally.already) parts.push(`${tally.already} đã có địa chỉ`);
-    if (tally.assigned) parts.push(`${tally.assigned} gán supplier`);
-    if (tally.processing) parts.push(`${tally.processing} → processing`);
-    if (tally.notFound) parts.push(`${tally.notFound} không thấy order`);
-    if (tally.failed) parts.push(`${tally.failed} lỗi scan`);
-    toast.success(`Hoàn tất ${pngFiles.length} ảnh: ${parts.join(", ")}`, { id: toastId });
-
-    if (tally.updated > 0 || tally.assigned > 0 || tally.processing > 0) refetch();
-  };
 
   const { data: regularOrders = [], isLoading: regularLoading, refetch: refetchRegular } = useQuery({
     queryKey: ["orders", status, marketplace, page],
@@ -150,29 +69,17 @@ function OrdersPageInner() {
 
   return (
     <div>
-      <div className="page-header mb-3">
+      <div className="page-header">
         <h1 className="page-title">Orders</h1>
         <div className="flex gap-2">
           <button className="btn-secondary" onClick={() => refetch()}><RefreshCw className="w-4 h-4" />Refresh</button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/png,.png"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              handleUploadFiles(e.target.files);
-              e.target.value = ""; // reset để chọn lại cùng file vẫn trigger
-            }}
-          />
-          <button className="btn-secondary" onClick={() => fileInputRef.current?.click()}><Upload className="w-4 h-4" />Upload</button>
           <button className="btn-secondary" onClick={() => setShowBulkPrint(true)}><Printer className="w-4 h-4" />Bulk Print</button>
           <button className="btn-primary" onClick={() => setShowCreate(true)}><Plus className="w-4 h-4" />Create Order</button>
         </div>
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-3 mb-2">
+      <div className="flex items-center gap-3 mb-4">
         <select
           className="input w-40"
           value={status}
@@ -191,8 +98,8 @@ function OrdersPageInner() {
         </select>
         <button
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors ${showDelayed
-            ? "bg-red-50 border-red-400 text-red-700"
-            : "bg-white border-gray-300 text-gray-700 hover:border-gray-400"
+              ? "bg-red-50 border-red-400 text-red-700"
+              : "bg-white border-gray-300 text-gray-700 hover:border-gray-400"
             }`}
           onClick={() => { setShowDelayed((v) => !v); router.replace("?page=0"); }}
         >
@@ -204,25 +111,9 @@ function OrdersPageInner() {
             </span>
           )}
         </button>
-
-        <form onSubmit={handleSearchOrder} className="flex items-center gap-2">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-            <input
-              type="text"
-              className="input w-64 pl-8"
-              placeholder="Search Order ID"
-              value={searchId}
-              onChange={(e) => setSearchId(e.target.value)}
-            />
-          </div>
-          <button type="submit" className="btn-secondary" disabled={searching || !searchId.trim()}>
-            {searching ? "Searching…" : "Search"}
-          </button>
-        </form>
       </div>
 
-      <div className="card table-wrapper table-scroll max-h-[calc(100vh-194px)]">
+      <div className="card table-wrapper">
         {showDelayed ? (
           <table>
             <thead><tr>

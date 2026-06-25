@@ -1,26 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, exists as sa_exists, or_
+from sqlalchemy import select, exists as sa_exists
 from datetime import datetime, timezone, timedelta
 import base64
-import io
-import re
-import logging
-import pytesseract
-from PIL import Image
 from app.core.database import get_db
 from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus, OrderFulfillmentItem
 from app.models.product import Product, ProductSupplier, ProductComponent
 from app.models.supplier import Supplier, SupplierProduct
-from app.models.scan_log import ScanLog
 from app.schemas.order import (
     OrderCreate, OrderUpdate, OrderOut, OrderLineItemUpdate,
     OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut, ShippingLabelUpdate,
-    AssignSupplierBody, MarkShippedBody, UploadLabelB64, ScanLabelBody,
+    AssignSupplierBody, MarkShippedBody, UploadLabelB64,
 )
 
 router = APIRouter(prefix="/orders", tags=["orders"])
-logger = logging.getLogger("orders")
 
 
 @router.get("", response_model=list[OrderOut])
@@ -30,21 +23,11 @@ async def list_orders(
     supplier_id: int | None = Query(None),
     from_date: datetime | None = Query(None),
     to_date: datetime | None = Query(None),
-    search: str | None = Query(None),
     skip: int = 0,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
 ):
     q = select(Order)
-    if search:
-        s = search.strip()
-        conds = [
-            Order.external_order_id.ilike(f"%{s}%"),
-            Order.order_name.ilike(f"%{s}%"),
-        ]
-        if s.isdigit():
-            conds.append(Order.id == int(s))
-        q = q.where(or_(*conds))
     if marketplace:
         q = q.where(Order.marketplace == marketplace)
     if status:
@@ -103,216 +86,6 @@ async def create_order(body: OrderCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(order)
     return await _order_out(order, db)
-
-
-# Full US state / territory name -> 2-letter code (labels use either form)
-_STATES = {
-    "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
-    "CALIFORNIA": "CA", "COLORADO": "CO", "CONNECTICUT": "CT", "DELAWARE": "DE",
-    "FLORIDA": "FL", "GEORGIA": "GA", "HAWAII": "HI", "IDAHO": "ID",
-    "ILLINOIS": "IL", "INDIANA": "IN", "IOWA": "IA", "KANSAS": "KS",
-    "KENTUCKY": "KY", "LOUISIANA": "LA", "MAINE": "ME", "MARYLAND": "MD",
-    "MASSACHUSETTS": "MA", "MICHIGAN": "MI", "MINNESOTA": "MN", "MISSISSIPPI": "MS",
-    "MISSOURI": "MO", "MONTANA": "MT", "NEBRASKA": "NE", "NEVADA": "NV",
-    "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ", "NEW MEXICO": "NM", "NEW YORK": "NY",
-    "NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND", "OHIO": "OH", "OKLAHOMA": "OK",
-    "OREGON": "OR", "PENNSYLVANIA": "PA", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC",
-    "SOUTH DAKOTA": "SD", "TENNESSEE": "TN", "TEXAS": "TX", "UTAH": "UT",
-    "VERMONT": "VT", "VIRGINIA": "VA", "WASHINGTON": "WA", "WEST VIRGINIA": "WV",
-    "WISCONSIN": "WI", "WYOMING": "WY", "DISTRICT OF COLUMBIA": "DC",
-    "PUERTO RICO": "PR",
-}
-_ABBRS = set(_STATES.values())
-
-
-def _parse_csz(line: str) -> dict | None:
-    """Parse a "CITY STATE ZIP" line. STATE may be a 2-letter code or full name."""
-    m = re.search(r"\b(\d{5})(?:-\d{4})?\s*$", line)
-    if not m:
-        return None
-    zipc = line[m.start():].strip()
-    head = line[:m.start()].strip(" ,.")
-    if not head:
-        return None
-    words = head.split()
-    state = city = None
-    # Two-word state name (e.g. "NEW JERSEY")
-    if len(words) >= 3 and " ".join(words[-2:]).upper() in _STATES:
-        state = _STATES[" ".join(words[-2:]).upper()]
-        city = " ".join(words[:-2])
-    elif words:
-        last = words[-1].upper()
-        if last in _STATES:                       # full single-word state name
-            state = _STATES[last]
-        elif len(last) == 2 and last.isalpha():    # 2-letter code (NJ, IA, ...)
-            state = last
-        if state:
-            city = " ".join(words[:-1])
-    if not state or not city:
-        return None
-    return {"city": city.strip(), "state": state, "zip": zipc}
-
-
-def _ocr_text(png_bytes: bytes) -> str:
-    """Run Tesseract OCR over a shipping-label PNG and return the raw text."""
-    img = Image.open(io.BytesIO(png_bytes)).convert("L")  # grayscale
-    # Upscale small images so Tesseract reads the smaller fonts more reliably
-    if img.width < 1200:
-        scale = 1200 / img.width
-        img = img.resize((int(img.width * scale), int(img.height * scale)))
-    return pytesseract.image_to_string(img)
-
-
-def _parse_ship_to(text: str) -> dict | None:
-    """Extract recipient name / street / city-state-zip from the SHIP TO block.
-
-    Handles labels where OCR splits the heading (e.g. "SHIP" on one line with the
-    name, "TO:" on the next with the street) and where the state is written out
-    in full (e.g. "MURRAY IOWA 50174-1003").
-    """
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-
-    # Anchor on the first "SHIP" line that is not "SHIP FROM"
-    start = None
-    for i, ln in enumerate(lines):
-        up = ln.upper()
-        if "SHIP" in up and "FROM" not in up:
-            start = i
-            break
-    if start is None:
-        return None
-
-    block: list[str] = []
-    csz = None
-    for ln in lines[start:]:
-        # Strip the SHIP / SHIP TO / TO: labels off the start of the line
-        cleaned = re.sub(r"^\s*SHIP\b\s*(?:TO\b)?\s*:?\s*", "", ln, flags=re.I)
-        cleaned = re.sub(r"^\s*TO\b\s*:?\s*", "", cleaned, flags=re.I)
-        cleaned = cleaned.strip(" :,")
-        if not cleaned:
-            continue
-        parsed = _parse_csz(cleaned)
-        if parsed:
-            csz = parsed
-            break
-        block.append(cleaned)
-        if len(block) >= 6:  # safety stop
-            break
-
-    result: dict = {}
-    if block:
-        result["name"] = block[0]
-        if len(block) >= 2:
-            result["line1"] = block[1]
-        if len(block) >= 3:
-            result["line2"] = " ".join(block[2:])
-    if csz:
-        result["city"] = csz["city"]
-        result["state"] = csz["state"]
-        result["zip"] = csz["zip"]
-    return result or None
-
-
-@router.post("/scan-label")
-async def scan_label_address(body: ScanLabelBody, db: AsyncSession = Depends(get_db)):
-    """Scan a shipping label, then record the outcome to the scan-log audit trail."""
-    result = await _scan_label_impl(body, db)
-    try:
-        db.add(ScanLog(
-            order_id=(result.get("order_id") or None),
-            status=result.get("status") or "unknown",
-            error=result.get("error"),
-            filled=result.get("filled"),
-            address=result.get("address"),
-        ))
-        await db.commit()
-    except Exception as e:
-        await db.rollback()
-        logger.warning(f"scan_label: failed to record scan log — {e}")
-    return result
-
-
-async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
-    """Read the SHIP TO block from a shipping-label PNG and, if the matching
-    Amazon order has no address yet, fill it in.
-
-    `order_id` is the Amazon order id (the PNG filename without extension).
-    Returns {order_id, status, address?} where status is one of:
-      not_found | already_has_address | updated | scan_failed | no_api_key
-    """
-    order_id = (body.order_id or "").strip()
-    if not order_id:
-        return {"order_id": order_id, "status": "not_found"}
-
-    # 1. Find the order by Amazon external id
-    res = await db.execute(select(Order).where(Order.external_order_id == order_id).limit(1))
-    order = res.scalar_one_or_none()
-    if not order:
-        return {"order_id": order_id, "status": "not_found"}
-
-    # 2. Skip only if the address is already complete. An address counts as
-    #    complete when all key fields are present — a partial record (e.g. only
-    #    city/state) should still be filled in from the label.
-    addr = order.shipping_address if isinstance(order.shipping_address, dict) else {}
-    required = ["name", "line1", "city", "state", "zip"]
-    missing = [k for k in required if not str(addr.get(k) or "").strip()]
-    if not missing:
-        # Address already complete — still advance assignment / status
-        assignment = await _post_scan_assign(order, db)
-        await db.commit()
-        return {"order_id": order_id, "status": "already_has_address", "assignment": assignment}
-
-    # 3. Validate the image bytes
-    try:
-        raw = base64.b64decode(body.image_b64)
-    except Exception:
-        return {"order_id": order_id, "status": "scan_failed", "error": "bad image data"}
-    if raw[:8] != b"\x89PNG\r\n\x1a\n":
-        return {"order_id": order_id, "status": "scan_failed", "error": "not a PNG"}
-
-    # 4. OCR the label and parse the SHIP TO block (local Tesseract — no AI)
-    try:
-        text = _ocr_text(raw)
-        data = _parse_ship_to(text)
-    except Exception as e:
-        print(f"scan_label: order={order_id} OCR error — {e}", flush=True)
-        return {"order_id": order_id, "status": "scan_failed", "error": str(e)}
-
-    if not data or not (data.get("line1") or data.get("city")):
-        # Dump OCR text only on failure, to help diagnose unreadable labels
-        print(f"scan_label: order={order_id} no address parsed; OCR text:\n{text}", flush=True)
-        return {"order_id": order_id, "status": "scan_failed", "error": "no address parsed"}
-
-    # 6. Merge: keep existing non-empty fields, fill only the missing ones
-    scanned = {
-        "name": data.get("name"),
-        "line1": data.get("line1"),
-        "line2": data.get("line2"),
-        "city": data.get("city"),
-        "state": data.get("state"),
-        "zip": data.get("zip"),
-    }
-    address = dict(addr)  # start from what's already there
-    filled = []
-    for k, v in scanned.items():
-        if not str(address.get(k) or "").strip() and v:
-            address[k] = v
-            filled.append(k)
-    address.setdefault("country", addr.get("country") or "US")
-    address.setdefault("phone", addr.get("phone"))
-
-    order.shipping_address = address
-    if not str(order.buyer_name or "").strip() and address.get("name"):
-        order.buyer_name = address.get("name")
-    order.updated_at = datetime.now(timezone.utc)
-
-    # Continue: assign supplier by SKU and/or move the order to processing
-    assignment = await _post_scan_assign(order, db)
-
-    await db.commit()
-    logger.info(f"scan_label: order={order_id} filled {filled or 'nothing'}")
-    return {"order_id": order_id, "status": "updated", "address": address,
-            "filled": filled, "assignment": assignment}
 
 
 @router.get("/bulk-labels")

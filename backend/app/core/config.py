@@ -5,7 +5,7 @@ from functools import lru_cache
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    DATABASE_URL: str = "postgresql+asyncpg://maga:maga_secret@localhost:5431/maga_db"
+    DATABASE_URL: str = "postgresql+asyncpg://maga:maga_secret@localhost:5432/maga_db"
     REDIS_URL: str = "redis://localhost:6379"
     SECRET_KEY: str = "dev-secret-key"
     ALGORITHM: str = "HS256"

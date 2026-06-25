@@ -195,6 +195,9 @@ def _parse_ship_to(text: str) -> dict | None:
         if parsed:
             csz = parsed
             break
+        # Skip OCR noise from nearby 2D barcodes (lines with almost no letters/digits)
+        if sum(c.isalnum() for c in cleaned) < 3:
+            continue
         block.append(cleaned)
         if len(block) >= 6:  # safety stop
             break

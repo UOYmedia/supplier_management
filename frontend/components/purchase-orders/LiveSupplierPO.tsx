@@ -1,0 +1,182 @@
+"use client"
+
+import { useState, useEffect } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { RefreshCw, Database } from "lucide-react"
+import { suppliersApi } from "@/lib/api"
+import { SKUItem, fmt } from "@/lib/purchase-orders"
+import SKUTable from "./SKUTable"
+
+// Real supplier as returned by GET /suppliers
+interface RealSupplier {
+  id: number
+  name: string
+  product_count: number
+  total_stock: number
+}
+
+// Catalog item as returned by GET /suppliers/{id}/products
+interface CatalogProduct {
+  id: number
+  name: string
+  sku: string
+  unit_price: number | string
+  stock_quantity: number
+  sold_quantity: number
+  pending_quantity: number
+}
+
+// Map a live catalog row into the PO table's SKUItem shape.
+//   available = stock_quantity   (physical inventory on hand)
+//   ordered   = pending_quantity (orders waiting to ship)
+//   unit_cost = unit_price
+function toSKUItem(p: CatalogProduct, supplierName: string): SKUItem {
+  const available = p.stock_quantity
+  const ordered = p.pending_quantity
+  const unit_cost = Number(p.unit_price) || 0
+  const gap = available - ordered
+  const oversold = Math.max(0, -gap)
+  const avail_final = Math.max(0, gap)
+  const total_cost = ordered * unit_cost
+  const oversold_value = oversold * unit_cost
+  const avail_value = avail_final * unit_cost
+  const status: SKUItem["status"] = gap > 5 ? "ok" : gap >= 0 ? "low" : "oversold"
+
+  return {
+    sku: p.name || p.sku,
+    supplier: supplierName as SKUItem["supplier"],
+    ordered, available, unit_cost,
+    gap, oversold, avail_final,
+    total_cost, oversold_value, avail_value,
+    status,
+    po_id: p.id,
+    po_status: "LIVE",
+  }
+}
+
+export default function LiveSupplierPO() {
+  const [activeId, setActiveId] = useState<number | null>(null)
+
+  const suppliersQuery = useQuery<RealSupplier[]>({
+    queryKey: ["live-suppliers"],
+    queryFn: () => suppliersApi.list({ is_active: true, limit: 100 }),
+  })
+
+  const suppliers = suppliersQuery.data ?? []
+
+  // Default to the supplier with the most catalog items (most useful to look at)
+  useEffect(() => {
+    if (activeId === null && suppliers.length > 0) {
+      const best = [...suppliers].sort((a, b) => b.product_count - a.product_count)[0]
+      setActiveId(best.id)
+    }
+  }, [suppliers, activeId])
+
+  const activeSupplier = suppliers.find((s) => s.id === activeId) ?? null
+
+  const productsQuery = useQuery<CatalogProduct[]>({
+    queryKey: ["live-catalog", activeId],
+    queryFn: () => suppliersApi.listProducts(activeId as number),
+    enabled: activeId !== null,
+  })
+
+  const items: SKUItem[] = (productsQuery.data ?? []).map((p) =>
+    toSKUItem(p, activeSupplier?.name ?? "")
+  )
+
+  // Stock-supplier economics (catalog data is inventory-based):
+  //   goodsValue     = value of orders waiting to ship (ordered × price)
+  //   inventoryValue = value of stock still on hand
+  //   debt           = value of units sold beyond available stock (công nợ)
+  const goodsValue = items.reduce((s, i) => s + i.total_cost, 0)
+  const inventoryValue = items.reduce((s, i) => s + i.avail_value, 0)
+  const debt = items.reduce((s, i) => s + i.oversold_value, 0)
+  const oversoldCount = items.filter((i) => i.oversold > 0).length
+
+  return (
+    <div>
+      {/* Supplier tabs from real DB */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1">
+          <Database className="w-3 h-3" /> Live data
+        </span>
+        {suppliersQuery.isLoading ? (
+          <span className="text-sm text-gray-400">Loading suppliers…</span>
+        ) : suppliers.length === 0 ? (
+          <span className="text-sm text-gray-400">No active suppliers found</span>
+        ) : (
+          suppliers.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => setActiveId(s.id)}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md border transition-colors ${
+                activeId === s.id
+                  ? "bg-blue-600 text-white border-transparent"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600"
+              }`}
+            >
+              {s.name}
+              <span className="ml-1.5 text-[10px] opacity-70">{s.product_count}</span>
+            </button>
+          ))
+        )}
+        <button
+          className="btn-secondary py-1.5 text-xs ml-auto"
+          onClick={() => { suppliersQuery.refetch(); productsQuery.refetch() }}
+        >
+          <RefreshCw className="w-3.5 h-3.5" /> Refresh
+        </button>
+      </div>
+
+      {activeSupplier && (
+        <div className="card overflow-hidden">
+          {/* Card header */}
+          <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-gray-50/50">
+            <div className="flex items-center gap-3">
+              <span className="font-semibold text-gray-800">{activeSupplier.name}</span>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-700">
+                Stock
+              </span>
+              <span className="text-xs text-gray-400">{items.length} SKUs · live catalog</span>
+            </div>
+            <div className="text-right leading-tight">
+              <span className={`block font-bold ${debt > 0 ? "text-red-600" : "text-gray-900"}`}>
+                ${fmt(debt)}
+              </span>
+              <span className="block text-[10px] text-gray-400">debt owed</span>
+            </div>
+          </div>
+
+          <div className="px-5 py-4">
+            {productsQuery.isLoading ? (
+              <p className="text-sm text-gray-400 py-8 text-center">Loading catalog…</p>
+            ) : productsQuery.isError ? (
+              <p className="text-sm text-red-500 py-8 text-center">Failed to load catalog</p>
+            ) : items.length === 0 ? (
+              <p className="text-sm text-gray-400 py-8 text-center">This supplier has no catalog items</p>
+            ) : (
+              <>
+                <SKUTable items={items} supplierType="stock" />
+
+                <div className="mt-4 text-sm space-y-1 text-right border-t border-dashed border-gray-200 pt-3">
+                  <div className="flex justify-end gap-8 text-gray-500">
+                    <span>Orders to ship (value)</span>
+                    <span className="font-medium w-28">${fmt(goodsValue)}</span>
+                  </div>
+                  <div className="flex justify-end gap-8 text-green-700">
+                    <span>Inventory value on hand</span>
+                    <span className="font-medium w-28">${fmt(inventoryValue)}</span>
+                  </div>
+                  <div className="flex justify-end gap-8 font-semibold pt-1 border-t border-gray-200 text-red-600">
+                    <span>Debt owed (shortage{oversoldCount > 0 ? `, ${oversoldCount} SKUs` : ""})</span>
+                    <span className="w-28">${fmt(debt)}</span>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

@@ -9,6 +9,7 @@ import { Supplier, PODailyResponse, SKUItem, computeItem, computeBalance, fmtDat
 import POMetrics from "@/components/purchase-orders/POMetrics"
 import BalanceBar from "@/components/purchase-orders/BalanceBar"
 import SupplierPOCard from "@/components/purchase-orders/SupplierPOCard"
+import LiveSupplierPO from "@/components/purchase-orders/LiveSupplierPO"
 import RequestList from "@/components/purchase-orders/RequestList"
 import { purchaseRequestsApi } from "@/lib/api"
 
@@ -103,6 +104,7 @@ function PurchaseOrdersPage() {
   const [customTo, setCustomTo] = useState<Date>(today)
 
   const [activeSupplier, setActiveSupplier] = useState<Filter>("ALL")
+  const [dataSource, setDataSource] = useState<"sample" | "live">("sample")
   const pageTab = (searchParams.get("tab") === "requests" ? "requests" : "orders") as PageTab
   const [username, setUsername] = useState("")
   const [userRole, setUserRole] = useState("")
@@ -237,6 +239,7 @@ function PurchaseOrdersPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="page-title">Purchase Orders</h1>
 
+            {dataSource === "sample" && <>
             {/* Period preset pills */}
             <div className="flex items-center gap-1 ml-2">
               {(Object.keys(PERIOD_LABELS) as PeriodPreset[]).map((p) => (
@@ -295,6 +298,7 @@ function PurchaseOrdersPage() {
                 {periodLabel}
               </span>
             )}
+            </>}
           </div>
           <p className="text-sm text-gray-500 mt-1 flex items-center gap-2">
             {isLoading
@@ -306,19 +310,44 @@ function PurchaseOrdersPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button className="btn-secondary" onClick={() => refetch()}>
-            <RefreshCw className="w-4 h-4" /> Refresh
-          </button>
-          <button className="btn-secondary">
-            <Plus className="w-4 h-4" /> Add SKU
-          </button>
-          <button className="btn-secondary">
-            <Copy className="w-4 h-4" /> Copy Summary
-          </button>
+          {/* Sample vs Live data toggle */}
+          <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+            <button
+              onClick={() => setDataSource("sample")}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                dataSource === "sample" ? "bg-gray-800 text-white" : "bg-white text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Sample
+            </button>
+            <button
+              onClick={() => setDataSource("live")}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                dataSource === "live" ? "bg-emerald-600 text-white" : "bg-white text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Live
+            </button>
+          </div>
+          {dataSource === "sample" && (
+            <>
+              <button className="btn-secondary" onClick={() => refetch()}>
+                <RefreshCw className="w-4 h-4" /> Refresh
+              </button>
+              <button className="btn-secondary">
+                <Plus className="w-4 h-4" /> Add SKU
+              </button>
+              <button className="btn-secondary">
+                <Copy className="w-4 h-4" /> Copy Summary
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      {isLoading ? (
+      {dataSource === "live" ? (
+        <LiveSupplierPO />
+      ) : isLoading ? (
         <POSkeleton />
       ) : isError ? (
         <div className="card p-8 text-center">

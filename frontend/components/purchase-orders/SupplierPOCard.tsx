@@ -64,7 +64,7 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
       .map((i) => `  ⚠ ${i.sku}: short ${i.oversold} × $${fmt(i.unit_cost)} = $${fmt(i.oversold_value)}`)
     const subtotal = `Order value: $${fmt(goodsValue)}`
     const balanceDue = isStock
-      ? `Công nợ (oversold): $${fmt(amountDue)}`
+      ? `Debt owed (oversold): $${fmt(amountDue)}`
       : `Balance Due: $${fmt(amountDue)}`
     const parts = [header, divider, ...rows]
     if (oversoldRows.length) parts.push("", "Oversold:", ...oversoldRows)
@@ -128,7 +128,7 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
               ${fmt(amountDue)}
             </span>
             <span className="block text-[10px] text-gray-400">
-              {isStock ? "công nợ" : "from balance"}
+              {isStock ? "debt owed" : "from balance"}
             </span>
           </div>
           <button className="btn-secondary py-1.5 text-xs" onClick={handleCopy}>
@@ -157,15 +157,15 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
           {isStock ? (
             <>
               <div className="flex justify-end gap-8 text-gray-500">
-                <span>Hàng xuất kho (đã trả trước)</span>
+                <span>Sold from stock (pre-paid)</span>
                 <span className="font-medium w-28">${fmt(goodsValue)}</span>
               </div>
               <div className="flex justify-end gap-8 text-green-700">
-                <span>Tồn kho còn lại (giá trị)</span>
+                <span>Inventory value remaining</span>
                 <span className="font-medium w-28">${fmt(inventoryValue)}</span>
               </div>
               <div className="flex justify-end gap-8 font-semibold pt-1 border-t border-gray-200 text-red-600">
-                <span>Công nợ phát sinh (thiếu hàng)</span>
+                <span>Debt owed (shortage)</span>
                 <span className="w-28">${fmt(oversoldValue)}</span>
               </div>
             </>
@@ -176,7 +176,7 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
                 <span className="font-medium w-28">${fmt(goodsValue)}</span>
               </div>
               <div className="flex justify-end gap-8 font-semibold text-gray-900 pt-1 border-t border-gray-200">
-                <span>Trừ vào balance</span>
+                <span>Deducted from balance</span>
                 <span className="w-28">${fmt(goodsValue)}</span>
               </div>
             </>

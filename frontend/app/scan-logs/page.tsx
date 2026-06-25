@@ -67,10 +67,15 @@ export default function ScanLogsPage() {
         ))}
       </div>
 
-      <div className="card table-wrapper">
+      <div className="card table-wrapper table-scroll max-h-[calc(100vh-150px)]">
         <table>
           <thead><tr>
-            <th>Time</th><th>Order ID</th><th>Status</th><th>Address</th><th>Filled</th><th>Error</th>
+            <th>Time</th>
+            <th>Order ID</th>
+            <th>Status</th>
+            <th>Address</th>
+            <th>Filled</th>
+            <th>Error</th>
           </tr></thead>
           <tbody>
             {isLoading ? (

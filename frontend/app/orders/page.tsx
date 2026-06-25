@@ -76,7 +76,7 @@ function OrdersPageInner() {
     if (pngFiles.length === 0) return;
 
     const toastId = toast.loading(`Đang xử lý 0/${pngFiles.length} ảnh…`);
-    const tally = { updated: 0, already: 0, notFound: 0, failed: 0, noKey: 0 };
+    const tally = { updated: 0, already: 0, notFound: 0, failed: 0, assigned: 0, processing: 0 };
 
     // Xử lý lần lượt từng ảnh: tên file = Amazon orderId, scan địa chỉ SHIP TO
     for (let i = 0; i < pngFiles.length; i++) {
@@ -89,27 +89,28 @@ function OrdersPageInner() {
           case "updated": tally.updated++; break;
           case "already_has_address": tally.already++; break;
           case "not_found": tally.notFound++; break;
-          case "no_api_key": tally.noKey++; break;
           default: tally.failed++;
         }
+        // Kết quả gán supplier / chuyển trạng thái (nếu có)
+        const a = res?.assignment;
+        if (a?.auto_assigned) tally.assigned += a.auto_assigned;
+        if (a?.moved_to_processing) tally.processing++;
       } catch (e) {
         tally.failed++;
       }
       toast.loading(`Đang xử lý ${i + 1}/${pngFiles.length} ảnh…`, { id: toastId });
     }
 
-    if (tally.noKey > 0) {
-      toast.error("Chưa cấu hình ANTHROPIC_API_KEY — không thể scan ảnh.", { id: toastId });
-    } else {
-      const parts: string[] = [];
-      if (tally.updated) parts.push(`${tally.updated} cập nhật địa chỉ`);
-      if (tally.already) parts.push(`${tally.already} đã có địa chỉ`);
-      if (tally.notFound) parts.push(`${tally.notFound} không thấy order`);
-      if (tally.failed) parts.push(`${tally.failed} lỗi scan`);
-      toast.success(`Hoàn tất ${pngFiles.length} ảnh: ${parts.join(", ")}`, { id: toastId });
-    }
+    const parts: string[] = [];
+    if (tally.updated) parts.push(`${tally.updated} cập nhật địa chỉ`);
+    if (tally.already) parts.push(`${tally.already} đã có địa chỉ`);
+    if (tally.assigned) parts.push(`${tally.assigned} gán supplier`);
+    if (tally.processing) parts.push(`${tally.processing} → processing`);
+    if (tally.notFound) parts.push(`${tally.notFound} không thấy order`);
+    if (tally.failed) parts.push(`${tally.failed} lỗi scan`);
+    toast.success(`Hoàn tất ${pngFiles.length} ảnh: ${parts.join(", ")}`, { id: toastId });
 
-    if (tally.updated > 0) refetch();
+    if (tally.updated > 0 || tally.assigned > 0 || tally.processing > 0) refetch();
   };
 
   const { data: regularOrders = [], isLoading: regularLoading, refetch: refetchRegular } = useQuery({

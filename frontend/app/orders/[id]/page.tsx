@@ -244,10 +244,11 @@ export default function OrderDetailPage() {
 
       {/* Dispatch readiness */}
       {!isShipped && (
-        <div className={`card p-3 mb-4 text-sm flex items-center gap-2 ${allMapped
+        <div className={`card p-3 mb-4 text-sm flex items-center gap-2 ${
+          allMapped
             ? uniqueSupplierCount === 1 ? "bg-green-50 border-green-200" : "bg-blue-50 border-blue-200"
             : "bg-amber-50 border-amber-200"
-          }`}>
+        }`}>
           {allMapped ? (
             uniqueSupplierCount === 1 ? (
               <>
@@ -970,10 +971,11 @@ function LineItemRow({ li, orderId, onUpdate, onAssignSupplier, onQuickAssign, s
                   <button
                     key={s}
                     onClick={() => setShortNameInput(s)}
-                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${shortNameInput === s
+                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                      shortNameInput === s
                         ? "bg-blue-500 text-white border-blue-500"
                         : "border-gray-200 text-gray-600 hover:border-blue-400"
-                      }`}
+                    }`}
                   >
                     {s}
                   </button>
@@ -1026,9 +1028,9 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   const selectedSp = catalog.find((c: any) => c.id === selectedSpId);
   const filtered = spQuery
     ? catalog.filter((sp: any) =>
-      sp.name.toLowerCase().includes(spQuery.toLowerCase()) ||
-      sp.sku.toLowerCase().includes(spQuery.toLowerCase())
-    )
+        sp.name.toLowerCase().includes(spQuery.toLowerCase()) ||
+        sp.sku.toLowerCase().includes(spQuery.toLowerCase())
+      )
     : catalog;
 
   const chooseSp = (sp: any) => {
@@ -1068,7 +1070,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="card w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
+      <div className="card w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="font-semibold">{isReassign ? "Re-assign Supplier" : "Assign Supplier"}</h2>
@@ -1255,7 +1257,7 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
         });
         setEstimateInfo({ complete: !!est.complete, missing: est.missing || [] });
       })
-      .catch(() => { });
+      .catch(() => {});
   }, [orderId, supplierId]);
 
   const getRatesMut = useMutation({
@@ -1327,8 +1329,9 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
               Amazon Order: <strong className="font-mono">{amazonOrderId}</strong> · {lineItemIds.length} item(s)
             </div>
             {estimateInfo && (
-              <div className={`mb-3 p-2 rounded-lg text-xs ${estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
-                }`}>
+              <div className={`mb-3 p-2 rounded-lg text-xs ${
+                estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
+              }`}>
                 {estimateInfo.complete
                   ? "✓ Auto-filled from catalog dimensions. Adjust if needed."
                   : `Partial auto-fill — ${estimateInfo.missing.length} item(s) missing dimensions.`}
@@ -1383,10 +1386,11 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
                 {services.map((s) => (
                   <label
                     key={s.shipping_service_id}
-                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedService?.shipping_service_id === s.shipping_service_id
+                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                      selectedService?.shipping_service_id === s.shipping_service_id
                         ? "border-orange-500 bg-orange-50"
                         : "border-gray-200 hover:border-gray-300"
-                      }`}
+                    }`}
                   >
                     <input
                       type="radio"
@@ -1467,7 +1471,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
         });
         setEstimateInfo({ complete: !!est.complete, missing: est.missing || [] });
       })
-      .catch(() => { });
+      .catch(() => {});
   }, [orderId, supplierId]);
 
   const getRatesMut = useMutation({
@@ -1545,8 +1549,9 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
             />
 
             {estimateInfo && (
-              <div className={`mb-3 p-2 rounded-lg text-xs ${estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
-                }`}>
+              <div className={`mb-3 p-2 rounded-lg text-xs ${
+                estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
+              }`}>
                 {estimateInfo.complete
                   ? "✓ Auto-filled from catalog dimensions. Adjust if needed."
                   : `Partial auto-fill — ${estimateInfo.missing.length} item(s) missing dimensions. Edit any field below or set per-unit dimensions on the supplier catalog.`}
@@ -1606,8 +1611,9 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
                 {rates.map((r) => (
                   <label
                     key={r.id}
-                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedRate === r.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"
-                      }`}
+                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                      selectedRate === r.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"
+                    }`}
                   >
                     <input
                       type="radio"
@@ -1669,21 +1675,21 @@ function AddressPreview({
   if (!from && !to) return null;
   const fromLines = from
     ? [
-      from.name,
-      [from.street1, from.street2].filter(Boolean).join(", "),
-      [from.city, from.state, from.zipcode].filter(Boolean).join(", "),
-      from.country,
-      from.phone,
-    ].filter(Boolean)
+        from.name,
+        [from.street1, from.street2].filter(Boolean).join(", "),
+        [from.city, from.state, from.zipcode].filter(Boolean).join(", "),
+        from.country,
+        from.phone,
+      ].filter(Boolean)
     : [];
   const toLines = to
     ? [
-      to.name,
-      [to.line1, to.line2].filter(Boolean).join(", "),
-      [to.city, to.state, to.zip].filter(Boolean).join(", "),
-      to.country,
-      to.phone,
-    ].filter(Boolean)
+        to.name,
+        [to.line1, to.line2].filter(Boolean).join(", "),
+        [to.city, to.state, to.zip].filter(Boolean).join(", "),
+        to.country,
+        to.phone,
+      ].filter(Boolean)
     : [];
   return (
     <div className="grid grid-cols-2 gap-2 mb-3">
@@ -1755,7 +1761,7 @@ function EasyPostDebugPanel({
       </div>
       {showRaw && (
         <pre className="text-[10px] leading-tight p-2 max-h-40 overflow-auto bg-gray-900 text-gray-100 rounded-b-lg font-mono">
-          {JSON.stringify(debug, null, 2)}
+{JSON.stringify(debug, null, 2)}
         </pre>
       )}
     </div>

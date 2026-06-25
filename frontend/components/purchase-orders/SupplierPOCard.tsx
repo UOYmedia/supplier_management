@@ -4,7 +4,7 @@ import { useState } from "react"
 import { Copy, Download, Loader2 } from "lucide-react"
 import toast from "react-hot-toast"
 
-import { Supplier, SKUItem, SUPPLIER_INFO, computeBalance, fmt } from "@/lib/purchase-orders"
+import { Supplier, SKUItem, SUPPLIER_INFO, computeBalance, supplierType, fmt } from "@/lib/purchase-orders"
 import SKUTable from "./SKUTable"
 import OversoldNotice from "./OversoldNotice"
 import RemittanceSlip from "./RemittanceSlip"
@@ -37,7 +37,20 @@ const BUYER_INFO = {
 
 export default function SupplierPOCard({ supplier, items, poNumber, date }: Props) {
   const [pdfLoading, setPdfLoading] = useState(false)
-  const total = items.reduce((s, i) => s + i.total_cost, 0)
+  const type = supplierType(supplier)
+  const isStock = type === "stock"
+
+  // goodsValue = value of everything sold today (ordered × price)
+  // oversoldValue = units sold beyond available stock × price
+  // inventoryValue = value of stock still left
+  const goodsValue    = items.reduce((s, i) => s + i.total_cost, 0)
+  const oversoldValue = items.reduce((s, i) => s + i.oversold_value, 0)
+  const inventoryValue = items.reduce((s, i) => s + i.avail_value, 0)
+
+  // What this supplier is actually owed right now:
+  //  - stock:   only the oversold shortage (in-stock sales were pre-paid)
+  //  - balance: every unit sold, deducted from balance
+  const amountDue = isStock ? oversoldValue : goodsValue
   const balance = computeBalance(items, 0)
 
   function handleCopy() {
@@ -49,8 +62,10 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
     const oversoldRows = items
       .filter((i) => i.oversold > 0)
       .map((i) => `  ⚠ ${i.sku}: short ${i.oversold} × $${fmt(i.unit_cost)} = $${fmt(i.oversold_value)}`)
-    const subtotal = `Subtotal: $${fmt(total)}`
-    const balanceDue = `Balance Due: $${fmt(total - items.reduce((s, i) => s + i.oversold_value, 0))}`
+    const subtotal = `Order value: $${fmt(goodsValue)}`
+    const balanceDue = isStock
+      ? `Công nợ (oversold): $${fmt(amountDue)}`
+      : `Balance Due: $${fmt(amountDue)}`
     const parts = [header, divider, ...rows]
     if (oversoldRows.length) parts.push("", "Oversold:", ...oversoldRows)
     parts.push("", divider, subtotal, balanceDue)
@@ -100,10 +115,22 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
             {supplier}
           </span>
           <span className="font-semibold text-gray-800">{SUPPLIER_NAME[supplier]}</span>
+          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${
+            isStock ? "bg-amber-100 text-amber-700" : "bg-sky-100 text-sky-700"
+          }`}>
+            {isStock ? "Stock" : "Balance"}
+          </span>
           <span className="text-xs text-gray-400">{poNumber}</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="font-bold text-gray-900">${fmt(total)}</span>
+          <div className="text-right leading-tight">
+            <span className={`block font-bold ${isStock && amountDue > 0 ? "text-red-600" : "text-gray-900"}`}>
+              ${fmt(amountDue)}
+            </span>
+            <span className="block text-[10px] text-gray-400">
+              {isStock ? "công nợ" : "from balance"}
+            </span>
+          </div>
           <button className="btn-secondary py-1.5 text-xs" onClick={handleCopy}>
             <Copy className="w-3.5 h-3.5" /> Copy
           </button>
@@ -121,30 +148,39 @@ export default function SupplierPOCard({ supplier, items, poNumber, date }: Prop
       </div>
 
       <div className="px-5 py-4">
-        <SKUTable items={items} />
+        <SKUTable items={items} supplierType={type} />
         <div className="my-4 border-t border-dashed border-gray-200" />
-        <OversoldNotice items={items} />
+        {isStock && <OversoldNotice items={items} />}
         <RemittanceSlip supplier={supplier} poNumber={poNumber} items={items} />
 
         <div className="mt-3 text-sm space-y-1 text-right">
-          <div className="flex justify-end gap-8 text-gray-600">
-            <span>Subtotal</span>
-            <span className="font-medium w-24">${fmt(total)}</span>
-          </div>
-          {items.some((i) => i.oversold_value > 0) && (
-            <div className="flex justify-end gap-8 text-red-600">
-              <span>Oversold A/R</span>
-              <span className="font-medium w-24">
-                −${fmt(items.reduce((s, i) => s + i.oversold_value, 0))}
-              </span>
-            </div>
+          {isStock ? (
+            <>
+              <div className="flex justify-end gap-8 text-gray-500">
+                <span>Hàng xuất kho (đã trả trước)</span>
+                <span className="font-medium w-28">${fmt(goodsValue)}</span>
+              </div>
+              <div className="flex justify-end gap-8 text-green-700">
+                <span>Tồn kho còn lại (giá trị)</span>
+                <span className="font-medium w-28">${fmt(inventoryValue)}</span>
+              </div>
+              <div className="flex justify-end gap-8 font-semibold pt-1 border-t border-gray-200 text-red-600">
+                <span>Công nợ phát sinh (thiếu hàng)</span>
+                <span className="w-28">${fmt(oversoldValue)}</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex justify-end gap-8 text-gray-600">
+                <span>Order value</span>
+                <span className="font-medium w-28">${fmt(goodsValue)}</span>
+              </div>
+              <div className="flex justify-end gap-8 font-semibold text-gray-900 pt-1 border-t border-gray-200">
+                <span>Trừ vào balance</span>
+                <span className="w-28">${fmt(goodsValue)}</span>
+              </div>
+            </>
           )}
-          <div className="flex justify-end gap-8 font-semibold text-gray-900 pt-1 border-t border-gray-200">
-            <span>Balance Due</span>
-            <span className="w-24">
-              ${fmt(total - items.reduce((s, i) => s + i.oversold_value, 0))}
-            </span>
-          </div>
         </div>
       </div>
     </div>

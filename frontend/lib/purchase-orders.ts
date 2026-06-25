@@ -1,5 +1,22 @@
 export type Supplier = "JOE" | "SKY" | "FAIRY"
 
+// Two supplier business models:
+//  - "stock":   buy inventory upfront (pre-paid). Selling from stock costs nothing now;
+//               only oversold units (sold beyond stock) become a debt (công nợ) to the supplier.
+//  - "balance": no inventory held. Every unit sold is deducted from the supplier's balance.
+// On staging only JOE is stock-based; everyone else defaults to balance.
+export type SupplierType = "stock" | "balance"
+
+export const SUPPLIER_TYPE: Record<Supplier, SupplierType> = {
+  JOE:   "stock",
+  SKY:   "balance",
+  FAIRY: "balance",
+}
+
+export function supplierType(s: Supplier): SupplierType {
+  return SUPPLIER_TYPE[s] ?? "balance"
+}
+
 export interface SKUItem {
   sku: string
   supplier: Supplier

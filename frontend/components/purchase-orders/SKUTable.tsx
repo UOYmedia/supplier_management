@@ -2,10 +2,11 @@
 
 import { useState } from "react"
 import { ChevronUp, ChevronDown, ChevronsUpDown, X, Eye, EyeOff } from "lucide-react"
-import { SKUItem, fmt } from "@/lib/purchase-orders"
+import { SKUItem, SupplierType, fmt } from "@/lib/purchase-orders"
 
 interface Props {
   items: SKUItem[]
+  supplierType?: SupplierType
 }
 
 type SortKey = "sku" | "available" | "ordered" | "gap" | "oversold" | "total_cost" | "avail_value" | "status"
@@ -137,12 +138,100 @@ function StatusBadge({ status, gap, oversold }: { status: string; gap: number; o
   return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Oversold</span>
 }
 
-export default function SKUTable({ items }: Props) {
+// Money-focused table for balance-based suppliers: no stock concept,
+// just what was sold today and how much it cost (deducted from balance).
+function BalanceTable({
+  items, sortKey, sortDir, onSort, search, onSearch,
+}: {
+  items: SKUItem[]
+  sortKey: SortKey; sortDir: SortDir
+  onSort: (k: SortKey) => void
+  search: string; onSearch: (v: string) => void
+}) {
+  const filtered = search
+    ? items.filter((i) => i.sku.toLowerCase().includes(search.toLowerCase()))
+    : items
+  const sorted = sortItems(filtered, sortKey, sortDir)
+  const totalCost = sorted.reduce((s, i) => s + i.total_cost, 0)
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2">
+        <div className="relative w-56">
+          <input
+            value={search}
+            onChange={(e) => onSearch(e.target.value)}
+            placeholder="Search name…"
+            className="w-full h-7 px-2 text-xs border border-gray-200 rounded focus:border-blue-400 outline-none bg-white placeholder-gray-300"
+          />
+          {search && (
+            <button
+              onClick={() => onSearch("")}
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+        <span className="text-[11px] text-gray-400">Balance supplier · cost is deducted from balance</span>
+      </div>
+
+      <div className="overflow-x-auto rounded-lg border border-gray-100">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-100">
+              <Th label="Item"       colKey="sku"        sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="min-w-[200px]" />
+              <Th label="Ordered"    colKey="ordered"    sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+              <Th label="Unit Price" colKey="total_cost" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+              <Th label="Today Cost" colKey="total_cost" sub="price × ordered" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {sorted.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="px-3 py-8 text-center text-sm text-gray-400">
+                  No items match the current filters
+                </td>
+              </tr>
+            ) : sorted.map((item) => (
+              <tr key={item.sku} className="transition-colors hover:bg-gray-50">
+                <td className="px-3 py-2.5 font-medium text-gray-800">{item.sku}</td>
+                <td className="px-3 py-2.5 text-gray-700 text-right">{item.ordered}</td>
+                <td className="px-3 py-2.5 text-indigo-700 text-right">${fmt(item.unit_cost)}</td>
+                <td className="px-3 py-2.5 text-right text-gray-900 font-medium">${fmt(item.total_cost)}</td>
+              </tr>
+            ))}
+          </tbody>
+          {sorted.length > 0 && (
+            <tfoot>
+              <tr className="border-t border-gray-200 bg-gray-50/60">
+                <td className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase" colSpan={3}>Total cost (from balance)</td>
+                <td className="px-3 py-2 text-right font-bold text-gray-900">${fmt(totalCost)}</td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </div>
+  )
+}
+
+export default function SKUTable({ items, supplierType = "stock" }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("sku")
   const [sortDir, setSortDir] = useState<SortDir>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
   const [col, setCol] = useState<ColFilters>(EMPTY_COL)
   const [showUnitPrice, setShowUnitPrice] = useState(false)
+
+  // Balance-based suppliers hold no inventory, so stock columns
+  // (available / stock left / oversold / amount left) and the status
+  // filter are meaningless. Render a money-focused view instead.
+  if (supplierType === "balance") {
+    return <BalanceTable items={items} sortKey={sortKey} sortDir={sortDir} onSort={(k) => {
+      if (sortKey !== k) { setSortKey(k); setSortDir("asc"); return }
+      setSortDir((d) => d === "asc" ? "desc" : d === "desc" ? null : "asc")
+    }} search={col.sku} onSearch={(v) => setCol((p) => ({ ...p, sku: v }))} />
+  }
 
   function handleSort(key: SortKey) {
     if (sortKey !== key) { setSortKey(key); setSortDir("asc"); return }

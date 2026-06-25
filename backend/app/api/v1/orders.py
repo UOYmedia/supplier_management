@@ -12,6 +12,7 @@ from app.core.database import get_db
 from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus, OrderFulfillmentItem
 from app.models.product import Product, ProductSupplier, ProductComponent
 from app.models.supplier import Supplier, SupplierProduct
+from app.models.scan_log import ScanLog
 from app.schemas.order import (
     OrderCreate, OrderUpdate, OrderOut, OrderLineItemUpdate,
     OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut, ShippingLabelUpdate,
@@ -214,6 +215,24 @@ def _parse_ship_to(text: str) -> dict | None:
 
 @router.post("/scan-label")
 async def scan_label_address(body: ScanLabelBody, db: AsyncSession = Depends(get_db)):
+    """Scan a shipping label, then record the outcome to the scan-log audit trail."""
+    result = await _scan_label_impl(body, db)
+    try:
+        db.add(ScanLog(
+            order_id=(result.get("order_id") or None),
+            status=result.get("status") or "unknown",
+            error=result.get("error"),
+            filled=result.get("filled"),
+            address=result.get("address"),
+        ))
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.warning(f"scan_label: failed to record scan log — {e}")
+    return result
+
+
+async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     """Read the SHIP TO block from a shipping-label PNG and, if the matching
     Amazon order has no address yet, fill it in.
 

@@ -190,6 +190,13 @@ export const usersApi = {
   delete: (id: number) => api.delete(`/users/${id}`),
 };
 
+// Scan Logs (admin) — audit trail of label scans
+export const scanLogsApi = {
+  list: (params?: { status?: string; limit?: number }) =>
+    api.get("/scan-logs", { params }).then((r) => r.data),
+  clear: () => api.delete("/scan-logs"),
+};
+
 // Reports
 export const reportsApi = {
   summary: (params?: object) => api.get("/reports/summary", { params }).then((r) => r.data),

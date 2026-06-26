@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { RefreshCw, Database, Copy } from "lucide-react"
+import { RefreshCw, Database, Copy, Download, Loader2 } from "lucide-react"
 import toast from "react-hot-toast"
 import { suppliersApi } from "@/lib/api"
 import { SKUItem, fmt } from "@/lib/purchase-orders"
@@ -13,8 +13,21 @@ interface RealSupplier {
   id: number
   name: string
   supplier_type?: string
+  email?: string | null
+  phone?: string | null
+  city?: string | null
+  state?: string | null
+  country?: string | null
+  zipcode?: string | null
   product_count: number
   total_stock: number
+}
+
+const BUYER_INFO = {
+  name:    "Purchasing Manager",
+  company: "Maga Fulfillment",
+  email:   "purchasing@maga.com",
+  address: "123 Fulfillment Blvd, Nashville, TN 37201",
 }
 
 // Catalog item as returned by GET /suppliers/{id}/products
@@ -95,6 +108,7 @@ function periodRange(period: LivePeriod): { from: string; to: string } | null {
 export default function LiveSupplierPO() {
   const [activeId, setActiveId] = useState<number | null>(null)
   const [period, setPeriod] = useState<LivePeriod>("today")
+  const [pdfLoading, setPdfLoading] = useState(false)
   const range = periodRange(period)
 
   const suppliersQuery = useQuery<RealSupplier[]>({
@@ -157,6 +171,58 @@ export default function LiveSupplierPO() {
     )
   }
 
+  // Daily PO statement PDF for the active supplier: Available / Cost / Total /
+  // Oversold + estimated oversold cost per product (the supplier-facing daily doc).
+  async function handlePDF() {
+    if (!activeSupplier || items.length === 0) {
+      toast.error("Nothing to export")
+      return
+    }
+    setPdfLoading(true)
+    try {
+      const now = new Date()
+      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
+      const cityLine = [activeSupplier.city, activeSupplier.state, activeSupplier.zipcode]
+        .filter(Boolean).join(", ")
+      const res = await fetch("/api/v1/purchase-orders/generate-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          supplier: activeSupplier.name,
+          po_number: `PO-${stamp}-${activeSupplier.name}`,
+          date: now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }),
+          items,
+          supplier_info: {
+            name: activeSupplier.name,
+            address: "",
+            city: cityLine,
+            phone: activeSupplier.phone ?? "",
+            email: activeSupplier.email ?? "",
+          },
+          buyer_info: BUYER_INFO,
+          balance: {
+            total_cost: goodsValue,
+            available_value: inventoryValue,
+            oversold_value: debt,
+            starting_balance: 0,
+            ending_balance: 0,
+          },
+        }),
+      })
+      const contentType = res.headers.get("content-type") ?? ""
+      if (res.ok && contentType.includes("application/pdf")) {
+        const blob = await res.blob()
+        window.open(URL.createObjectURL(blob), "_blank")
+      } else {
+        toast.error("PDF generation failed")
+      }
+    } catch {
+      toast.error("Could not reach server")
+    } finally {
+      setPdfLoading(false)
+    }
+  }
+
   return (
     <div>
       {/* Supplier tabs from real DB */}
@@ -186,6 +252,14 @@ export default function LiveSupplierPO() {
         )}
         <button
           className="btn-secondary py-1.5 text-xs ml-auto"
+          onClick={handlePDF}
+          disabled={!activeSupplier || items.length === 0 || pdfLoading}
+        >
+          {pdfLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+          PO PDF
+        </button>
+        <button
+          className="btn-secondary py-1.5 text-xs"
           onClick={copySummary}
           disabled={!activeSupplier || items.length === 0}
         >

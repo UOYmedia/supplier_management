@@ -26,7 +26,56 @@ from pydantic import BaseModel
 class _ShortNameBody(BaseModel):
     short_name: str
 
+
+class BulkInvoiceResultItem(BaseModel):
+    supplier_id: int
+    supplier_name: str
+    invoice_number: str | None = None
+    item_count: int
+    total_amount: Decimal
+    status: str  # "created" | "skipped"
+    reason: str | None = None
+
+
+class BulkInvoiceResponse(BaseModel):
+    created_count: int
+    skipped_count: int
+    results: list[BulkInvoiceResultItem]
+
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
+
+
+async def _uninvoiced_fulfilled_items(
+    supplier_id: int, db: AsyncSession
+) -> list[tuple[OrderLineItem, "Order | None"]]:
+    """Fulfilled (shipped/delivered) line items for a supplier not yet on any invoice.
+
+    Single source of truth shared by the per-supplier preview and the bulk
+    generate-all endpoint, so both always agree on what is billable.
+    """
+    invoiced_ids = {
+        r for r in (await db.execute(
+            select(InvoiceLineItem.order_line_item_id).where(
+                InvoiceLineItem.order_line_item_id.isnot(None)
+            )
+        )).scalars().all()
+    }
+    line_items = (await db.execute(
+        select(OrderLineItem)
+        .where(
+            OrderLineItem.supplier_id == supplier_id,
+            OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
+        )
+        .order_by(OrderLineItem.order_id)
+    )).scalars().all()
+    line_items = [li for li in line_items if li.id not in invoiced_ids]
+
+    order_ids = {li.order_id for li in line_items}
+    orders_by_id: dict[int, Order] = {}
+    if order_ids:
+        for o in (await db.execute(select(Order).where(Order.id.in_(order_ids)))).scalars().all():
+            orders_by_id[o.id] = o
+    return [(li, orders_by_id.get(li.order_id)) for li in line_items]
 
 
 @router.get("", response_model=list[SupplierListOut])
@@ -577,6 +626,62 @@ async def supplier_orders(
 
 # --- Invoices ---
 
+@router.post("/invoices/generate-all", response_model=BulkInvoiceResponse)
+async def generate_all_invoices(db: AsyncSession = Depends(get_db)):
+    """Auto-create one invoice per active supplier from their uninvoiced fulfilled
+    orders. Idempotent: line items already on an invoice are never re-billed, so
+    this is safe to run daily — each run only picks up newly-fulfilled orders.
+    Suppliers with nothing new to bill are skipped (not an empty invoice)."""
+    suppliers = (await db.execute(
+        select(Supplier).where(Supplier.is_active == True).order_by(Supplier.name)
+    )).scalars().all()
+
+    now = datetime.now(timezone.utc)
+    results: list[BulkInvoiceResultItem] = []
+    created = skipped = 0
+
+    for sup in suppliers:
+        pairs = await _uninvoiced_fulfilled_items(sup.id, db)
+        if not pairs:
+            skipped += 1
+            results.append(BulkInvoiceResultItem(
+                supplier_id=sup.id, supplier_name=sup.name,
+                item_count=0, total_amount=Decimal(0),
+                status="skipped", reason="no uninvoiced fulfilled orders",
+            ))
+            continue
+
+        dates = [li.fulfilled_at for li, _ in pairs if li.fulfilled_at]
+        period_start = min(dates) if dates else now
+        period_end = max(dates) if dates else now
+        total = sum(((li.base_cost or Decimal(0)) * li.quantity for li, _ in pairs), Decimal(0))
+
+        inv_number = f"INV-{sup.id}-{now.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+        invoice = Invoice(
+            supplier_id=sup.id, invoice_number=inv_number,
+            period_start=period_start, period_end=period_end, total_amount=total,
+        )
+        db.add(invoice)
+        await db.flush()
+
+        for li, _ in pairs:
+            unit = li.base_cost or Decimal(0)
+            desc = f"{li.product_name}{f' ({li.sku})' if li.sku else ''} — Order #{li.order_id}"
+            db.add(InvoiceLineItem(
+                invoice_id=invoice.id, order_line_item_id=li.id,
+                description=desc, quantity=li.quantity,
+                unit_amount=unit, total_amount=unit * li.quantity,
+            ))
+        created += 1
+        results.append(BulkInvoiceResultItem(
+            supplier_id=sup.id, supplier_name=sup.name, invoice_number=inv_number,
+            item_count=len(pairs), total_amount=total, status="created",
+        ))
+
+    await db.commit()
+    return BulkInvoiceResponse(created_count=created, skipped_count=skipped, results=results)
+
+
 @router.get("/{supplier_id}/invoices", response_model=list[InvoiceOut])
 async def list_invoices(supplier_id: int, db: AsyncSession = Depends(get_db)):
     await _get_or_404(supplier_id, db)
@@ -600,35 +705,10 @@ async def preview_invoice_from_orders(supplier_id: int, db: AsyncSession = Depen
     """Return fulfilled order line items for this supplier that have not yet been invoiced."""
     supplier = await _get_or_404(supplier_id, db)
 
-    invoiced_ids_result = await db.execute(
-        select(InvoiceLineItem.order_line_item_id).where(InvoiceLineItem.order_line_item_id.isnot(None))
-    )
-    invoiced_ids = {r for r in invoiced_ids_result.scalars().all()}
-
-    result = await db.execute(
-        select(OrderLineItem)
-        .where(
-            OrderLineItem.supplier_id == supplier_id,
-            OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
-        )
-        .order_by(OrderLineItem.order_id)
-    )
-    line_items = result.scalars().all()
-
-    order_ids = {li.order_id for li in line_items}
-    orders_by_id: dict[int, Order] = {}
-    if order_ids:
-        ord_result = await db.execute(select(Order).where(Order.id.in_(order_ids)))
-        for o in ord_result.scalars().all():
-            orders_by_id[o.id] = o
-
     items = []
-    for li in line_items:
-        if li.id in invoiced_ids:
-            continue
+    for li, order in await _uninvoiced_fulfilled_items(supplier_id, db):
         unit_cost = li.base_cost
         total_cost = unit_cost * li.quantity
-        order = orders_by_id.get(li.order_id)
         items.append(InvoicePreviewItem(
             order_line_item_id=li.id,
             order_id=li.order_id,

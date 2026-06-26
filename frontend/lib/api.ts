@@ -80,6 +80,7 @@ export const suppliersApi = {
   previewInvoiceFromOrders: (id: number) => api.get(`/suppliers/${id}/invoices/preview-from-orders`).then((r) => r.data),
   createInvoiceFromOrders: (id: number, data: object) => api.post(`/suppliers/${id}/invoices/create-from-orders`, data).then((r) => r.data),
   generateAllInvoices: () => api.post(`/suppliers/invoices/generate-all`).then((r) => r.data),
+  invoicePdfUrl: (id: number, invId: number) => `/api/v1/suppliers/${id}/invoices/${invId}/pdf`,
   importCatalog: (id: number, file: File) => {
     const fd = new FormData(); fd.append("file", file);
     return api.post(`/suppliers/${id}/products/import/csv`, fd).then((r) => r.data);

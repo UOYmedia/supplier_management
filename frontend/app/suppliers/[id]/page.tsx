@@ -289,9 +289,19 @@ export default function SupplierDetailPage() {
                     <td><InvoiceBadge status={inv.status} /></td>
                     <td className="text-xs text-gray-500">{inv.paid_at ? new Date(inv.paid_at).toLocaleDateString() : "—"}</td>
                     <td>
-                      {inv.status !== "paid" && (
-                        <button className="text-xs text-blue-600 hover:underline" onClick={() => markPaidMut.mutate(inv.id)}>Mark Paid</button>
-                      )}
+                      <div className="flex items-center gap-3">
+                        <a
+                          className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
+                          href={suppliersApi.invoicePdfUrl(sid, inv.id)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <Download className="w-3.5 h-3.5" /> PDF
+                        </a>
+                        {inv.status !== "paid" && (
+                          <button className="text-xs text-blue-600 hover:underline" onClick={() => markPaidMut.mutate(inv.id)}>Mark Paid</button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

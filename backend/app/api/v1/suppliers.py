@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
@@ -16,7 +16,9 @@ from app.schemas.supplier_product import (
 )
 import csv
 import io
+import os
 import re
+import tempfile
 import uuid
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
@@ -651,6 +653,19 @@ async def generate_all_invoices(db: AsyncSession = Depends(get_db)):
             ))
             continue
 
+        # Only bill items with a recorded supplier cost — auto-generation must
+        # never guess a price. Uncosted items stay billable later (manual flow)
+        # once a cost is entered, so they are not invoiced here, not dropped.
+        pairs = [(li, o) for li, o in pairs if (li.base_cost or Decimal(0)) > 0]
+        if not pairs:
+            skipped += 1
+            results.append(BulkInvoiceResultItem(
+                supplier_id=sup.id, supplier_name=sup.name,
+                item_count=0, total_amount=Decimal(0),
+                status="skipped", reason="fulfilled orders have no recorded cost yet",
+            ))
+            continue
+
         dates = [li.fulfilled_at for li, _ in pairs if li.fulfilled_at]
         period_start = min(dates) if dates else now
         period_end = max(dates) if dates else now
@@ -698,6 +713,60 @@ async def list_invoices(supplier_id: int, db: AsyncSession = Depends(get_db)):
         ]
         out.append(InvoiceOut(**inv_dict))
     return out
+
+
+@router.get("/{supplier_id}/invoices/{invoice_id}/pdf")
+async def invoice_pdf(supplier_id: int, invoice_id: int, db: AsyncSession = Depends(get_db)):
+    """Render a single invoice as a downloadable PDF."""
+    supplier = await _get_or_404(supplier_id, db)
+    invoice = (await db.execute(
+        select(Invoice).where(Invoice.id == invoice_id, Invoice.supplier_id == supplier_id)
+    )).scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(404, "Invoice not found")
+
+    li_list = (await db.execute(
+        select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice.id)
+    )).scalars().all()
+
+    from generate_invoice import generate_invoice_pdf
+
+    addr_parts = [supplier.street1, supplier.street2]
+    city_parts = [supplier.city, supplier.state, supplier.zipcode]
+    supplier_info = {
+        "name": supplier.name,
+        "address": ", ".join(p for p in addr_parts if p),
+        "city": ", ".join(p for p in city_parts if p),
+        "email": supplier.email or "",
+    }
+    period = f"{invoice.period_start.strftime('%b %d, %Y')} — {invoice.period_end.strftime('%b %d, %Y')}"
+
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in invoice.invoice_number)
+    output_path = os.path.join(tempfile.gettempdir(), f"{safe_name}.pdf")
+    generate_invoice_pdf(
+        output_path=output_path,
+        invoice_number=invoice.invoice_number,
+        period=period,
+        status=invoice.status.value if hasattr(invoice.status, "value") else str(invoice.status),
+        supplier_info=supplier_info,
+        buyer_info={"name": "Maga Fulfillment", "company": "", "address": ""},
+        line_items=[
+            {
+                "description": li.description,
+                "quantity": li.quantity,
+                "unit_amount": float(li.unit_amount),
+                "total_amount": float(li.total_amount),
+            }
+            for li in li_list
+        ],
+        total_amount=float(invoice.total_amount),
+    )
+
+    return FileResponse(
+        path=output_path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{safe_name}.pdf"'},
+    )
 
 
 @router.get("/{supplier_id}/invoices/preview-from-orders", response_model=InvoicePreviewResponse)

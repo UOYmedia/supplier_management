@@ -11,6 +11,7 @@ import SKUTable from "./SKUTable"
 interface RealSupplier {
   id: number
   name: string
+  supplier_type?: string
   product_count: number
   total_stock: number
 }
@@ -194,9 +195,15 @@ export default function LiveSupplierPO() {
           <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-gray-50/50">
             <div className="flex items-center gap-3">
               <span className="font-semibold text-gray-800">{activeSupplier.name}</span>
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-700">
-                Stock
-              </span>
+              {activeSupplier.supplier_type === "stock" ? (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-700">
+                  Stock
+                </span>
+              ) : (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-sky-100 text-sky-700">
+                  Balance
+                </span>
+              )}
               <span className="text-xs text-gray-400">{items.length} SKUs · live catalog</span>
             </div>
             <div className="text-right leading-tight">

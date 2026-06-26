@@ -213,10 +213,23 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
   const [form, setForm] = useState(EMPTY_FORM)
   const [errors, setErrors] = useState<Record<string, boolean>>({})
 
+  // Only stock-type suppliers (e.g. JOE) use the request flow — balance
+  // suppliers ship direct and are paid per order via invoices, not requests.
   const { data: suppliers = [] } = useQuery<{ id: number; name: string }[]>({
     queryKey: ["suppliers-list"],
     queryFn: () => suppliersApi.list(),
-    select: (data: any[]) => data.map((s) => ({ id: s.id, name: s.name })),
+    select: (data: any[]) =>
+      data.filter((s) => s.supplier_type === "stock").map((s) => ({ id: s.id, name: s.name })),
+  })
+
+  const selectedSupplier = suppliers.find((s) => s.name === form.supplier)
+
+  // Catalog SKUs for the chosen supplier — the request item is picked from here
+  // so its sku matches a SupplierProduct exactly (stock increment on PAID relies on it).
+  const { data: catalog = [] } = useQuery<{ sku: string; name: string; unit_price: number | string }[]>({
+    queryKey: ["supplier-catalog", selectedSupplier?.id],
+    queryFn: () => suppliersApi.listProducts(selectedSupplier!.id),
+    enabled: !!selectedSupplier,
   })
 
   const { data: requests = [], isLoading } = useQuery<PurchaseRequest[]>({
@@ -275,8 +288,23 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
   }
 
   function set(field: string, value: string) {
-    setForm((f) => ({ ...f, [field]: value }))
+    setForm((f) => {
+      // Changing supplier invalidates the SKU/cost picked from the old catalog.
+      if (field === "supplier") return { ...f, supplier: value, sku: "", unit_cost: "" }
+      return { ...f, [field]: value }
+    })
     if (errors[field]) setErrors((e) => ({ ...e, [field]: false }))
+  }
+
+  // Picking a catalog SKU auto-fills unit cost (still editable if this batch differs).
+  function pickSku(sku: string) {
+    const prod = catalog.find((c) => c.sku === sku)
+    setForm((f) => ({
+      ...f,
+      sku,
+      unit_cost: prod ? String(prod.unit_price) : f.unit_cost,
+    }))
+    if (errors.sku) setErrors((e) => ({ ...e, sku: false }))
   }
 
   return (
@@ -338,13 +366,21 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
 
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Product / SKU <span className="text-red-500">*</span></label>
-                <input
-                  type="text"
+                <select
                   value={form.sku}
-                  onChange={(e) => set("sku", e.target.value)}
-                  placeholder="e.g. Meyer Lemon Tree"
-                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.sku ? "border-red-500" : "border-gray-300"}`}
-                />
+                  onChange={(e) => pickSku(e.target.value)}
+                  disabled={!selectedSupplier}
+                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:bg-gray-50 disabled:text-gray-400 ${errors.sku ? "border-red-500" : "border-gray-300"}`}
+                >
+                  <option value="">
+                    {selectedSupplier ? "Select product…" : "Select a supplier first"}
+                  </option>
+                  {catalog.map((c) => (
+                    <option key={c.sku} value={c.sku}>
+                      {c.name} ({c.sku})
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div className="grid grid-cols-3 gap-4">

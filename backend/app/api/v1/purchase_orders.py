@@ -16,6 +16,7 @@ from app.core.database import get_db
 from app.models.daily_balance import DailyBalance
 from app.models.order import Order, OrderLineItem
 from app.models.purchase_order import PurchaseOrder
+from app.models.supplier import Supplier, SupplierProduct
 from app.schemas.purchase_order import (
     BalanceOut,
     POCreate,
@@ -349,6 +350,7 @@ async def update_request_status(
     if not po:
         raise HTTPException(status_code=404, detail="PurchaseOrder not found")
 
+    was_paid = po.status == "PAID"
     po.status = body.status
 
     if body.status == "PAID":
@@ -356,6 +358,11 @@ async def update_request_status(
         po.paid_date = date.today()
         if body.approved_by:
             po.approved_by = body.approved_by
+        # Paying a request means the goods are now in the supplier's stock.
+        # Only stock-type suppliers hold inventory, so the catalog quantity is
+        # bumped here. Idempotent: skip if this request was already PAID.
+        if not was_paid:
+            await _increment_supplier_stock(db, po)
     elif body.status == "PARTIALLY_PAID":
         if body.amount_paid is not None:
             po.amount_paid = body.amount_paid
@@ -365,6 +372,36 @@ async def update_request_status(
     await db.commit()
     await db.refresh(po)
     return po
+
+
+async def _increment_supplier_stock(db: AsyncSession, po: PurchaseOrder) -> None:
+    """Add a paid request's qty into the matching SupplierProduct catalog row.
+
+    Requests store the supplier by *name* and the item by *sku*. We match a
+    stock-type supplier and its catalog SKU exactly; on no match we leave stock
+    untouched rather than guess (a warning is logged instead of creating rows).
+    """
+    sup = (await db.execute(
+        select(Supplier).where(Supplier.name == po.supplier)
+    )).scalar_one_or_none()
+    if sup is None or sup.supplier_type != "stock":
+        return
+
+    sp = (await db.execute(
+        select(SupplierProduct).where(
+            SupplierProduct.supplier_id == sup.id,
+            SupplierProduct.sku == po.sku,
+        )
+    )).scalar_one_or_none()
+    if sp is None:
+        import logging
+        logging.getLogger(__name__).warning(
+            "PAID request %s: no catalog SKU '%s' for supplier '%s' — stock not incremented",
+            po.id, po.sku, po.supplier,
+        )
+        return
+
+    sp.stock_quantity = (sp.stock_quantity or 0) + (po.qty_ordered or 0)
 
 
 # ── POST /generate-pdf ────────────────────────────────────────────────────────

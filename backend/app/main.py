@@ -122,6 +122,9 @@ async def _run_migrations():
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_suppliers_username ON suppliers(username) WHERE username IS NOT NULL",
         # suppliers: portal toggle for self-service EasyPost label purchase
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS can_buy_labels BOOLEAN NOT NULL DEFAULT FALSE",
+        # suppliers: 'balance' (pay-per-order, default) vs 'stock' (pre-paid inventory, e.g. JOE)
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS supplier_type VARCHAR(10) NOT NULL DEFAULT 'balance'",
+        "UPDATE suppliers SET supplier_type = 'stock' WHERE name = 'JOE' AND supplier_type = 'balance'",
         # supplier_products: short label for PDF overlays
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS short_name VARCHAR(100)",
         # supplier_products: per-unit shipping dimensions for parcel auto-estimate

@@ -28,6 +28,9 @@ class Supplier(Base):
     zipcode: Mapped[str | None] = mapped_column(String(20))
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(default=True)
+    # 'balance' (pay-per-order, ships direct — the default) or 'stock' (we pre-pay
+    # inventory the supplier holds, e.g. JOE). Only stock suppliers use the request flow.
+    supplier_type: Mapped[str] = mapped_column(String(10), default="balance")
     username: Mapped[str | None] = mapped_column(String(100), unique=True, index=True)
     hashed_password: Mapped[str | None] = mapped_column(String(255))
     shopify_location_id: Mapped[str | None] = mapped_column(String(100))

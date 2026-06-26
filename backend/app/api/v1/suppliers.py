@@ -104,6 +104,7 @@ async def list_suppliers(
             id=s.id, name=s.name, email=s.email, phone=s.phone,
             city=s.city, state=s.state, country=s.country, zipcode=s.zipcode,
             is_active=s.is_active,
+            supplier_type=s.supplier_type,
             product_count=len(ps_list),
             total_stock=sum(ps.stock for ps in ps_list),
         ))

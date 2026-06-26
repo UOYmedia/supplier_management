@@ -79,6 +79,7 @@ function OrdersPageInner() {
 
     const toastId = toast.loading(`Đang xử lý 0/${pngFiles.length} ảnh…`);
     const tally = { updated: 0, already: 0, notFound: 0, failed: 0, noKey: 0, assigned: 0, processing: 0 };
+    const manualOrders: string[] = []; // đơn > 3 item cần chỉnh sửa tay
 
     // Xử lý lần lượt từng ảnh: tên file = Amazon orderId, scan địa chỉ SHIP TO
     for (let i = 0; i < pngFiles.length; i++) {
@@ -98,6 +99,8 @@ function OrdersPageInner() {
         const a = res?.assignment;
         if (a?.auto_assigned) tally.assigned += a.auto_assigned;
         if (a?.moved_to_processing) tally.processing++;
+        // Đơn nhiều hơn 3 item → cần sửa nhãn bằng tay
+        if (res?.stamp?.needs_manual_review) manualOrders.push(orderId);
       } catch (e) {
         tally.failed++;
       }
@@ -115,6 +118,12 @@ function OrdersPageInner() {
       if (tally.notFound) parts.push(`${tally.notFound} không thấy order`);
       if (tally.failed) parts.push(`${tally.failed} lỗi scan`);
       toast.success(`Hoàn tất ${pngFiles.length} ảnh: ${parts.join(", ")}`, { id: toastId });
+    }
+
+    // Cảnh báo riêng các đơn > 3 item cần sửa tay (toast giữ lâu để dễ ghi lại)
+    if (manualOrders.length > 0) {
+      toast(`⚠️ ${manualOrders.length} đơn > 3 item, cần sửa nhãn tay:\n${manualOrders.join(", ")}`,
+        { duration: 15000, icon: "✏️" });
     }
 
     // Refetch nếu có bất kỳ thay đổi nào (địa chỉ, gán supplier, hoặc chuyển processing)

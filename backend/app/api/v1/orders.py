@@ -4,12 +4,14 @@ from sqlalchemy import select, exists as sa_exists, or_, func
 from datetime import datetime, timezone, timedelta
 import base64
 import io
+import os
 import re
+import asyncio
 import logging
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from app.core.database import get_db
-from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus, OrderFulfillmentItem
+from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus, OrderFulfillmentItem, OrderEvent
 from app.models.product import Product, ProductSupplier, ProductComponent
 from app.models.supplier import Supplier, SupplierProduct
 from app.models.scan_log import ScanLog
@@ -244,6 +246,190 @@ def _parse_ship_to(text: str) -> dict | None:
     return result or None
 
 
+# ---------------------------------------------------------------------------
+# JOE label stamping: when a JOE order moves to "processing", draw the product
+# line(s) into the blank area at the bottom of its scanned label, then store it.
+# ---------------------------------------------------------------------------
+
+def _build_stamp_lines(items: list[tuple[int, str]], when: datetime, with_date: bool) -> list[str]:
+    """Build the stamp text — one line per catalog item.
+
+    Format: "<quantity> <NAME>" and, for JOE orders only, "<quantity> <NAME> - <DATE>"
+      - quantity : fulfillment quantity
+      - NAME     : supplier_products.short_name (upper-cased)
+      - DATE     : upload date, e.g. "JUN 26" (appended only when with_date)
+    """
+    date_str = when.strftime("%b").upper() + " " + str(when.day)
+    lines: list[str] = []
+    for qty, name in items:
+        nm = (name or "").strip().upper()
+        if not nm:
+            continue
+        line = f"{qty} {nm}"
+        if with_date:
+            line += f" - {date_str}"
+        lines.append(line)
+    return lines
+
+
+def _stamp_text_on_png(png_bytes: bytes, lines: list[str], color: str = "black") -> bytes:
+    """Draw the given text lines into the blank area at the bottom of a label PNG.
+
+    color is used to highlight orders that need manual review (red).
+    """
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+
+    font_size = max(16, int(w * 0.032))
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    margin = int(w * 0.05)
+    line_h = int(font_size * 1.35)
+    total_h = line_h * len(lines)
+    # Sit the block near the bottom edge with a small margin.
+    y = h - int(h * 0.04) - total_h
+    for ln in lines:
+        draw.text((margin, y), ln, fill=color, font=font)
+        y += line_h
+
+    out = io.BytesIO()
+    img.save(out, "PNG")
+    return out.getvalue()
+
+
+async def _stamp_items(order: Order, db: AsyncSession) -> tuple[list[tuple[int, str]], bool]:
+    """Collect (quantity, supplier_products.name) for an order's assigned items.
+
+    Applies to every supplier. Also returns is_joe = True when the order is
+    fulfilled by supplier JOE (used to decide whether to append the date).
+    """
+    lis = (await db.execute(
+        select(OrderLineItem).where(OrderLineItem.order_id == order.id)
+    )).scalars().all()
+
+    items: list[tuple[int, str]] = []
+    is_joe = False
+    for li in lis:
+        if not li.supplier_id:
+            continue
+        sup = await db.get(Supplier, li.supplier_id)
+        if sup and (sup.name or "").strip().upper() == "JOE":
+            is_joe = True
+        ofis = (await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )).scalars().all()
+        for ofi in ofis:
+            sp = await db.get(SupplierProduct, ofi.supplier_product_id)
+            if sp:
+                # Use short_name; fall back to name if it's empty
+                items.append((ofi.quantity, sp.short_name or sp.name))
+    return items, is_joe
+
+
+def _r2_put_object(key: str, png_bytes: bytes) -> None:
+    """Blocking R2 (S3-compatible) upload — run via asyncio.to_thread."""
+    import boto3
+    client = boto3.client(
+        "s3",
+        endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        region_name="auto",
+    )
+    client.put_object(
+        Bucket=os.environ["R2_BUCKET_NAME"],
+        Key=key,
+        Body=png_bytes,
+        ContentType="image/png",
+    )
+
+
+async def _upload_label_to_r2(order_id: str, png_bytes: bytes) -> str | None:
+    """Upload the stamped label PNG to Cloudflare R2 under MAGA/label/ and return
+    its public CDN URL. Returns None if R2 is not configured or the upload fails.
+    """
+    if not os.environ.get("R2_ACCOUNT_ID"):
+        print("stamp_label: R2 not configured — skipping upload", flush=True)
+        return None
+    key = f"MAGA/label/{order_id}.png"
+    try:
+        await asyncio.to_thread(_r2_put_object, key, png_bytes)
+    except Exception as e:
+        print(f"stamp_label: R2 upload failed for {key} — {e}", flush=True)
+        return None
+    cdn = (os.environ.get("R2_CDN") or "").rstrip("/")
+    url = f"{cdn}/{key}"
+    print(f"stamp_label: uploaded -> {url}", flush=True)
+    return url
+
+
+_MAX_STAMP_LINES = 3
+
+
+async def _stamp_label_for_processing(order: Order, raw: bytes | None, db: AsyncSession) -> dict | None:
+    """Stamp + store a JOE order's label when it has just moved to processing.
+
+    Prints one line per item (max 3). Orders with more than 3 lines are stamped
+    with the first 3 and flagged for manual editing (an OrderEvent is recorded so
+    they can be found later).
+
+    Returns a small summary, or None when nothing was stamped (no image, or the
+    order has no assigned items).
+    """
+    if not raw:
+        return None
+    items, is_joe = await _stamp_items(order, db)
+    if not items:
+        return None
+    # Date is appended only for JOE orders; other suppliers get name + qty only.
+    all_lines = _build_stamp_lines(items, datetime.now(), with_date=is_joe)
+    if not all_lines:
+        return None
+
+    needs_manual = len(all_lines) > _MAX_STAMP_LINES
+    lines = all_lines[:_MAX_STAMP_LINES]
+    # Red text highlights orders that need manual editing (> 3 item lines)
+    color = "red" if needs_manual else "black"
+
+    try:
+        stamped = _stamp_text_on_png(raw, lines, color=color)
+        url = await _upload_label_to_r2(order.external_order_id or str(order.id), stamped)
+    except Exception as e:
+        print(f"stamp_label: order={order.external_order_id} failed — {e}", flush=True)
+        return {"stamped": False, "error": str(e)}
+
+    # Persist the public label URL on the order
+    if url:
+        order.label_url = url
+
+    if needs_manual:
+        # More items than fit on the label — flag for manual editing.
+        db.add(OrderEvent(
+            order_id=order.id,
+            event_type="label_manual_review",
+            level="warn",
+            message=f"Label has {len(all_lines)} item lines (> {_MAX_STAMP_LINES}) — needs manual editing",
+            payload={"all_lines": all_lines},
+        ))
+        print(
+            f"stamp_label: order={order.external_order_id} NEEDS MANUAL — "
+            f"{len(all_lines)} item lines (printed first {_MAX_STAMP_LINES})",
+            flush=True,
+        )
+
+    return {
+        "stamped": True,
+        "lines": lines,
+        "label_url": url,
+        "item_count": len(all_lines),
+        "needs_manual_review": needs_manual,
+    }
+
+
 @router.post("/scan-label")
 async def scan_label_address(body: ScanLabelBody, db: AsyncSession = Depends(get_db)):
     """Scan a shipping label, then record the outcome to the scan-log audit trail."""
@@ -281,6 +467,16 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     if not order:
         return {"order_id": order_id, "status": "not_found"}
 
+    # Decode the uploaded label image up-front — used for OCR and for the JOE
+    # stamping step. None if it isn't a valid PNG.
+    raw = None
+    try:
+        _decoded = base64.b64decode(body.image_b64)
+        if _decoded[:8] == b"\x89PNG\r\n\x1a\n":
+            raw = _decoded
+    except Exception:
+        raw = None
+
     # 2. Skip only if the address is already complete. An address counts as
     #    complete when all key fields are present — a partial record (e.g. only
     #    city/state) should still be filled in from the label.
@@ -290,15 +486,15 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     if not missing:
         # Address already complete — still advance assignment / status
         assignment = await _post_scan_assign(order, db)
+        stamp = None
+        if assignment.get("moved_to_processing"):
+            stamp = await _stamp_label_for_processing(order, raw, db)
         await db.commit()
-        return {"order_id": order_id, "status": "already_has_address", "assignment": assignment}
+        return {"order_id": order_id, "status": "already_has_address",
+                "assignment": assignment, "stamp": stamp}
 
-    # 3. Validate the image bytes
-    try:
-        raw = base64.b64decode(body.image_b64)
-    except Exception:
-        return {"order_id": order_id, "status": "scan_failed", "error": "bad image data"}
-    if raw[:8] != b"\x89PNG\r\n\x1a\n":
+    # 3. Need a valid PNG to OCR the address
+    if raw is None:
         return {"order_id": order_id, "status": "scan_failed", "error": "not a PNG"}
 
     # 4. OCR the label and parse the SHIP TO block (local Tesseract — no AI)
@@ -340,10 +536,15 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     # Continue: assign supplier by SKU and/or move the order to processing
     assignment = await _post_scan_assign(order, db)
 
+    # When a JOE order has just moved to processing, stamp + store its label
+    stamp = None
+    if assignment.get("moved_to_processing"):
+        stamp = await _stamp_label_for_processing(order, raw, db)
+
     await db.commit()
     logger.info(f"scan_label: order={order_id} filled {filled or 'nothing'}")
     return {"order_id": order_id, "status": "updated", "address": address,
-            "filled": filled, "assignment": assignment}
+            "filled": filled, "assignment": assignment, "stamp": stamp}
 
 
 @router.get("/bulk-labels")

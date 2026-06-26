@@ -96,6 +96,7 @@ class OrderOut(BaseModel):
     total: Decimal
     currency: str
     notes: str | None
+    label_url: str | None = None
     ordered_at: datetime
     created_at: datetime
     line_items: list[OrderLineItemOut] = []

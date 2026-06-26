@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { RefreshCw, Database } from "lucide-react"
+import { RefreshCw, Database, Copy } from "lucide-react"
+import toast from "react-hot-toast"
 import { suppliersApi } from "@/lib/api"
 import { SKUItem, fmt } from "@/lib/purchase-orders"
 import SKUTable from "./SKUTable"
@@ -136,6 +137,26 @@ export default function LiveSupplierPO() {
   const debt = items.reduce((s, i) => s + i.oversold_value, 0)
   const oversoldCount = items.filter((i) => i.oversold > 0).length
 
+  // Plain-text PO summary for the active supplier — handy to paste into chat/email.
+  function copySummary() {
+    if (!activeSupplier || items.length === 0) {
+      toast.error("Nothing to copy")
+      return
+    }
+    const lines = items
+      .filter((i) => i.ordered > 0)
+      .map((i) => `• ${i.sku} x${i.ordered} @ $${fmt(i.unit_cost)} = $${fmt(i.total_cost)}`)
+    const text = [
+      `${activeSupplier.name} — orders to ship`,
+      ...lines,
+      `Total: $${fmt(goodsValue)}`,
+    ].join("\n")
+    navigator.clipboard.writeText(text).then(
+      () => toast.success("Summary copied"),
+      () => toast.error("Copy failed"),
+    )
+  }
+
   return (
     <div>
       {/* Supplier tabs from real DB */}
@@ -165,6 +186,13 @@ export default function LiveSupplierPO() {
         )}
         <button
           className="btn-secondary py-1.5 text-xs ml-auto"
+          onClick={copySummary}
+          disabled={!activeSupplier || items.length === 0}
+        >
+          <Copy className="w-3.5 h-3.5" /> Copy Summary
+        </button>
+        <button
+          className="btn-secondary py-1.5 text-xs"
           onClick={() => { suppliersQuery.refetch(); productsQuery.refetch() }}
         >
           <RefreshCw className="w-3.5 h-3.5" /> Refresh

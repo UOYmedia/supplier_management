@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { useQuery } from "@tanstack/react-query"
-import { Plus, Copy, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react"
+import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react"
 import toast from "react-hot-toast"
 import { Supplier, PODailyResponse, SKUItem, computeItem, computeBalance, fmtDate, toISODate, RAW_ITEMS } from "@/lib/purchase-orders"
 import POMetrics from "@/components/purchase-orders/POMetrics"
@@ -104,7 +104,7 @@ function PurchaseOrdersPage() {
   const [customTo, setCustomTo] = useState<Date>(today)
 
   const [activeSupplier, setActiveSupplier] = useState<Filter>("ALL")
-  const [dataSource, setDataSource] = useState<"sample" | "live">("sample")
+  const [dataSource, setDataSource] = useState<"sample" | "live">("live")
   const pageTab = (searchParams.get("tab") === "requests" ? "requests" : "orders") as PageTab
   const [username, setUsername] = useState("")
   const [userRole, setUserRole] = useState("")
@@ -333,12 +333,6 @@ function PurchaseOrdersPage() {
             <>
               <button className="btn-secondary" onClick={() => refetch()}>
                 <RefreshCw className="w-4 h-4" /> Refresh
-              </button>
-              <button className="btn-secondary">
-                <Plus className="w-4 h-4" /> Add SKU
-              </button>
-              <button className="btn-secondary">
-                <Copy className="w-4 h-4" /> Copy Summary
               </button>
             </>
           )}

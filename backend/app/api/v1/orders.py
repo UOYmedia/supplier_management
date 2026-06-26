@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, exists as sa_exists, or_
+from sqlalchemy import select, exists as sa_exists, or_, func
 from datetime import datetime, timezone, timedelta
 import base64
 import io
@@ -23,19 +23,8 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 logger = logging.getLogger("orders")
 
 
-@router.get("", response_model=list[OrderOut])
-async def list_orders(
-    marketplace: str | None = Query(None),
-    status: str | None = Query(None),
-    supplier_id: int | None = Query(None),
-    from_date: datetime | None = Query(None),
-    to_date: datetime | None = Query(None),
-    search: str | None = Query(None),
-    skip: int = 0,
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db),
-):
-    q = select(Order)
+def _apply_order_filters(q, *, marketplace, status, supplier_id, from_date, to_date, search):
+    """Áp dụng các điều kiện lọc dùng chung cho cả list và count."""
     if search:
         s = search.strip()
         conds = [
@@ -55,6 +44,45 @@ async def list_orders(
         q = q.where(Order.ordered_at >= from_date)
     if to_date:
         q = q.where(Order.ordered_at <= to_date)
+    return q
+
+
+@router.get("/count")
+async def count_orders(
+    marketplace: str | None = Query(None),
+    status: str | None = Query(None),
+    supplier_id: int | None = Query(None),
+    from_date: datetime | None = Query(None),
+    to_date: datetime | None = Query(None),
+    search: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    q = _apply_order_filters(
+        select(func.count(Order.id)),
+        marketplace=marketplace, status=status, supplier_id=supplier_id,
+        from_date=from_date, to_date=to_date, search=search,
+    )
+    total = (await db.execute(q)).scalar_one()
+    return {"total": total}
+
+
+@router.get("", response_model=list[OrderOut])
+async def list_orders(
+    marketplace: str | None = Query(None),
+    status: str | None = Query(None),
+    supplier_id: int | None = Query(None),
+    from_date: datetime | None = Query(None),
+    to_date: datetime | None = Query(None),
+    search: str | None = Query(None),
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    q = _apply_order_filters(
+        select(Order),
+        marketplace=marketplace, status=status, supplier_id=supplier_id,
+        from_date=from_date, to_date=to_date, search=search,
+    )
     effective_limit = 500 if (from_date or to_date) else limit
     result = await db.execute(q.order_by(Order.ordered_at.desc()).offset(skip).limit(effective_limit))
     orders = result.scalars().all()

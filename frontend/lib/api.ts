@@ -99,6 +99,7 @@ export const suppliersApi = {
 // Orders
 export const ordersApi = {
   list: (params?: object) => api.get("/orders", { params }).then((r) => r.data),
+  count: (params?: object) => api.get("/orders/count", { params }).then((r) => r.data),
   get: (id: number) => api.get(`/orders/${id}`).then((r) => r.data),
   create: (data: object) => api.post("/orders", data).then((r) => r.data),
   update: (id: number, data: object) => api.patch(`/orders/${id}`, data).then((r) => r.data),

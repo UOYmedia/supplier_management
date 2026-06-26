@@ -1,6 +1,6 @@
 "use client";
 import { useState, useRef, Suspense } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { ordersApi, suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
 import { Plus, ChevronRight, RefreshCw, X, Trash2, Printer, AlertTriangle, Upload, Search } from "lucide-react";
@@ -22,9 +22,11 @@ const emptyItem = (): LineItemDraft => ({ product_name: "", sku: "", quantity: 1
 
 function OrdersPageInner() {
   const router = useRouter();
+  const qc = useQueryClient();
   const searchParams = useSearchParams();
   const page = Number(searchParams.get("page") || "0");
-  const limit = 50;
+  const [limit, setLimit] = useState(50);
+  const LIMIT_OPTIONS = [25, 50, 100, 200];
 
   const [status, setStatus] = useState("");
   const [marketplace, setMarketplace] = useState("");
@@ -119,12 +121,27 @@ function OrdersPageInner() {
     if (tally.updated > 0 || tally.assigned > 0 || tally.processing > 0) refetch();
   };
 
-  const { data: regularOrders = [], isLoading: regularLoading, refetch: refetchRegular } = useQuery({
-    queryKey: ["orders", status, marketplace, page],
+  const {
+    data: regularOrders = [],
+    isLoading: regularLoading,
+    isFetching: regularFetching,
+  } = useQuery({
+    queryKey: ["orders", status, marketplace, page, limit],
     queryFn: () => ordersApi.list({ status: status || undefined, marketplace: marketplace || undefined, skip: page * limit, limit }),
+    placeholderData: keepPreviousData, // giữ data trang cũ khi chuyển trang → không nháy/loading lại
+    staleTime: Infinity, // cache giữ suốt phiên; chỉ làm mới khi reload trang hoặc bấm Refresh
   });
 
-  const { data: delayedOrders = [], isLoading: delayedLoading, refetch: refetchDelayed } = useQuery({
+  // Tổng số đơn (theo filter hiện tại) — query nhẹ COUNT(*), cache riêng để load nhanh
+  const { data: totalData } = useQuery({
+    queryKey: ["orders-count", status, marketplace],
+    queryFn: () => ordersApi.count({ status: status || undefined, marketplace: marketplace || undefined }),
+    placeholderData: keepPreviousData,
+    staleTime: Infinity,
+  });
+  const total: number = totalData?.total ?? 0;
+
+  const { data: delayedOrders = [], isLoading: delayedLoading, isFetching: delayedFetching, refetch: refetchDelayed } = useQuery({
     queryKey: ["orders", "delayed"],
     queryFn: () => ordersApi.listDelayed(),
     refetchInterval: 5 * 60 * 1000,
@@ -132,34 +149,41 @@ function OrdersPageInner() {
 
   const orders = showDelayed ? (delayedOrders as any[]) : (regularOrders as any[]);
   const isLoading = showDelayed ? delayedLoading : regularLoading;
-  const refetch = showDelayed ? refetchDelayed : refetchRegular;
+  // Refresh = làm mới toàn bộ cache orders (mọi trang + count), không chỉ trang đang xem
+  const refetch = showDelayed
+    ? refetchDelayed
+    : () => {
+        qc.invalidateQueries({ queryKey: ["orders"] });
+        qc.invalidateQueries({ queryKey: ["orders-count"] });
+      };
   const urgentCount = (delayedOrders as any[]).filter((o) => o.status === "urgent").length;
 
-  const hasMore = !showDelayed && (regularOrders as any[]).length === limit;
+  // Hiện overlay khi đang fetch nền (chuyển trang HOẶC bấm Refresh), trừ lần load đầu
+  const isFetchingView = showDelayed ? delayedFetching : regularFetching;
+  const isBusy = isFetchingView && !isLoading;
 
-  // Pagination: Prev | 1 | 2 | ... | page-1 | page | Next
-  // Always show 1 and 2; ellipsis when page > 3; no trailing ellipsis (Next handles that).
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+
+  // Pagination: 1 … (page-1) [page] (page+1) … last — luôn hiện trang đầu/cuối + lân cận trang hiện tại
   type PageItem = { type: "page"; index: number } | { type: "ellipsis"; key: string };
   const pageItems: PageItem[] = [];
-  if (page <= 2) {
-    // Small page numbers: show 1 2 3 (cap at current page when no more data)
-    const end = hasMore ? 2 : page;
-    for (let i = 0; i <= end; i++) pageItems.push({ type: "page", index: i });
-  } else {
-    // Always show 1, 2, then gap, then page-1, page
-    pageItems.push({ type: "page", index: 0 });
-    pageItems.push({ type: "page", index: 1 });
-    if (page > 3) pageItems.push({ type: "ellipsis", key: "pre" });
-    pageItems.push({ type: "page", index: page - 1 });
-    pageItems.push({ type: "page", index: page });
-  }
+  const pushPage = (i: number) => pageItems.push({ type: "page", index: i });
+  const windowStart = Math.max(1, page - 1);
+  const windowEnd = Math.min(totalPages - 2, page + 1);
+  pushPage(0); // trang đầu
+  if (windowStart > 1) pageItems.push({ type: "ellipsis", key: "pre" });
+  for (let i = windowStart; i <= windowEnd; i++) pushPage(i);
+  if (windowEnd < totalPages - 2) pageItems.push({ type: "ellipsis", key: "post" });
+  if (totalPages > 1) pushPage(totalPages - 1); // trang cuối
 
   return (
     <div>
       <div className="page-header mb-3">
         <h1 className="page-title">Orders</h1>
         <div className="flex gap-2">
-          <button className="btn-secondary" onClick={() => refetch()}><RefreshCw className="w-4 h-4" />Refresh</button>
+          <button className="btn-secondary" onClick={() => refetch()} disabled={isBusy}>
+            <RefreshCw className={`w-4 h-4 ${isBusy ? "animate-spin" : ""}`} />Refresh
+          </button>
           <input
             ref={fileInputRef}
             type="file"
@@ -228,11 +252,21 @@ function OrdersPageInner() {
         </form>
       </div>
 
-      <div className="card table-wrapper table-scroll max-h-[calc(100vh-194px)]">
+      <div className="card table-wrapper table-scroll max-h-[calc(100vh-194px)] relative">
+        {isBusy && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60 backdrop-blur-[1px]">
+            <RefreshCw className="w-6 h-6 text-gray-500 animate-spin" />
+          </div>
+        )}
         {showDelayed ? (
           <table>
             <thead><tr>
-              <th>Order</th><th>Supplier</th><th>Label Date</th><th>Days Delayed</th><th>Delay Status</th><th></th>
+              <th>Order ID</th>
+              <th>Supplier</th>
+              <th>Label Date</th>
+              <th>Days Delayed</th>
+              <th>Delay Status</th>
+              <th></th>
             </tr></thead>
             <tbody>
               {isLoading ? (
@@ -316,11 +350,20 @@ function OrdersPageInner() {
 
       {!showDelayed && (
         <div className="flex items-center justify-between mt-3 px-1">
-          <span className="text-sm text-gray-500">
-            {(regularOrders as any[]).length > 0
-              ? `Showing ${page * limit + 1}–${page * limit + (regularOrders as any[]).length}`
-              : !isLoading ? "No orders found" : ""}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-gray-500">
+              {total > 0
+                ? `Showing ${page * limit + 1}–${page * limit + (regularOrders as any[]).length} of ${total} · Page ${page + 1}/${totalPages}`
+                : !isLoading ? "No orders found" : ""}
+            </span>
+            <select
+              className="input w-auto py-1 text-sm"
+              value={limit}
+              onChange={(e) => { setLimit(Number(e.target.value)); router.replace("?page=0"); }}
+            >
+              {LIMIT_OPTIONS.map((n) => <option key={n} value={n}>{n} / page</option>)}
+            </select>
+          </div>
           <div className="flex items-center gap-1">
             <button className="btn-secondary" disabled={page === 0} onClick={() => router.push(`?page=${page - 1}`)}>
               Previous
@@ -338,7 +381,7 @@ function OrdersPageInner() {
                 </button>
               )
             )}
-            <button className="btn-secondary" disabled={!hasMore} onClick={() => router.push(`?page=${page + 1}`)}>
+            <button className="btn-secondary" disabled={page >= totalPages - 1} onClick={() => router.push(`?page=${page + 1}`)}>
               Next
             </button>
           </div>

@@ -142,6 +142,26 @@ export default function OrderDetailPage() {
     window.open(url, "_blank");
   };
 
+  // Tải ảnh label đã scan (trên R2/CDN) về máy — fetch blob rồi trigger download
+  // vì thuộc tính `download` của <a> bị bỏ qua với URL khác domain.
+  const downloadScannedLabel = async (url: string, filename: string) => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objectUrl);
+    } catch (e: any) {
+      toast.error(`Tải ảnh thất bại: ${e?.message || "lỗi mạng"}`);
+    }
+  };
+
   const printLabelsForGroup = (items: any[]) => {
     const labelIds = Array.from(new Set(items.map((li) => li.label_id).filter(Boolean)));
     if (labelIds.length === 0) {
@@ -190,7 +210,7 @@ export default function OrderDetailPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+      <div className={`grid grid-cols-1 gap-4 mb-6 ${order.label_url ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
         <div className="card p-4">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold text-gray-500 uppercase">Buyer</h3>
@@ -240,6 +260,30 @@ export default function OrderDetailPage() {
             )}
           </div>
         </div>
+
+        {/* Ảnh label đã scan (order.label_url trên R2) → card nhỏ kế bên Summary; không có thì ẩn */}
+        {order.label_url && (
+          <div className="card p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-gray-500 uppercase">Scanned Label</h3>
+              <button
+                type="button"
+                onClick={() => downloadScannedLabel(order.label_url, `${order.external_order_id || order.id}.png`)}
+                className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-gray-700"
+                title="Tải ảnh label"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <a href={order.label_url} target="_blank" rel="noopener noreferrer">
+              <img
+                src={order.label_url}
+                alt="Shipping label"
+                className="w-full max-h-40 object-contain rounded border border-gray-200"
+              />
+            </a>
+          </div>
+        )}
       </div>
 
       {/* Dispatch readiness */}

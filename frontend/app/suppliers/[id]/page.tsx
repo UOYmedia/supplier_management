@@ -73,7 +73,7 @@ export default function SupplierDetailPage() {
 
   return (
     <div>
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-1">
         <Link href="/suppliers" className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"><ArrowLeft className="w-4 h-4" /></Link>
         <div className="flex-1">
           <h1 className="page-title">{supplier.name}</h1>
@@ -87,7 +87,7 @@ export default function SupplierDetailPage() {
         <button className="btn-secondary" onClick={() => setShowEdit(true)}><Pencil className="w-4 h-4" />Edit</button>
       </div>
 
-      <div className="flex gap-1 mb-3 border-b border-gray-200">
+      <div className="flex gap-1 mb-2 border-b border-gray-200">
         {(["catalog", "orders", "invoices"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm font-medium capitalize border-b-2 transition-colors ${tab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
@@ -144,7 +144,7 @@ export default function SupplierDetailPage() {
               </button>
             </div>
           </div>
-          <div className="card table-wrapper table-scroll max-h-[calc(100vh-249px)]">
+          <div className="card table-wrapper table-scroll max-h-[calc(100vh-245px)]">
             <table>
               <thead>
                 <tr>
@@ -234,7 +234,7 @@ export default function SupplierDetailPage() {
                     )}
                   </div>
                 </div>
-                <div className="table-wrapper">
+                <div className="table-wrapper table-scroll max-h-[calc(100vh-245px)]">
                   <table>
                     <thead><tr><th className="w-12"></th><th>Catalog Product</th><th>Supplier SKU</th><th>Qty</th><th>Cost</th><th>Status</th><th>Tracking</th></tr></thead>
                     <tbody>
@@ -273,7 +273,7 @@ export default function SupplierDetailPage() {
               <Plus className="w-4 h-4" /> Generate Invoice from Orders
             </button>
           </div>
-          <div className="card table-wrapper">
+          <div className="card table-wrapper table-scroll max-h-[calc(100vh-245px)]">
             <table>
               <thead><tr><th>Invoice #</th><th>Period</th><th>Total</th><th>Status</th><th>Paid At</th><th></th></tr></thead>
               <tbody>

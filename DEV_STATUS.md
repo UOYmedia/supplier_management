@@ -190,6 +190,63 @@ If any link is broken → pending/sold = 0 → stock table, balance, invoices al
 
 ---
 
+## BUG (branch `main`) — F6 label stamping skips manually-uploaded Amazon labels
+
+**Symptom:** When a label is downloaded from Amazon, uploaded to its matching order via
+`POST /orders/{id}/labels/{label_id}/upload`, then re-downloaded from the tool
+(`GET /orders/bulk-labels`), the product info line (Qty + NAME + size + date) is **NOT**
+stamped onto the label. It only stamps for labels bought through the tool (EasyPost).
+
+**Root cause:** The stamp path is gated on `label.label_url`, but manual uploads only
+populate `label.label_data`.
+
+- `upload_label_pdf` (`orders.py:978`) stores the raw PDF into `label.label_data` and
+  never sets `label_url`, never stamps.
+- `_pdf_for_label` (`orders.py:364`) inside `bulk_labels`:
+  ```python
+  if label.label_url:                       # EasyPost-bought labels only
+      ... await _stamp_carrier_for_label(...)   # ← stamps here
+  if label.label_data:                      # manually-uploaded Amazon labels land here
+      return decode_label_data(label.label_data)   # ← returns raw, NO stamp
+  ```
+
+**Fix direction:** In `_pdf_for_label`, route the `label_data` branch through
+`_stamp_carrier_for_label` too — decode the stored PDF first, then stamp it, instead of
+returning it raw. Guard against double-stamping (the `label_data` may already be stamped
+from a prior run; safest is to keep `label_url` as the pristine source and only stamp
+`label_data` when no `label_url` exists). `regenerate_label` (`orders.py:1032`) is also
+`label_url`/`shipment_id`-gated, so it doesn't cover this case either.
+
+### Full stamping chain (for reference when fixing)
+
+```
+GATE: label.label_url must exist  ──❌ no url → return raw (THE BUG: Amazon uploads have no url)
+   ↓ yes
+_catalog_items_for_line_item (orders.py:1355) — resolve the NAME, 3 sources in priority:
+   1. OrderFulfillmentItem → SupplierProduct   (name = short_name | name | product_name)
+   2. line_item.product_id → ProductComponent → SupplierProduct
+   3. fallback: li.product_name (raw Amazon name)
+   ↓
+_build_label_lines (pdf_labels.py:38) — "<Qty> <NAME> <size> - <date>"
+   • size only if SupplierProduct has it
+   • date only for supplier named "JOE"
+   • clipped to 55 chars
+   ↓
+_find_blank_band (pdf_labels.py:85) — scan pixels for white band in footer
+   ↓
+stamp_label / _crop_and_stamp_fitz (pdf_labels.py:300) — draw text, barcode preserved
+```
+
+**Two failure points to be aware of:**
+1. `label_url` gate → manually-uploaded Amazon labels never stamp (this bug).
+2. SKU mapping → even when it stamps, an unmapped order falls to the raw `product_name`
+   fallback instead of the clean supplier catalog name.
+
+So for a correct + readable stamp you need BOTH: label has `label_url` (or the fix above)
+AND the order is mapped to a `SupplierProduct` (ideally with `short_name`/`size`).
+
+---
+
 ## Priority list for dev handoff
 
 | Priority | Task | Effort | Unblocks |

@@ -260,7 +260,10 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     required = ["name", "line1", "city", "state", "zip"]
     missing = [k for k in required if not str(addr.get(k) or "").strip()]
     if not missing:
-        return {"order_id": order_id, "status": "already_has_address"}
+        # Address already complete — still advance assignment / status
+        assignment = await _post_scan_assign(order, db)
+        await db.commit()
+        return {"order_id": order_id, "status": "already_has_address", "assignment": assignment}
 
     # 3. Validate the image bytes
     try:
@@ -305,9 +308,14 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     if not str(order.buyer_name or "").strip() and address.get("name"):
         order.buyer_name = address.get("name")
     order.updated_at = datetime.now(timezone.utc)
+
+    # Continue: assign supplier by SKU and/or move the order to processing
+    assignment = await _post_scan_assign(order, db)
+
     await db.commit()
     logger.info(f"scan_label: order={order_id} filled {filled or 'nothing'}")
-    return {"order_id": order_id, "status": "updated", "address": address, "filled": filled}
+    return {"order_id": order_id, "status": "updated", "address": address,
+            "filled": filled, "assignment": assignment}
 
 
 @router.get("/bulk-labels")

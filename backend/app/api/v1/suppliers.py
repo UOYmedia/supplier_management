@@ -98,15 +98,18 @@ async def list_suppliers(
 
     out = []
     for s in suppliers:
-        ps_q = await db.execute(select(ProductSupplier).where(ProductSupplier.supplier_id == s.id))
-        ps_list = ps_q.scalars().all()
+        # Count from SupplierProduct (the catalog table the Live PO view reads),
+        # not the legacy ProductSupplier link table, so the tab badge matches the
+        # SKU count shown when the supplier is opened.
+        sp_q = await db.execute(select(SupplierProduct).where(SupplierProduct.supplier_id == s.id))
+        sp_list = sp_q.scalars().all()
         out.append(SupplierListOut(
             id=s.id, name=s.name, email=s.email, phone=s.phone,
             city=s.city, state=s.state, country=s.country, zipcode=s.zipcode,
             is_active=s.is_active,
             supplier_type=s.supplier_type,
-            product_count=len(ps_list),
-            total_stock=sum(ps.stock for ps in ps_list),
+            product_count=len(sp_list),
+            total_stock=sum(sp.stock_quantity or 0 for sp in sp_list),
         ))
     return out
 

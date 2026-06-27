@@ -22,6 +22,20 @@ from app.schemas.order import (
 )
 
 router = APIRouter(prefix="/orders", tags=["orders"])
+
+def _utc_day_bounds(date: str) -> tuple[datetime, datetime]:
+    """Parse YYYY-MM-DD as a UTC day → (start, end) tz-aware bounds.
+
+    purchased_at is stored in UTC everywhere, so date filters use UTC day boundaries
+    for consistency across the system.
+    """
+    try:
+        d = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Invalid date — use YYYY-MM-DD.")
+    start = d.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    end = d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+    return start, end
 logger = logging.getLogger("orders")
 
 
@@ -734,20 +748,15 @@ async def bulk_labels(
     from collections import defaultdict
     from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs, image_to_label_pdf
 
-    try:
-        d = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "Invalid date — use YYYY-MM-DD.")
-    start = d.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-    end = d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+    start, end = _utc_day_bounds(date)
 
-    # Only labels linked to processing orders (via OrderLineItem → Order)
-    processing_label_ids_q = (
+    # Only labels linked to processing or fulfilled orders (via OrderLineItem → Order)
+    printable_label_ids_q = (
         select(OrderLineItem.label_id)
         .join(Order, Order.id == OrderLineItem.order_id)
         .where(
             OrderLineItem.label_id.isnot(None),
-            Order.status == OrderStatus.processing,
+            Order.status.in_([OrderStatus.processing, OrderStatus.fulfilled]),
         )
     )
     q = (
@@ -755,7 +764,7 @@ async def bulk_labels(
         .where(
             ShippingLabel.purchased_at >= start,
             ShippingLabel.purchased_at <= end,
-            ShippingLabel.id.in_(processing_label_ids_q),
+            ShippingLabel.id.in_(printable_label_ids_q),
         )
         .order_by(ShippingLabel.supplier_id)
     )
@@ -764,7 +773,7 @@ async def bulk_labels(
 
     labels = (await db.execute(q)).scalars().all()
     if not labels:
-        detail = f"No processing orders with labels on {date}"
+        detail = f"No processing/fulfilled orders with labels on {date}"
         if supplier_id:
             detail += f" for supplier {supplier_id}"
         raise HTTPException(404, detail)
@@ -890,12 +899,7 @@ async def bulk_fulfill(
     db: AsyncSession = Depends(get_db),
 ):
     """Mark all labels (and their line items) for a given date/supplier as shipped."""
-    try:
-        d = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "Invalid date — use YYYY-MM-DD.")
-    start = d.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-    end = d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+    start, end = _utc_day_bounds(date)
 
     processing_label_ids_q = (
         select(OrderLineItem.label_id)

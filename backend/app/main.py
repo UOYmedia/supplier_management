@@ -148,6 +148,8 @@ async def _run_migrations():
         "ALTER TABLE orders ALTER COLUMN status TYPE VARCHAR(50) USING status::text",
         # orders: public URL of the stamped shipping label stored on R2
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS label_url TEXT",
+        # dropped: label_uploaded_at no longer used
+        "ALTER TABLE orders DROP COLUMN IF EXISTS label_uploaded_at",
         # daily_balances: manual deposit ("nạp thêm") recorded per day
         "ALTER TABLE daily_balances ADD COLUMN IF NOT EXISTS top_up NUMERIC(12, 2) NOT NULL DEFAULT 0",
         # daily_balances: manual COGS for externally-fulfilled (Amazon) orders without recorded cost

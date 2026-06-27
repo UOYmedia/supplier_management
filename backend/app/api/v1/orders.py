@@ -225,8 +225,10 @@ def _parse_ship_to(text: str) -> dict | None:
         if parsed:
             csz = parsed
             break
-        # Skip OCR noise from nearby 2D barcodes (lines with almost no letters/digits)
-        if sum(c.isalnum() for c in cleaned) < 3:
+        # Skip OCR noise from nearby 2D barcodes (almost no letters/digits) and
+        # numeric reference lines (e.g. an order number printed above the name) —
+        # real name/street lines always contain letters.
+        if sum(c.isalnum() for c in cleaned) < 3 or not any(c.isalpha() for c in cleaned):
             continue
         block.append(cleaned)
         if len(block) >= 6:  # safety stop
@@ -244,6 +246,150 @@ def _parse_ship_to(text: str) -> dict | None:
         result["state"] = csz["state"]
         result["zip"] = csz["zip"]
     return result or None
+
+
+# ---------------------------------------------------------------------------
+# Carrier / service / tracking number extracted from the scanned label.
+# FIRST PASS — refine the carrier/service normalization with real sample data.
+# ---------------------------------------------------------------------------
+
+# Service phrases as they appear on the label -> normalized service value.
+_SERVICE_MAP = [
+    ("GROUND ADVANTAGE", "GroundAdvantage"),
+    ("PRIORITY MAIL EXPRESS", "PriorityExpress"),
+    ("PRIORITY MAIL", "Priority"),
+    ("PRIORITY", "Priority"),
+    ("FIRST CLASS", "FirstClass"),
+    ("2ND DAY AIR", "2ndDayAir"),
+    ("NEXT DAY AIR", "NextDayAir"),
+    ("3 DAY SELECT", "3DaySelect"),
+    ("GROUND", "Ground"),
+]
+
+
+def _clean_tracking(s: str) -> str | None:
+    """Pull a UPS (1Z…) or numeric (USPS/FedEx) tracking number out of a string."""
+    up = s.upper()
+    m = re.search(r"1Z[0-9A-Z ]{12,}", up)   # UPS: 1Z + ~16 alnum
+    if m:
+        t = re.sub(r"\s+", "", m.group(0))
+        if 16 <= len(t) <= 20:
+            return t
+    digits = re.sub(r"[^0-9]", "", s)         # USPS/FedEx: long digit run
+    if len(digits) >= 12:
+        return digits
+    return None
+
+
+def _parse_tracking(lines: list[str]) -> str | None:
+    """Find the tracking number near a 'TRACKING #' line."""
+    for i, ln in enumerate(lines):
+        if "TRACKING" in ln.upper():
+            after = ln.split("#", 1)[1] if "#" in ln else ""
+            for c in [after, *lines[i + 1:i + 3]]:   # same line after #, or next 2 lines
+                t = _clean_tracking(c)
+                if t:
+                    return t
+    return None
+
+
+def _parse_label_meta(text: str) -> dict:
+    """Extract {carrier, service, tracking_number} from a shipping-label OCR text."""
+    up = text.upper()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    carrier = None
+    if "USPS" in up:
+        carrier = "USPS"
+    elif "UPS" in up:
+        carrier = "UPS"
+    elif "FEDEX" in up:
+        carrier = "FedEx"
+    elif "DHL" in up:
+        carrier = "DHL"
+
+    service = None
+    for phrase, norm in _SERVICE_MAP:
+        if phrase in up:
+            service = norm
+            break
+
+    return {"carrier": carrier, "service": service, "tracking_number": _parse_tracking(lines)}
+
+
+def _to_address_payload(addr: dict | None) -> dict | None:
+    """Build an EasyPost-style address object from a parsed order address.
+
+    Stores only the fields we actually have (empty ones are dropped), so a
+    partial address is fine.
+    """
+    if not isinstance(addr, dict):
+        return None
+    mapping = {
+        "name": addr.get("name"),
+        "company": addr.get("company"),
+        "street1": addr.get("line1"),
+        "street2": addr.get("line2"),
+        "city": addr.get("city"),
+        "state": addr.get("state"),
+        "zip": addr.get("zip"),
+        "country": addr.get("country") or "US",
+        "phone": addr.get("phone"),
+        "email": addr.get("email"),
+    }
+    payload = {k: v for k, v in mapping.items() if v not in (None, "")}
+    if not payload:
+        return None
+    payload["object"] = "Address"
+    return payload
+
+
+def _is_prestamped_label_url(url: str | None) -> bool:
+    """Scanned labels stored on our R2 CDN already have the product info stamped,
+    so the Print Label / bulk pipeline must NOT stamp them again."""
+    return bool(url) and "cdn.podgasus.com" in url
+
+
+async def _create_scan_shipping_label(order: Order, label_url: str | None, meta: dict, db: AsyncSession):
+    """Create a shipping_labels row from a scanned label and link the order's
+    assigned line items (label_id + tracking_number) — so the scanned label feeds
+    the existing bulk-print flow. Supplier = the order's (primary) assigned supplier.
+
+    Does NOT commit; the caller owns the transaction.
+    """
+    lis = (await db.execute(
+        select(OrderLineItem).where(OrderLineItem.order_id == order.id)
+    )).scalars().all()
+    assigned = [li for li in lis if li.supplier_id]
+    if not assigned:
+        return None
+
+    supplier_id = assigned[0].supplier_id   # one physical label per order → primary supplier
+    tracking = meta.get("tracking_number")
+    label = ShippingLabel(
+        supplier_id=supplier_id,
+        carrier=meta.get("carrier") or "",
+        service=meta.get("service"),
+        tracking_number=tracking,
+        label_url=label_url,
+        to_address=_to_address_payload(order.shipping_address),
+        purchased_at=datetime.now(timezone.utc),
+    )
+    db.add(label)
+    await db.flush()
+
+    for li in assigned:
+        li.label_id = label.id
+        if tracking:
+            li.tracking_number = tracking
+
+    print(
+        f"scan_label: order={order.external_order_id} shipping_label id={label.id} "
+        f"supplier={supplier_id} carrier={label.carrier!r} service={label.service!r} "
+        f"tracking={tracking!r}",
+        flush=True,
+    )
+    return label
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +473,18 @@ async def _stamp_items(order: Order, db: AsyncSession) -> tuple[list[tuple[int, 
             if sp:
                 # Use short_name; fall back to name if it's empty
                 items.append((ofi.quantity, sp.short_name or sp.name))
-    return items, is_joe
+
+    # Drop exact-duplicate lines (guards against duplicate fulfillment items
+    # producing the same product line twice on the label)
+    seen: set = set()
+    deduped: list[tuple[int, str]] = []
+    for qty, name in items:
+        key = (qty, (name or "").strip().lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((qty, name))
+    return deduped, is_joe
 
 
 def _r2_put_object(key: str, png_bytes: bytes) -> None:
@@ -467,8 +624,8 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     if not order:
         return {"order_id": order_id, "status": "not_found"}
 
-    # Decode the uploaded label image up-front — used for OCR and for the JOE
-    # stamping step. None if it isn't a valid PNG.
+    # Decode the uploaded label image up-front — used for OCR (address + tracking)
+    # and for the stamping step. None if it isn't a valid PNG.
     raw = None
     try:
         _decoded = base64.b64decode(body.image_b64)
@@ -476,6 +633,32 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
             raw = _decoded
     except Exception:
         raw = None
+
+    # OCR once — the text feeds both address parsing and label-meta (carrier /
+    # service / tracking) extraction, so it must run even when the address is
+    # already complete.
+    ocr_text = ""
+    if raw is not None:
+        try:
+            ocr_text = _ocr_text(raw)
+        except Exception as e:
+            print(f"scan_label: order={order_id} OCR error — {e}", flush=True)
+            ocr_text = ""
+    label_meta = _parse_label_meta(ocr_text)
+
+    async def _finalize_label(order_obj, assignment, db):
+        """Stamp + store image, then create the shipping_labels row + link items.
+
+        shipping_labels.label_url points at the already-stamped R2 image; the
+        Print Label / bulk pipeline detects the cdn.podgasus.com host and skips
+        re-stamping it (see _is_prestamped_label_url).
+        """
+        stamp = None
+        if assignment.get("moved_to_processing"):
+            stamp = await _stamp_label_for_processing(order_obj, raw, db)
+            label_url = stamp.get("label_url") if stamp else None
+            await _create_scan_shipping_label(order_obj, label_url, label_meta, db)
+        return stamp
 
     # 2. Skip only if the address is already complete. An address counts as
     #    complete when all key fields are present — a partial record (e.g. only
@@ -486,28 +669,20 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     if not missing:
         # Address already complete — still advance assignment / status
         assignment = await _post_scan_assign(order, db)
-        stamp = None
-        if assignment.get("moved_to_processing"):
-            stamp = await _stamp_label_for_processing(order, raw, db)
+        stamp = await _finalize_label(order, assignment, db)
         await db.commit()
         return {"order_id": order_id, "status": "already_has_address",
-                "assignment": assignment, "stamp": stamp}
+                "assignment": assignment, "stamp": stamp, "label_meta": label_meta}
 
     # 3. Need a valid PNG to OCR the address
     if raw is None:
         return {"order_id": order_id, "status": "scan_failed", "error": "not a PNG"}
 
-    # 4. OCR the label and parse the SHIP TO block (local Tesseract — no AI)
-    try:
-        text = _ocr_text(raw)
-        data = _parse_ship_to(text)
-    except Exception as e:
-        print(f"scan_label: order={order_id} OCR error — {e}", flush=True)
-        return {"order_id": order_id, "status": "scan_failed", "error": str(e)}
-
+    # 4. Parse the SHIP TO block from the OCR text (local Tesseract — no AI)
+    data = _parse_ship_to(ocr_text)
     if not data or not (data.get("line1") or data.get("city")):
         # Dump OCR text only on failure, to help diagnose unreadable labels
-        print(f"scan_label: order={order_id} no address parsed; OCR text:\n{text}", flush=True)
+        print(f"scan_label: order={order_id} no address parsed; OCR text:\n{ocr_text}", flush=True)
         return {"order_id": order_id, "status": "scan_failed", "error": "no address parsed"}
 
     # 6. Merge: keep existing non-empty fields, fill only the missing ones
@@ -536,15 +711,13 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     # Continue: assign supplier by SKU and/or move the order to processing
     assignment = await _post_scan_assign(order, db)
 
-    # When a JOE order has just moved to processing, stamp + store its label
-    stamp = None
-    if assignment.get("moved_to_processing"):
-        stamp = await _stamp_label_for_processing(order, raw, db)
+    # On transition to processing: stamp + store image, create shipping label
+    stamp = await _finalize_label(order, assignment, db)
 
     await db.commit()
     logger.info(f"scan_label: order={order_id} filled {filled or 'nothing'}")
     return {"order_id": order_id, "status": "updated", "address": address,
-            "filled": filled, "assignment": assignment, "stamp": stamp}
+            "filled": filled, "assignment": assignment, "stamp": stamp, "label_meta": label_meta}
 
 
 @router.get("/bulk-labels")
@@ -611,6 +784,9 @@ async def bulk_labels(
                 if r.is_success and r.content:
                     carrier = (r.content if r.content[:5] == b"%PDF-"
                                else image_to_label_pdf(r.content))
+                    # Scanned labels on our CDN are already stamped — don't re-stamp.
+                    if _is_prestamped_label_url(label.label_url):
+                        return carrier
                     try:
                         return await _stamp_carrier_for_label(carrier, label, db)
                     except Exception as _se:

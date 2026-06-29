@@ -109,11 +109,12 @@ export default function LiveSupplierPO() {
   const [activeId, setActiveId] = useState<number | null>(null)
   const [period, setPeriod] = useState<LivePeriod>("today")
   const [pdfLoading, setPdfLoading] = useState(false)
-  // PO PDF source: "" = current live numbers, or a saved end-of-day snapshot date.
-  const [pdfDate, setPdfDate] = useState("")
+  // "" = current live numbers; a date = the frozen end-of-day snapshot for that
+  // day. Drives both the on-screen table and the PO PDF.
+  const [viewDate, setViewDate] = useState("")
   const range = periodRange(period)
 
-  // Dates that have a stored end-of-day snapshot, for the PO PDF date picker.
+  // Dates that have a stored end-of-day snapshot, for the date picker.
   const datesQuery = useQuery<string[]>({
     queryKey: ["snapshot-dates"],
     queryFn: () => snapshotsApi.dates(),
@@ -144,12 +145,22 @@ export default function LiveSupplierPO() {
         activeId as number,
         range ? { date_from: range.from, date_to: range.to } : undefined
       ),
-    enabled: activeId !== null,
+    enabled: activeId !== null && !viewDate,
   })
 
-  const items: SKUItem[] = (productsQuery.data ?? []).map((p) =>
-    toSKUItem(p, activeSupplier?.name ?? "")
-  )
+  // Frozen snapshot for the chosen day + supplier (only when a date is picked).
+  const snapshotQuery = useQuery<any[]>({
+    queryKey: ["snapshot-view", viewDate, activeId],
+    queryFn: () => snapshotsApi.get(viewDate, activeId as number),
+    enabled: !!viewDate && activeId !== null,
+  })
+
+  const items: SKUItem[] = viewDate
+    ? (snapshotQuery.data ?? []).map(snapshotRowToItem)
+    : (productsQuery.data ?? []).map((p) => toSKUItem(p, activeSupplier?.name ?? ""))
+
+  const loading = viewDate ? snapshotQuery.isLoading : productsQuery.isLoading
+  const loadError = viewDate ? snapshotQuery.isError : productsQuery.isError
 
   // Stock-supplier economics (catalog data is inventory-based):
   //   goodsValue     = value of orders waiting to ship (ordered × price)
@@ -211,32 +222,15 @@ export default function LiveSupplierPO() {
       toast.error("Nothing to export")
       return
     }
+    if (items.length === 0) {
+      toast.error("Nothing to export")
+      return
+    }
     setPdfLoading(true)
     try {
-      let pdfItems = items
-      let goods = goodsValue, inv = inventoryValue, dbt = debt
-      let dateLabel = new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })
-      let stampSource = new Date()
-
-      if (pdfDate) {
-        const rows = await snapshotsApi.get(pdfDate, activeSupplier.id)
-        if (!rows || rows.length === 0) {
-          toast.error("No saved snapshot for that day")
-          setPdfLoading(false)
-          return
-        }
-        pdfItems = rows.map(snapshotRowToItem)
-        goods = rows.reduce((s: number, r: any) => s + (Number(r.total_cost) || 0), 0)
-        inv = rows.reduce((s: number, r: any) => s + (Number(r.avail_value) || 0), 0)
-        dbt = rows.reduce((s: number, r: any) => s + (Number(r.oversold_value) || 0), 0)
-        stampSource = new Date(pdfDate + "T00:00:00")
-        dateLabel = stampSource.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })
-      } else if (items.length === 0) {
-        toast.error("Nothing to export")
-        setPdfLoading(false)
-        return
-      }
-
+      // items / totals already reflect the picked day (or live) via the table.
+      const stampSource = viewDate ? new Date(viewDate + "T00:00:00") : new Date()
+      const dateLabel = stampSource.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })
       const stamp = `${stampSource.getFullYear()}${String(stampSource.getMonth() + 1).padStart(2, "0")}${String(stampSource.getDate()).padStart(2, "0")}`
       const cityLine = [activeSupplier.city, activeSupplier.state, activeSupplier.zipcode]
         .filter(Boolean).join(", ")
@@ -247,7 +241,7 @@ export default function LiveSupplierPO() {
           supplier: activeSupplier.name,
           po_number: `PO-${stamp}-${activeSupplier.name}`,
           date: dateLabel,
-          items: pdfItems,
+          items,
           supplier_info: {
             name: activeSupplier.name,
             address: "",
@@ -257,9 +251,9 @@ export default function LiveSupplierPO() {
           },
           buyer_info: BUYER_INFO,
           balance: {
-            total_cost: goods,
-            available_value: inv,
-            oversold_value: dbt,
+            total_cost: goodsValue,
+            available_value: inventoryValue,
+            oversold_value: debt,
             starting_balance: 0,
             ending_balance: 0,
           },
@@ -307,9 +301,9 @@ export default function LiveSupplierPO() {
           ))
         )}
         <select
-          value={pdfDate}
-          onChange={(e) => setPdfDate(e.target.value)}
-          title="Pick a saved end-of-day snapshot, or use today's live numbers"
+          value={viewDate}
+          onChange={(e) => setViewDate(e.target.value)}
+          title="View today's live numbers, or a saved end-of-day snapshot"
           className="ml-auto border border-gray-200 rounded-md py-1.5 px-2 text-xs text-gray-600 bg-white"
         >
           <option value="">Today (live)</option>
@@ -320,7 +314,7 @@ export default function LiveSupplierPO() {
         <button
           className="btn-secondary py-1.5 text-xs"
           onClick={handlePDF}
-          disabled={!activeSupplier || (pdfDate === "" && items.length === 0) || pdfLoading}
+          disabled={!activeSupplier || items.length === 0 || pdfLoading}
         >
           {pdfLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
           PO PDF
@@ -334,29 +328,37 @@ export default function LiveSupplierPO() {
         </button>
         <button
           className="btn-secondary py-1.5 text-xs"
-          onClick={() => { suppliersQuery.refetch(); productsQuery.refetch() }}
+          onClick={() => { suppliersQuery.refetch(); productsQuery.refetch(); snapshotQuery.refetch(); datesQuery.refetch() }}
         >
           <RefreshCw className="w-3.5 h-3.5" /> Refresh
         </button>
       </div>
 
-      {/* Period filter — ordered/sold counts are scoped to Order.ordered_at in this range */}
-      <div className="flex items-center gap-1.5 mb-4">
-        <span className="text-xs text-gray-400 mr-1">Period</span>
-        {PERIOD_OPTS.map((p) => (
-          <button
-            key={p.key}
-            onClick={() => setPeriod(p.key)}
-            className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
-              period === p.key
-                ? "bg-gray-800 text-white border-transparent"
-                : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
+      {/* Period filter applies to live numbers only; a frozen snapshot ignores it. */}
+      {viewDate ? (
+        <div className="flex items-center gap-1.5 mb-4">
+          <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1">
+            Viewing saved end-of-day snapshot for {viewDate}
+          </span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-1.5 mb-4">
+          <span className="text-xs text-gray-400 mr-1">Period</span>
+          {PERIOD_OPTS.map((p) => (
+            <button
+              key={p.key}
+              onClick={() => setPeriod(p.key)}
+              className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
+                period === p.key
+                  ? "bg-gray-800 text-white border-transparent"
+                  : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {activeSupplier && (
         <div className="card overflow-hidden">
@@ -373,7 +375,9 @@ export default function LiveSupplierPO() {
                   Balance
                 </span>
               )}
-              <span className="text-xs text-gray-400">{items.length} SKUs · live catalog</span>
+              <span className="text-xs text-gray-400">
+                {items.length} SKUs · {viewDate ? `snapshot ${viewDate}` : "live catalog"}
+              </span>
             </div>
             <div className="text-right leading-tight">
               <span className={`block font-bold ${debt > 0 ? "text-red-600" : "text-gray-900"}`}>
@@ -384,12 +388,14 @@ export default function LiveSupplierPO() {
           </div>
 
           <div className="px-5 py-4">
-            {productsQuery.isLoading ? (
-              <p className="text-sm text-gray-400 py-8 text-center">Loading catalog…</p>
-            ) : productsQuery.isError ? (
-              <p className="text-sm text-red-500 py-8 text-center">Failed to load catalog</p>
+            {loading ? (
+              <p className="text-sm text-gray-400 py-8 text-center">Loading…</p>
+            ) : loadError ? (
+              <p className="text-sm text-red-500 py-8 text-center">Failed to load</p>
             ) : items.length === 0 ? (
-              <p className="text-sm text-gray-400 py-8 text-center">This supplier has no catalog items</p>
+              <p className="text-sm text-gray-400 py-8 text-center">
+                {viewDate ? "No snapshot saved for this day" : "This supplier has no catalog items"}
+              </p>
             ) : (
               <>
                 <SKUTable items={items} supplierType="stock" />

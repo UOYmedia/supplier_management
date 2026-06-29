@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { suppliersApi } from "@/lib/api";
+import { suppliersApi, snapshotsApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
 import { ArrowLeft, Download, Package, Pencil, Plus, Printer, Trash2, Truck, Upload, X, Pencil as PencilIcon } from "lucide-react";
@@ -18,10 +18,37 @@ export default function SupplierDetailPage() {
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
   const [catalogSearch, setCatalogSearch] = useState("");
+  // "" = current live numbers; a date = frozen end-of-day snapshot for that day.
+  const [catalogDate, setCatalogDate] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const { data: supplier } = useQuery({ queryKey: ["supplier", sid], queryFn: () => suppliersApi.get(sid) });
-  const { data: catalog = [] } = useQuery({ queryKey: ["supplier-catalog", sid], queryFn: () => suppliersApi.listProducts(sid) });
+  const { data: liveCatalog = [] } = useQuery({
+    queryKey: ["supplier-catalog", sid],
+    queryFn: () => suppliersApi.listProducts(sid),
+    enabled: !catalogDate,
+  });
+  const { data: snapshotDates = [] } = useQuery<string[]>({
+    queryKey: ["snapshot-dates"],
+    queryFn: () => snapshotsApi.dates(),
+  });
+  const { data: snapshotRows = [] } = useQuery<any[]>({
+    queryKey: ["supplier-catalog-snapshot", sid, catalogDate],
+    queryFn: () => snapshotsApi.get(catalogDate, sid),
+    enabled: !!catalogDate,
+  });
+  // Normalise a snapshot row into the same shape the catalog table expects.
+  const catalog = catalogDate
+    ? snapshotRows.map((r: any) => ({
+        id: r.sku,
+        name: r.product_name || r.sku,
+        sku: r.sku,
+        unit_price: r.unit_cost,
+        stock_quantity: r.available,
+        pending_quantity: r.ordered,
+        sold_quantity: r.sold,
+      }))
+    : liveCatalog;
   const { data: orders = [] } = useQuery({ queryKey: ["supplier-orders", sid], queryFn: () => suppliersApi.orders(sid) });
   const { data: invoices = [] } = useQuery({ queryKey: ["supplier-invoices", sid], queryFn: () => suppliersApi.invoices(sid) });
 
@@ -112,38 +139,58 @@ export default function SupplierDetailPage() {
               >
                 Download CSV template
               </button>
-            </div>
-            <div className="flex gap-2">
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".csv"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) importMut.mutate(file);
-                  e.target.value = "";
-                }}
-              />
-              <button
-                className="btn-secondary"
-                onClick={() => fileRef.current?.click()}
-                disabled={importMut.isPending}
+              <select
+                value={catalogDate}
+                onChange={(e) => setCatalogDate(e.target.value)}
+                title="View today's live numbers, or a saved end-of-day snapshot"
+                className="border border-gray-200 rounded-md py-1.5 px-2 text-xs text-gray-600 bg-white"
               >
-                <Upload className="w-4 h-4" /> {importMut.isPending ? "Importing…" : "Import CSV"}
-              </button>
-              <button
-                className="btn-secondary"
-                onClick={() => exportMut.mutate()}
-                disabled={exportMut.isPending || catalog.length === 0}
-              >
-                <Download className="w-4 h-4" /> Export CSV
-              </button>
-              <button className="btn-primary" onClick={() => setShowAddProduct(true)}>
-                <Plus className="w-4 h-4" /> Add Product
-              </button>
+                <option value="">Today (live)</option>
+                {snapshotDates.map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
             </div>
+            {!catalogDate && (
+              <div className="flex gap-2">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) importMut.mutate(file);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  className="btn-secondary"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={importMut.isPending}
+                >
+                  <Upload className="w-4 h-4" /> {importMut.isPending ? "Importing…" : "Import CSV"}
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => exportMut.mutate()}
+                  disabled={exportMut.isPending || catalog.length === 0}
+                >
+                  <Download className="w-4 h-4" /> Export CSV
+                </button>
+                <button className="btn-primary" onClick={() => setShowAddProduct(true)}>
+                  <Plus className="w-4 h-4" /> Add Product
+                </button>
+              </div>
+            )}
           </div>
+          {catalogDate && (
+            <div className="mb-3">
+              <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1">
+                Viewing saved end-of-day snapshot for {catalogDate} (read-only)
+              </span>
+            </div>
+          )}
           <div className="card table-wrapper">
             <table>
               <thead>
@@ -160,13 +207,16 @@ export default function SupplierDetailPage() {
               </thead>
               <tbody>
                 {catalog.length === 0 ? (
-                  <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products in catalog. Add one to start tracking inventory.</td></tr>
+                  <tr><td colSpan={8} className="text-center py-6 text-gray-400">
+                    {catalogDate ? `No snapshot saved for ${catalogDate}.` : "No products in catalog. Add one to start tracking inventory."}
+                  </td></tr>
                 ) : filteredCatalog.length === 0 ? (
                   <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products match "{catalogSearch}".</td></tr>
                 ) : filteredCatalog.map((item: any) => (
                   <CatalogRow
                     key={item.id}
                     item={item}
+                    readOnly={!!catalogDate}
                     onEdit={() => setEditingProduct(item)}
                     onDelete={() => {
                       if (confirm(`Delete "${item.name}"?`)) deleteMut.mutate(item.id);
@@ -411,7 +461,7 @@ function groupOrders(items: any[]) {
   });
 }
 
-function CatalogRow({ item, onEdit, onDelete }: { item: any; onEdit: () => void; onDelete: () => void }) {
+function CatalogRow({ item, onEdit, onDelete, readOnly = false }: { item: any; onEdit: () => void; onDelete: () => void; readOnly?: boolean }) {
   const total = item.stock_quantity + item.pending_quantity + item.sold_quantity;
   return (
     <tr>
@@ -435,10 +485,12 @@ function CatalogRow({ item, onEdit, onDelete }: { item: any; onEdit: () => void;
       </td>
       <td className="text-gray-600">{total}</td>
       <td>
-        <div className="flex items-center gap-2">
-          <button className="p-1 hover:text-blue-600 text-gray-400" onClick={onEdit}><PencilIcon className="w-4 h-4" /></button>
-          <button className="p-1 hover:text-red-500 text-gray-400" onClick={onDelete}><Trash2 className="w-4 h-4" /></button>
-        </div>
+        {!readOnly && (
+          <div className="flex items-center gap-2">
+            <button className="p-1 hover:text-blue-600 text-gray-400" onClick={onEdit}><PencilIcon className="w-4 h-4" /></button>
+            <button className="p-1 hover:text-red-500 text-gray-400" onClick={onDelete}><Trash2 className="w-4 h-4" /></button>
+          </div>
+        )}
       </td>
     </tr>
   );

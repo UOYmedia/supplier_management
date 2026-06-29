@@ -327,6 +327,11 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
   function addLine() { setLines((ls) => [...ls, { ...EMPTY_LINE }]) }
   function removeLine(idx: number) { setLines((ls) => (ls.length > 1 ? ls.filter((_, i) => i !== idx) : ls)) }
 
+  const grandTotal = lines.reduce(
+    (s, l) => s + (parseFloat(l.qty_ordered) || 0) * (parseFloat(l.unit_cost) || 0),
+    0,
+  )
+
   return (
     <div>
       {/* Header row */}
@@ -400,16 +405,19 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
 
                 {/* Column labels */}
                 <div className="grid grid-cols-12 gap-2 px-1 mb-1 text-[10px] font-medium text-gray-400 uppercase tracking-wide">
-                  <div className="col-span-7">Product / SKU</div>
+                  <div className="col-span-5">Product / SKU</div>
                   <div className="col-span-2 text-center">Qty</div>
                   <div className="col-span-2">Unit Cost</div>
+                  <div className="col-span-2 text-right">Total</div>
                   <div className="col-span-1" />
                 </div>
 
                 <div className="space-y-2">
-                  {lines.map((l, idx) => (
+                  {lines.map((l, idx) => {
+                    const lineTotal = (parseFloat(l.qty_ordered) || 0) * (parseFloat(l.unit_cost) || 0)
+                    return (
                     <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                      <div className="col-span-7">
+                      <div className="col-span-5">
                         <select
                           value={l.sku}
                           onChange={(e) => pickSkuLine(idx, e.target.value)}
@@ -443,6 +451,9 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                           placeholder="0.00"
                         />
                       </div>
+                      <div className="col-span-2 text-right text-sm font-medium text-gray-800 tabular-nums">
+                        ${fmt(lineTotal)}
+                      </div>
                       <div className="col-span-1 flex justify-center">
                         <button
                           type="button"
@@ -455,7 +466,18 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                         </button>
                       </div>
                     </div>
-                  ))}
+                  )})}
+                </div>
+
+                {/* Grand total */}
+                <div className="grid grid-cols-12 gap-2 px-1 mt-2 pt-2 border-t border-gray-200">
+                  <div className="col-span-9 text-right text-xs font-medium text-gray-500 uppercase tracking-wide self-center">
+                    Total ({lines.length} product{lines.length !== 1 ? "s" : ""})
+                  </div>
+                  <div className="col-span-2 text-right text-sm font-bold text-gray-900 tabular-nums self-center">
+                    ${fmt(grandTotal)}
+                  </div>
+                  <div className="col-span-1" />
                 </div>
               </div>
 

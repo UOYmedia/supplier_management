@@ -424,6 +424,50 @@ async def delete_supplier_product(supplier_id: int, sp_id: int, db: AsyncSession
     await db.commit()
 
 
+class _BulkDeleteBody(BaseModel):
+    ids: list[int]
+
+
+@router.post("/{supplier_id}/products/bulk-delete")
+async def bulk_delete_supplier_products(
+    supplier_id: int, body: _BulkDeleteBody, db: AsyncSession = Depends(get_db)
+):
+    """Delete multiple catalog products at once.
+
+    Products referenced by order fulfillment items cannot be removed and are
+    reported back as ``skipped`` so the rest can still be deleted.
+    """
+    if not body.ids:
+        return {"deleted": 0, "skipped": []}
+
+    result = await db.execute(
+        select(SupplierProduct).where(
+            SupplierProduct.id.in_(body.ids),
+            SupplierProduct.supplier_id == supplier_id,
+        )
+    )
+    sps = result.scalars().all()
+
+    used_result = await db.execute(
+        select(OrderFulfillmentItem.supplier_product_id)
+        .where(OrderFulfillmentItem.supplier_product_id.in_([sp.id for sp in sps]))
+        .distinct()
+    )
+    used_ids = set(used_result.scalars().all())
+
+    deleted = 0
+    skipped: list[dict] = []
+    for sp in sps:
+        if sp.id in used_ids:
+            skipped.append({"id": sp.id, "name": sp.name, "reason": "in use by orders"})
+        else:
+            await db.delete(sp)
+            deleted += 1
+
+    await db.commit()
+    return {"deleted": deleted, "skipped": skipped}
+
+
 @router.get("/supplier-products/{sp_id}/suggest-name")
 async def suggest_short_name(sp_id: int, db: AsyncSession = Depends(get_db)):
     sp = await db.get(SupplierProduct, sp_id)

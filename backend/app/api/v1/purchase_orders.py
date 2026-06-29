@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.daily_balance import DailyBalance
 from app.models.order import Order, OrderLineItem
-from app.models.purchase_order import PurchaseOrder
+from app.models.purchase_order import PurchaseOrder, DailyStockSnapshot
 from app.models.supplier import Supplier, SupplierProduct
 from app.schemas.purchase_order import (
     BalanceOut,
@@ -426,6 +426,73 @@ async def _increment_supplier_stock(db: AsyncSession, po: PurchaseOrder) -> None
         return
 
     sp.stock_quantity = (sp.stock_quantity or 0) + (po.qty_ordered or 0)
+
+
+# ── Daily stock snapshots (end-of-day frozen numbers) ──────────────────────────
+
+@router.get("/snapshots/dates")
+async def list_snapshot_dates(db: AsyncSession = Depends(get_db)):
+    """Distinct business dates that have a stored snapshot, newest first.
+    Powers the date picker on the PO PDF download."""
+    rows = (await db.execute(
+        select(DailyStockSnapshot.business_date)
+        .distinct()
+        .order_by(DailyStockSnapshot.business_date.desc())
+    )).scalars().all()
+    return [d.isoformat() for d in rows]
+
+
+@router.get("/snapshots")
+async def get_snapshot(
+    date_str: str = Query(..., alias="date", description="Business date YYYY-MM-DD (Pacific)"),
+    supplier_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the frozen snapshot rows for a business date (optionally one supplier)."""
+    try:
+        bd = date.fromisoformat(date_str)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD")
+    q = select(DailyStockSnapshot).where(DailyStockSnapshot.business_date == bd)
+    if supplier_id is not None:
+        q = q.where(DailyStockSnapshot.supplier_id == supplier_id)
+    rows = (await db.execute(
+        q.order_by(DailyStockSnapshot.supplier_name, DailyStockSnapshot.sku)
+    )).scalars().all()
+    return [
+        {
+            "business_date": r.business_date.isoformat(),
+            "supplier_id": r.supplier_id,
+            "supplier_name": r.supplier_name,
+            "sku": r.sku,
+            "product_name": r.product_name,
+            "available": r.available,
+            "ordered": r.ordered,
+            "oversold": r.oversold,
+            "unit_cost": float(r.unit_cost),
+            "total_cost": float(r.total_cost),
+            "avail_value": float(r.avail_value),
+            "oversold_value": float(r.oversold_value),
+        }
+        for r in rows
+    ]
+
+
+@router.post("/snapshots/run")
+async def run_snapshot(
+    date_str: str | None = Query(None, alias="date", description="Business date to snapshot; default = yesterday Pacific"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger a snapshot (testing, or if the nightly run was missed)."""
+    from app.core.scheduler import snapshot_daily_stock
+    bd = None
+    if date_str:
+        try:
+            bd = date.fromisoformat(date_str)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD")
+    business_date, rows = await snapshot_daily_stock(bd)
+    return {"business_date": business_date.isoformat(), "rows": rows}
 
 
 # ── POST /generate-pdf ────────────────────────────────────────────────────────

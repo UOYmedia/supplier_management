@@ -4,7 +4,7 @@ from app.models.order import Order, OrderLineItem, OrderFulfillmentItem, Shippin
 from app.models.marketplace import MarketplaceConnection, MarketplaceListing
 from app.models.user import User
 from app.models.daily_balance import DailyBalance
-from app.models.purchase_order import PurchaseOrder
+from app.models.purchase_order import PurchaseOrder, DailyStockSnapshot
 
 __all__ = [
     "Product", "ProductSupplier", "ProductComponent",
@@ -13,5 +13,5 @@ __all__ = [
     "MarketplaceConnection", "MarketplaceListing",
     "User",
     "DailyBalance",
-    "PurchaseOrder",
+    "PurchaseOrder", "DailyStockSnapshot",
 ]

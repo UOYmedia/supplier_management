@@ -208,6 +208,13 @@ export const purchaseRequestsApi = {
     api.patch(`/purchase-orders/requests/${id}/status`, data).then((r) => r.data),
 };
 
+// Daily stock snapshots (end-of-day frozen numbers, Pacific-time day)
+export const snapshotsApi = {
+  dates: () => api.get("/purchase-orders/snapshots/dates").then((r) => r.data as string[]),
+  get: (date: string, supplier_id?: number) =>
+    api.get("/purchase-orders/snapshots", { params: { date, supplier_id } }).then((r) => r.data),
+};
+
 // Amazon Shipping (admin)
 export const amazonShippingApi = {
   getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/amazon/rates`, data).then((r) => r.data),

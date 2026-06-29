@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
@@ -39,4 +39,36 @@ class PurchaseOrder(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class DailyStockSnapshot(Base):
+    """End-of-day frozen snapshot of a supplier's catalog.
+
+    `business_date` is the calendar day in US Pacific time (the timezone Amazon
+    uses to record orders), so the numbers line up with the day shown on the
+    marketplace. Written by the nightly scheduler job (and re-runnable on
+    demand); the daily PO statement PDF for any past date is rendered from these
+    rows. `created_at` is stored in UTC.
+    """
+    __tablename__ = "daily_stock_snapshots"
+    __table_args__ = (
+        UniqueConstraint("business_date", "supplier_id", "sku", name="uq_snapshot_day_supplier_sku"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    business_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    supplier_id: Mapped[int] = mapped_column(Integer, ForeignKey("suppliers.id"), nullable=False, index=True)
+    supplier_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    sku: Mapped[str] = mapped_column(String(255), nullable=False)
+    product_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    available: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ordered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    oversold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=0)
+    total_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    avail_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    oversold_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { RefreshCw, Database, Copy, Download, Loader2 } from "lucide-react"
 import toast from "react-hot-toast"
-import { suppliersApi } from "@/lib/api"
+import { suppliersApi, snapshotsApi } from "@/lib/api"
 import { SKUItem, fmt } from "@/lib/purchase-orders"
 import SKUTable from "./SKUTable"
 
@@ -109,7 +109,16 @@ export default function LiveSupplierPO() {
   const [activeId, setActiveId] = useState<number | null>(null)
   const [period, setPeriod] = useState<LivePeriod>("today")
   const [pdfLoading, setPdfLoading] = useState(false)
+  // PO PDF source: "" = current live numbers, or a saved end-of-day snapshot date.
+  const [pdfDate, setPdfDate] = useState("")
   const range = periodRange(period)
+
+  // Dates that have a stored end-of-day snapshot, for the PO PDF date picker.
+  const datesQuery = useQuery<string[]>({
+    queryKey: ["snapshot-dates"],
+    queryFn: () => snapshotsApi.dates(),
+  })
+  const snapshotDates = datesQuery.data ?? []
 
   const suppliersQuery = useQuery<RealSupplier[]>({
     queryKey: ["live-suppliers"],
@@ -171,17 +180,64 @@ export default function LiveSupplierPO() {
     )
   }
 
+  // Map a stored snapshot row into the same item shape the PDF generator reads.
+  function snapshotRowToItem(r: any): SKUItem {
+    const available = r.available
+    const ordered = r.ordered
+    const gap = available - ordered
+    const status: SKUItem["status"] = gap > 5 ? "ok" : gap >= 0 ? "low" : "oversold"
+    return {
+      sku: r.product_name || r.sku,
+      supplier: r.supplier_name as SKUItem["supplier"],
+      ordered, available,
+      unit_cost: Number(r.unit_cost) || 0,
+      gap,
+      oversold: r.oversold,
+      avail_final: Math.max(0, gap),
+      total_cost: Number(r.total_cost) || 0,
+      oversold_value: Number(r.oversold_value) || 0,
+      avail_value: Number(r.avail_value) || 0,
+      status,
+      po_id: 0,
+      po_status: "SNAPSHOT",
+    }
+  }
+
   // Daily PO statement PDF for the active supplier: Available / Cost / Total /
   // Oversold + estimated oversold cost per product (the supplier-facing daily doc).
+  // Uses current live numbers, or a frozen end-of-day snapshot when a date is picked.
   async function handlePDF() {
-    if (!activeSupplier || items.length === 0) {
+    if (!activeSupplier) {
       toast.error("Nothing to export")
       return
     }
     setPdfLoading(true)
     try {
-      const now = new Date()
-      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
+      let pdfItems = items
+      let goods = goodsValue, inv = inventoryValue, dbt = debt
+      let dateLabel = new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })
+      let stampSource = new Date()
+
+      if (pdfDate) {
+        const rows = await snapshotsApi.get(pdfDate, activeSupplier.id)
+        if (!rows || rows.length === 0) {
+          toast.error("No saved snapshot for that day")
+          setPdfLoading(false)
+          return
+        }
+        pdfItems = rows.map(snapshotRowToItem)
+        goods = rows.reduce((s: number, r: any) => s + (Number(r.total_cost) || 0), 0)
+        inv = rows.reduce((s: number, r: any) => s + (Number(r.avail_value) || 0), 0)
+        dbt = rows.reduce((s: number, r: any) => s + (Number(r.oversold_value) || 0), 0)
+        stampSource = new Date(pdfDate + "T00:00:00")
+        dateLabel = stampSource.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })
+      } else if (items.length === 0) {
+        toast.error("Nothing to export")
+        setPdfLoading(false)
+        return
+      }
+
+      const stamp = `${stampSource.getFullYear()}${String(stampSource.getMonth() + 1).padStart(2, "0")}${String(stampSource.getDate()).padStart(2, "0")}`
       const cityLine = [activeSupplier.city, activeSupplier.state, activeSupplier.zipcode]
         .filter(Boolean).join(", ")
       const res = await fetch("/api/v1/purchase-orders/generate-pdf", {
@@ -190,8 +246,8 @@ export default function LiveSupplierPO() {
         body: JSON.stringify({
           supplier: activeSupplier.name,
           po_number: `PO-${stamp}-${activeSupplier.name}`,
-          date: now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }),
-          items,
+          date: dateLabel,
+          items: pdfItems,
           supplier_info: {
             name: activeSupplier.name,
             address: "",
@@ -201,9 +257,9 @@ export default function LiveSupplierPO() {
           },
           buyer_info: BUYER_INFO,
           balance: {
-            total_cost: goodsValue,
-            available_value: inventoryValue,
-            oversold_value: debt,
+            total_cost: goods,
+            available_value: inv,
+            oversold_value: dbt,
             starting_balance: 0,
             ending_balance: 0,
           },
@@ -250,10 +306,21 @@ export default function LiveSupplierPO() {
             </button>
           ))
         )}
+        <select
+          value={pdfDate}
+          onChange={(e) => setPdfDate(e.target.value)}
+          title="Pick a saved end-of-day snapshot, or use today's live numbers"
+          className="ml-auto border border-gray-200 rounded-md py-1.5 px-2 text-xs text-gray-600 bg-white"
+        >
+          <option value="">Today (live)</option>
+          {snapshotDates.map((d) => (
+            <option key={d} value={d}>{d}</option>
+          ))}
+        </select>
         <button
-          className="btn-secondary py-1.5 text-xs ml-auto"
+          className="btn-secondary py-1.5 text-xs"
           onClick={handlePDF}
-          disabled={!activeSupplier || items.length === 0 || pdfLoading}
+          disabled={!activeSupplier || (pdfDate === "" && items.length === 0) || pdfLoading}
         >
           {pdfLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
           PO PDF

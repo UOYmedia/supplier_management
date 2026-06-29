@@ -296,7 +296,7 @@ export default function SKUTable({ items, supplierType = "stock" }: Props) {
         )}
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-gray-100">
+      <div className="table-wrapper table-scroll max-h-[calc(100vh-320px)] rounded-lg border border-gray-100">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-100">

@@ -465,10 +465,10 @@ export default function ReportsPage() {
           {groups.length > 0 && (
             <tfoot>
               <tr>
-                <td colSpan={3} className="sticky bottom-0 z-10 bg-gray-50 border-t-2 border-gray-200 py-3 px-4 text-xs text-gray-500 font-medium">
+                <td colSpan={3} className="sticky bottom-0 z-20 bg-gray-50 shadow-[inset_0_2px_0_0_#d1d5db] py-3 px-4 text-xs text-gray-500 font-medium">
                   {orderCount} ORDER{orderCount !== 1 ? "S" : ""} · {groups.length} product{groups.length !== 1 ? "s" : ""}
                 </td>
-                <td colSpan={3} className="sticky bottom-0 z-10 bg-gray-50 border-t-2 border-gray-200 py-3 px-4 text-right font-bold text-gray-900">
+                <td colSpan={3} className="sticky bottom-0 z-20 bg-gray-50 shadow-[inset_0_2px_0_0_#d1d5db] py-3 px-4 text-right font-bold text-gray-900">
                   TOTAL ${totalCOGS.toFixed(0)}
                 </td>
               </tr>

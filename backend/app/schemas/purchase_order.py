@@ -58,6 +58,22 @@ class RequestCreate(BaseModel):
     notes: str | None = None
 
 
+class RequestBatchItem(BaseModel):
+    sku: str
+    qty_ordered: int
+    qty_available: int = 0
+    unit_cost: Decimal
+
+
+class RequestBatchCreate(BaseModel):
+    supplier: str
+    supplier_id: int | None = None
+    pic: str
+    requested_date: date | None = None
+    notes: str | None = None
+    items: list[RequestBatchItem]
+
+
 class RequestStatusUpdate(BaseModel):
     status: RequestStatus
     amount_paid: float | None = None

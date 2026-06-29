@@ -226,6 +226,7 @@ export const easypostApi = {
 export const purchaseRequestsApi = {
   list: () => api.get("/purchase-orders/requests").then((r) => r.data),
   create: (data: object) => api.post("/purchase-orders/requests", data).then((r) => r.data),
+  createBatch: (data: object) => api.post("/purchase-orders/requests/batch", data).then((r) => r.data),
   updateStatus: (id: number, data: { status: string; amount_paid?: number; approved_by?: string }) =>
     api.patch(`/purchase-orders/requests/${id}/status`, data).then((r) => r.data),
   remove: (id: number) => api.delete(`/purchase-orders/requests/${id}`).then((r) => r.data),

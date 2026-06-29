@@ -190,16 +190,9 @@ function today() {
   return new Date().toISOString().slice(0, 10)
 }
 
-const EMPTY_FORM = {
-  supplier: "",
-  sku: "",
-  qty_ordered: "",
-  qty_available: "",
-  unit_cost: "",
-  pic: "",
-  requested_date: today(),
-  notes: "",
-}
+const EMPTY_HEADER = { supplier: "", pic: "", requested_date: today(), notes: "" }
+const EMPTY_LINE = { sku: "", qty_ordered: "", unit_cost: "" }
+type Line = typeof EMPTY_LINE
 
 interface RequestListProps {
   username: string
@@ -211,7 +204,8 @@ interface RequestListProps {
 export default function RequestList({ username, canApprove = false, isAdmin = false, onPaidSuccess }: RequestListProps) {
   const qc = useQueryClient()
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState(EMPTY_FORM)
+  const [form, setForm] = useState(EMPTY_HEADER)
+  const [lines, setLines] = useState<Line[]>([{ ...EMPTY_LINE }])
   const [errors, setErrors] = useState<Record<string, boolean>>({})
 
   // Only stock-type suppliers (e.g. JOE) use the request flow — balance
@@ -250,15 +244,16 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
   })
 
   const createMut = useMutation({
-    mutationFn: (data: object) => purchaseRequestsApi.create(data),
-    onSuccess: () => {
+    mutationFn: (data: object) => purchaseRequestsApi.createBatch(data),
+    onSuccess: (rows: any[]) => {
       qc.invalidateQueries({ queryKey: ["purchase-requests"] })
-      toast.success("Request created")
+      toast.success(`${Array.isArray(rows) ? rows.length : 0} request(s) created`)
       setShowForm(false)
-      setForm(EMPTY_FORM)
+      setForm(EMPTY_HEADER)
+      setLines([{ ...EMPTY_LINE }])
       setErrors({})
     },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to create request"),
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to create requests"),
   })
 
   const deleteMut = useMutation({
@@ -285,45 +280,52 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
     e.preventDefault()
     const newErrors: Record<string, boolean> = {
       supplier: !form.supplier,
-      sku: !form.sku.trim(),
-      qty_ordered: !form.qty_ordered,
-      unit_cost: !form.unit_cost,
       pic: !form.pic.trim(),
     }
+    lines.forEach((l, i) => {
+      if (!l.sku.trim()) newErrors[`line_${i}_sku`] = true
+      if (!l.qty_ordered) newErrors[`line_${i}_qty`] = true
+      if (!l.unit_cost) newErrors[`line_${i}_cost`] = true
+    })
     setErrors(newErrors)
     if (Object.values(newErrors).some(Boolean)) return
     createMut.mutate({
       supplier: form.supplier,
       supplier_id: selectedSupplier?.id,
-      sku: form.sku.trim(),
-      qty_ordered: parseInt(form.qty_ordered),
-      qty_available: form.qty_available ? parseInt(form.qty_available) : 0,
-      unit_cost: parseFloat(form.unit_cost),
       pic: form.pic.trim(),
       requested_date: form.requested_date || today(),
       notes: form.notes.trim() || null,
+      items: lines.map((l) => ({
+        sku: l.sku.trim(),
+        qty_ordered: parseInt(l.qty_ordered),
+        qty_available: 0,
+        unit_cost: parseFloat(l.unit_cost),
+      })),
     })
   }
 
-  function set(field: string, value: string) {
-    setForm((f) => {
-      // Changing supplier invalidates the SKU/cost picked from the old catalog.
-      if (field === "supplier") return { ...f, supplier: value, sku: "", unit_cost: "" }
-      return { ...f, [field]: value }
-    })
+  function setHeader(field: string, value: string) {
+    setForm((f) => ({ ...f, [field]: value }))
+    // Changing supplier invalidates SKUs/costs picked from the old catalog.
+    if (field === "supplier") setLines([{ ...EMPTY_LINE }])
     if (errors[field]) setErrors((e) => ({ ...e, [field]: false }))
   }
 
-  // Picking a catalog SKU auto-fills unit cost (still editable if this batch differs).
-  function pickSku(sku: string) {
-    const prod = catalog.find((c) => c.sku === sku)
-    setForm((f) => ({
-      ...f,
-      sku,
-      unit_cost: prod ? String(prod.unit_price) : f.unit_cost,
-    }))
-    if (errors.sku) setErrors((e) => ({ ...e, sku: false }))
+  function setLine(idx: number, field: keyof Line, value: string) {
+    setLines((ls) => ls.map((l, i) => (i === idx ? { ...l, [field]: value } : l)))
+    const key = field === "qty_ordered" ? `line_${idx}_qty` : field === "unit_cost" ? `line_${idx}_cost` : `line_${idx}_sku`
+    if (errors[key]) setErrors((e) => ({ ...e, [key]: false }))
   }
+
+  // Picking a catalog SKU auto-fills that line's unit cost (still editable).
+  function pickSkuLine(idx: number, sku: string) {
+    const prod = catalog.find((c) => c.sku === sku)
+    setLines((ls) => ls.map((l, i) => (i === idx ? { ...l, sku, unit_cost: prod ? String(prod.unit_price) : l.unit_cost } : l)))
+    if (errors[`line_${idx}_sku`]) setErrors((e) => ({ ...e, [`line_${idx}_sku`]: false }))
+  }
+
+  function addLine() { setLines((ls) => [...ls, { ...EMPTY_LINE }]) }
+  function removeLine(idx: number) { setLines((ls) => (ls.length > 1 ? ls.filter((_, i) => i !== idx) : ls)) }
 
   return (
     <div>
@@ -344,7 +346,7 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
       {/* Add Request modal */}
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 p-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-base font-semibold text-gray-900">New Purchase Request</h2>
               <button onClick={() => setShowForm(false)} className="text-gray-400 hover:text-gray-600">
@@ -358,7 +360,7 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                   <label className="block text-xs font-medium text-gray-600 mb-1">Supplier <span className="text-red-500">*</span></label>
                   <select
                     value={form.supplier}
-                    onChange={(e) => set("supplier", e.target.value)}
+                    onChange={(e) => setHeader("supplier", e.target.value)}
                     className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white ${errors.supplier ? "border-red-500" : "border-gray-300"}`}
                   >
                     <option value="">Select supplier…</option>
@@ -371,7 +373,7 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                   <label className="block text-xs font-medium text-gray-600 mb-1">PIC <span className="text-red-500">*</span></label>
                   <select
                     value={form.pic}
-                    onChange={(e) => set("pic", e.target.value)}
+                    onChange={(e) => setHeader("pic", e.target.value)}
                     className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white ${errors.pic ? "border-red-500" : "border-gray-300"}`}
                   >
                     <option value="">Select PIC…</option>
@@ -382,81 +384,100 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                 </div>
               </div>
 
+              {/* Product lines */}
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Product / SKU <span className="text-red-500">*</span></label>
-                <select
-                  value={form.sku}
-                  onChange={(e) => pickSku(e.target.value)}
-                  disabled={!selectedSupplier}
-                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:bg-gray-50 disabled:text-gray-400 ${errors.sku ? "border-red-500" : "border-gray-300"}`}
-                >
-                  <option value="">
-                    {selectedSupplier ? "Select product…" : "Select a supplier first"}
-                  </option>
-                  {catalog.map((c) => (
-                    <option key={c.sku} value={c.sku}>
-                      {c.name} ({c.sku})
-                    </option>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-gray-600">Products <span className="text-red-500">*</span></label>
+                  <button
+                    type="button"
+                    onClick={addLine}
+                    disabled={!selectedSupplier}
+                    className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline disabled:text-gray-300 disabled:no-underline"
+                  >
+                    <Plus className="w-3 h-3" /> Add product
+                  </button>
+                </div>
+
+                {/* Column labels */}
+                <div className="grid grid-cols-12 gap-2 px-1 mb-1 text-[10px] font-medium text-gray-400 uppercase tracking-wide">
+                  <div className="col-span-7">Product / SKU</div>
+                  <div className="col-span-2 text-center">Qty</div>
+                  <div className="col-span-2">Unit Cost</div>
+                  <div className="col-span-1" />
+                </div>
+
+                <div className="space-y-2">
+                  {lines.map((l, idx) => (
+                    <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                      <div className="col-span-7">
+                        <select
+                          value={l.sku}
+                          onChange={(e) => pickSkuLine(idx, e.target.value)}
+                          disabled={!selectedSupplier}
+                          className={`w-full border rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:bg-gray-50 disabled:text-gray-400 ${errors[`line_${idx}_sku`] ? "border-red-500" : "border-gray-300"}`}
+                        >
+                          <option value="">{selectedSupplier ? "Select product…" : "Select a supplier first"}</option>
+                          {catalog.map((c) => (
+                            <option key={c.sku} value={c.sku}>{c.name} ({c.sku})</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-span-2">
+                        <input
+                          type="number"
+                          min={1}
+                          value={l.qty_ordered}
+                          onChange={(e) => setLine(idx, "qty_ordered", e.target.value)}
+                          className={`w-full border rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`line_${idx}_qty`] ? "border-red-500" : "border-gray-300"}`}
+                          placeholder="0"
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={l.unit_cost}
+                          onChange={(e) => setLine(idx, "unit_cost", e.target.value)}
+                          className={`w-full border rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`line_${idx}_cost`] ? "border-red-500" : "border-gray-300"}`}
+                          placeholder="0.00"
+                        />
+                      </div>
+                      <div className="col-span-1 flex justify-center">
+                        <button
+                          type="button"
+                          onClick={() => removeLine(idx)}
+                          disabled={lines.length === 1}
+                          title="Remove"
+                          className="p-1 text-gray-400 hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
                   ))}
-                </select>
+                </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Qty Ordered <span className="text-red-500">*</span></label>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
                   <input
-                    type="number"
-                    min={1}
-                    value={form.qty_ordered}
-                    onChange={(e) => set("qty_ordered", e.target.value)}
-                    className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.qty_ordered ? "border-red-500" : "border-gray-300"}`}
-                    placeholder="0"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Qty Available</label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={form.qty_available}
-                    onChange={(e) => set("qty_available", e.target.value)}
+                    type="date"
+                    value={form.requested_date}
+                    onChange={(e) => setHeader("requested_date", e.target.value)}
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="0"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Unit Cost ($) <span className="text-red-500">*</span></label>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Notes</label>
                   <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={form.unit_cost}
-                    onChange={(e) => set("unit_cost", e.target.value)}
-                    className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors.unit_cost ? "border-red-500" : "border-gray-300"}`}
-                    placeholder="0.00"
+                    value={form.notes}
+                    onChange={(e) => setHeader("notes", e.target.value)}
+                    placeholder="Optional notes…"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
-                <input
-                  type="date"
-                  value={form.requested_date}
-                  onChange={(e) => set("requested_date", e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Notes</label>
-                <textarea
-                  value={form.notes}
-                  onChange={(e) => set("notes", e.target.value)}
-                  rows={2}
-                  placeholder="Optional notes..."
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                />
               </div>
 
               <div className="flex justify-end gap-2 pt-1">
@@ -472,7 +493,7 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                   disabled={createMut.isPending}
                   className="btn-primary text-sm"
                 >
-                  {createMut.isPending ? "Saving…" : "Submit Request"}
+                  {createMut.isPending ? "Saving…" : `Submit Request${lines.length > 1 ? ` (${lines.length})` : ""}`}
                 </button>
               </div>
             </form>

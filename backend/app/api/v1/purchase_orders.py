@@ -24,6 +24,7 @@ from app.schemas.purchase_order import (
     POPeriodResponse,
     PORead,
     POStatusUpdate,
+    RequestBatchCreate,
     RequestCreate,
     RequestRead,
     RequestStatusUpdate,
@@ -344,6 +345,55 @@ async def create_request(body: RequestCreate, db: AsyncSession = Depends(get_db)
     await db.commit()
     await db.refresh(po)
     return po
+
+
+# ── POST /requests/batch ──────────────────────────────────────────────────────
+
+@router.post("/requests/batch", response_model=list[RequestRead], status_code=201)
+async def create_requests_batch(body: RequestBatchCreate, db: AsyncSession = Depends(get_db)):
+    """Create several request line items in one submit (one supplier + PIC,
+    many products). Each item still becomes its own request row, so the existing
+    per-product approval/PAID flow is unchanged."""
+    if not body.items:
+        raise HTTPException(status_code=422, detail="At least one item is required")
+
+    today = date.today()
+    supplier_id = body.supplier_id
+    if supplier_id is None:
+        sup = (await db.execute(
+            select(Supplier).where(Supplier.name == body.supplier)
+        )).scalar_one_or_none()
+        supplier_id = sup.id if sup else None
+
+    created: list[PurchaseOrder] = []
+    for it in body.items:
+        po = PurchaseOrder(
+            supplier=body.supplier,
+            supplier_id=supplier_id,
+            sku=it.sku,
+            qty_ordered=it.qty_ordered,
+            qty_available=it.qty_available,
+            unit_cost=it.unit_cost,
+            po_number="",
+            pic=body.pic,
+            status="PENDING",
+            amount_paid=0.0,
+            requested_date=body.requested_date or today,
+            created_date=today,
+            notes=body.notes,
+            record_type="request",
+        )
+        db.add(po)
+        created.append(po)
+
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create requests")
+    for po in created:
+        await db.refresh(po)
+    return created
 
 
 # ── PATCH /requests/{id}/status ───────────────────────────────────────────────

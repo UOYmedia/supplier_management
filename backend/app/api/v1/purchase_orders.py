@@ -361,6 +361,9 @@ async def update_request_status(
         # Paying a request means the goods are now in the supplier's stock.
         # Only stock-type suppliers hold inventory, so the catalog quantity is
         # bumped here. Idempotent: skip if this request was already PAID.
+        # The increment is staged on this same session (no commit of its own),
+        # so the single commit below is the one atomic point: either both the
+        # PAID status and the stock increment persist together, or neither does.
         if not was_paid:
             await _increment_supplier_stock(db, po)
     elif body.status == "PARTIALLY_PAID":
@@ -369,7 +372,14 @@ async def update_request_status(
         if body.approved_by:
             po.approved_by = body.approved_by
 
-    await db.commit()
+    # Commit status + stock change as one transaction. On any failure roll the
+    # session back so nothing is half-applied (stock never moves without the
+    # PAID status sticking, and vice versa) and the session is left clean.
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update request status")
     await db.refresh(po)
     return po
 

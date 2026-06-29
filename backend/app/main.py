@@ -162,6 +162,10 @@ async def _run_migrations():
         "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS record_type VARCHAR(10) NOT NULL DEFAULT 'daily'",
         # Backfill: rows with a non-empty pic were created as requests, not daily POs
         "UPDATE purchase_orders SET record_type = 'request' WHERE pic IS NOT NULL AND pic != '' AND record_type = 'daily'",
+        # purchase_orders: stable FK to the supplier (stock increment matches on id, not name)
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS supplier_id INTEGER REFERENCES suppliers(id)",
+        # Backfill supplier_id from the existing supplier name
+        "UPDATE purchase_orders SET supplier_id = s.id FROM suppliers s WHERE purchase_orders.supplier_id IS NULL AND s.name = purchase_orders.supplier",
     ]
     ok, failed = 0, 0
     for sql in migrations:

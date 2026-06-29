@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from sqlalchemy import Date, DateTime, Float, Integer, Numeric, String, Text
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
@@ -10,6 +10,11 @@ class PurchaseOrder(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     supplier: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    # Stable link to the supplier row. Stock increment on PAID matches on this id
+    # (the `supplier` name is kept for display and as a fallback for old rows).
+    supplier_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("suppliers.id"), nullable=True, index=True
+    )
     sku: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     qty_ordered: Mapped[int] = mapped_column(Integer, nullable=False)
     # Supplier-confirmed available stock; may differ from qty_ordered

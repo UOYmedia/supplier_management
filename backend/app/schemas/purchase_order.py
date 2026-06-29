@@ -47,6 +47,7 @@ RequestStatus = Literal["PENDING", "PAID", "PARTIALLY_PAID", "CANCELLED"]
 
 class RequestCreate(BaseModel):
     supplier: str
+    supplier_id: int | None = None
     sku: str
     qty_ordered: int
     qty_available: int = 0
@@ -68,6 +69,7 @@ class RequestRead(BaseModel):
 
     id: int
     supplier: str
+    supplier_id: int | None
     sku: str
     qty_ordered: int
     qty_available: int

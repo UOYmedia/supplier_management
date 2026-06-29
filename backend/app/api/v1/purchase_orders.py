@@ -316,8 +316,17 @@ async def list_requests(db: AsyncSession = Depends(get_db)):
 @router.post("/requests", response_model=RequestRead, status_code=201)
 async def create_request(body: RequestCreate, db: AsyncSession = Depends(get_db)):
     today = date.today()
+    # Resolve and store the supplier id so the PAID stock increment can match on
+    # a stable key. Prefer the id sent by the client; fall back to the name.
+    supplier_id = body.supplier_id
+    if supplier_id is None:
+        sup = (await db.execute(
+            select(Supplier).where(Supplier.name == body.supplier)
+        )).scalar_one_or_none()
+        supplier_id = sup.id if sup else None
     po = PurchaseOrder(
         supplier=body.supplier,
+        supplier_id=supplier_id,
         sku=body.sku,
         qty_ordered=body.qty_ordered,
         qty_available=body.qty_available,
@@ -387,13 +396,18 @@ async def update_request_status(
 async def _increment_supplier_stock(db: AsyncSession, po: PurchaseOrder) -> None:
     """Add a paid request's qty into the matching SupplierProduct catalog row.
 
-    Requests store the supplier by *name* and the item by *sku*. We match a
-    stock-type supplier and its catalog SKU exactly; on no match we leave stock
-    untouched rather than guess (a warning is logged instead of creating rows).
+    Requests link the supplier by *supplier_id* (stable) and the item by *sku*.
+    We match a stock-type supplier and its catalog SKU exactly; on no match we
+    leave stock untouched rather than guess (a warning is logged). For older rows
+    without a supplier_id we fall back to matching the supplier name.
     """
-    sup = (await db.execute(
-        select(Supplier).where(Supplier.name == po.supplier)
-    )).scalar_one_or_none()
+    sup = None
+    if po.supplier_id is not None:
+        sup = await db.get(Supplier, po.supplier_id)
+    if sup is None:
+        sup = (await db.execute(
+            select(Supplier).where(Supplier.name == po.supplier)
+        )).scalar_one_or_none()
     if sup is None or sup.supplier_type != "stock":
         return
 

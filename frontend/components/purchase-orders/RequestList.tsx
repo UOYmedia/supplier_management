@@ -277,6 +277,7 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
     if (Object.values(newErrors).some(Boolean)) return
     createMut.mutate({
       supplier: form.supplier,
+      supplier_id: selectedSupplier?.id,
       sku: form.sku.trim(),
       qty_ordered: parseInt(form.qty_ordered),
       qty_available: form.qty_available ? parseInt(form.qty_available) : 0,

@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "react-hot-toast";
 import { useState, useEffect } from "react";
-import { Package, Users, ShoppingCart, Globe, BarChart2, FileText, Menu, UserCog, LogOut, ClipboardList } from "lucide-react";
+import { Package, Users, ShoppingCart, Globe, BarChart2, FileText, Menu, UserCog, ScanLine, LogOut, ClipboardList } from "lucide-react";
 import clsx from "clsx";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -20,6 +20,7 @@ const NAV = [
   { href: "/marketplace", label: "Marketplace", icon: Globe },
   { href: "/reports", label: "Reports", icon: FileText },
   { href: "/users", label: "Users", icon: UserCog },
+  { href: "/scan-logs", label: "Scan Logs", icon: ScanLine },
 ];
 
 const PUBLIC_PATHS = ["/login", "/portal"];
@@ -86,7 +87,7 @@ function AdminLayout({ children }: { children: React.ReactNode }) {
           </button>
           <span className="font-semibold text-blue-600">Maga</span>
         </header>
-        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+        <main className="flex-1 overflow-y-auto p-5">{children}</main>
       </div>
     </div>
   );

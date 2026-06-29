@@ -8,6 +8,11 @@ class UploadLabelB64(BaseModel):
     data: str  # base64-encoded PDF bytes
 
 
+class ScanLabelBody(BaseModel):
+    order_id: str          # Amazon order id (the PNG filename without extension)
+    image_b64: str         # base64-encoded PNG bytes of the shipping label
+
+
 class ShippingAddress(BaseModel):
     name: str | None = None
     line1: str | None = None
@@ -91,6 +96,7 @@ class OrderOut(BaseModel):
     total: Decimal
     currency: str
     notes: str | None
+    label_url: str | None = None
     ordered_at: datetime
     created_at: datetime
     line_items: list[OrderLineItemOut] = []

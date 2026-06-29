@@ -260,7 +260,7 @@ async def download_label(order_id: int, label_id: int, db: AsyncSession = Depend
     # since label_url is always the clean carrier label.
     if label.label_url:
         import httpx
-        from app.api.v1.orders import _stamp_carrier_for_label
+        from app.api.v1.orders import _stamp_carrier_for_label, _is_prestamped_label_url
         from app.integrations.pdf_labels import image_to_label_pdf
         try:
             async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
@@ -268,10 +268,12 @@ async def download_label(order_id: int, label_id: int, db: AsyncSession = Depend
             if r.is_success and r.content:
                 carrier = (r.content if r.content[:5] == b"%PDF-"
                            else image_to_label_pdf(r.content))
-                try:
-                    carrier = await _stamp_carrier_for_label(carrier, label, db)
-                except Exception:
-                    pass
+                # Scanned labels on our CDN are already stamped — don't re-stamp.
+                if not _is_prestamped_label_url(label.label_url):
+                    try:
+                        carrier = await _stamp_carrier_for_label(carrier, label, db)
+                    except Exception:
+                        pass
                 return _pdf_response(carrier)
         except Exception:
             pass  # fall through to stored label_data / redirect

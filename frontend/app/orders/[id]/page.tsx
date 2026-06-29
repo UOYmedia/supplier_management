@@ -142,6 +142,26 @@ export default function OrderDetailPage() {
     window.open(url, "_blank");
   };
 
+  // Tải ảnh label đã scan (trên R2/CDN) về máy — fetch blob rồi trigger download
+  // vì thuộc tính `download` của <a> bị bỏ qua với URL khác domain.
+  const downloadScannedLabel = async (url: string, filename: string) => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objectUrl);
+    } catch (e: any) {
+      toast.error(`Tải ảnh thất bại: ${e?.message || "lỗi mạng"}`);
+    }
+  };
+
   const printLabelsForGroup = (items: any[]) => {
     const labelIds = Array.from(new Set(items.map((li) => li.label_id).filter(Boolean)));
     if (labelIds.length === 0) {
@@ -190,7 +210,7 @@ export default function OrderDetailPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+      <div className={`grid grid-cols-1 gap-4 mb-6 ${order.label_url ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
         <div className="card p-4">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold text-gray-500 uppercase">Buyer</h3>
@@ -240,15 +260,38 @@ export default function OrderDetailPage() {
             )}
           </div>
         </div>
+
+        {/* Ảnh label đã scan (order.label_url trên R2) → card nhỏ kế bên Summary; không có thì ẩn */}
+        {order.label_url && (
+          <div className="card p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-gray-500 uppercase">Scanned Label</h3>
+              <button
+                type="button"
+                onClick={() => downloadScannedLabel(order.label_url, `${order.external_order_id || order.id}.png`)}
+                className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-gray-700"
+                title="Tải ảnh label"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <a href={order.label_url} target="_blank" rel="noopener noreferrer">
+              <img
+                src={order.label_url}
+                alt="Shipping label"
+                className="w-full max-h-40 object-contain rounded border border-gray-200"
+              />
+            </a>
+          </div>
+        )}
       </div>
 
       {/* Dispatch readiness */}
       {!isShipped && (
-        <div className={`card p-3 mb-4 text-sm flex items-center gap-2 ${
-          allMapped
+        <div className={`card p-3 mb-4 text-sm flex items-center gap-2 ${allMapped
             ? uniqueSupplierCount === 1 ? "bg-green-50 border-green-200" : "bg-blue-50 border-blue-200"
             : "bg-amber-50 border-amber-200"
-        }`}>
+          }`}>
           {allMapped ? (
             uniqueSupplierCount === 1 ? (
               <>
@@ -971,11 +1014,10 @@ function LineItemRow({ li, orderId, onUpdate, onAssignSupplier, onQuickAssign, s
                   <button
                     key={s}
                     onClick={() => setShortNameInput(s)}
-                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                      shortNameInput === s
+                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${shortNameInput === s
                         ? "bg-blue-500 text-white border-blue-500"
                         : "border-gray-200 text-gray-600 hover:border-blue-400"
-                    }`}
+                      }`}
                   >
                     {s}
                   </button>
@@ -1028,9 +1070,9 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
   const selectedSp = catalog.find((c: any) => c.id === selectedSpId);
   const filtered = spQuery
     ? catalog.filter((sp: any) =>
-        sp.name.toLowerCase().includes(spQuery.toLowerCase()) ||
-        sp.sku.toLowerCase().includes(spQuery.toLowerCase())
-      )
+      sp.name.toLowerCase().includes(spQuery.toLowerCase()) ||
+      sp.sku.toLowerCase().includes(spQuery.toLowerCase())
+    )
     : catalog;
 
   const chooseSp = (sp: any) => {
@@ -1070,7 +1112,7 @@ function AssignSupplierModal({ orderId, lineItemId, lineItem, suppliers, onClose
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="card w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
+      <div className="card w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="font-semibold">{isReassign ? "Re-assign Supplier" : "Assign Supplier"}</h2>
@@ -1257,7 +1299,7 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
         });
         setEstimateInfo({ complete: !!est.complete, missing: est.missing || [] });
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [orderId, supplierId]);
 
   const getRatesMut = useMutation({
@@ -1329,9 +1371,8 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
               Amazon Order: <strong className="font-mono">{amazonOrderId}</strong> · {lineItemIds.length} item(s)
             </div>
             {estimateInfo && (
-              <div className={`mb-3 p-2 rounded-lg text-xs ${
-                estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
-              }`}>
+              <div className={`mb-3 p-2 rounded-lg text-xs ${estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
+                }`}>
                 {estimateInfo.complete
                   ? "✓ Auto-filled from catalog dimensions. Adjust if needed."
                   : `Partial auto-fill — ${estimateInfo.missing.length} item(s) missing dimensions.`}
@@ -1386,11 +1427,10 @@ function AmazonLabelModal({ orderId, supplierId, lineItemIds, amazonOrderId, onC
                 {services.map((s) => (
                   <label
                     key={s.shipping_service_id}
-                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                      selectedService?.shipping_service_id === s.shipping_service_id
+                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedService?.shipping_service_id === s.shipping_service_id
                         ? "border-orange-500 bg-orange-50"
                         : "border-gray-200 hover:border-gray-300"
-                    }`}
+                      }`}
                   >
                     <input
                       type="radio"
@@ -1471,7 +1511,7 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
         });
         setEstimateInfo({ complete: !!est.complete, missing: est.missing || [] });
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [orderId, supplierId]);
 
   const getRatesMut = useMutation({
@@ -1549,9 +1589,8 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
             />
 
             {estimateInfo && (
-              <div className={`mb-3 p-2 rounded-lg text-xs ${
-                estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
-              }`}>
+              <div className={`mb-3 p-2 rounded-lg text-xs ${estimateInfo.complete ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
+                }`}>
                 {estimateInfo.complete
                   ? "✓ Auto-filled from catalog dimensions. Adjust if needed."
                   : `Partial auto-fill — ${estimateInfo.missing.length} item(s) missing dimensions. Edit any field below or set per-unit dimensions on the supplier catalog.`}
@@ -1611,9 +1650,8 @@ function EasyPostLabelModal({ orderId, supplierId, lineItemIds, showAmazonOption
                 {rates.map((r) => (
                   <label
                     key={r.id}
-                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                      selectedRate === r.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"
-                    }`}
+                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedRate === r.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"
+                      }`}
                   >
                     <input
                       type="radio"
@@ -1675,21 +1713,21 @@ function AddressPreview({
   if (!from && !to) return null;
   const fromLines = from
     ? [
-        from.name,
-        [from.street1, from.street2].filter(Boolean).join(", "),
-        [from.city, from.state, from.zipcode].filter(Boolean).join(", "),
-        from.country,
-        from.phone,
-      ].filter(Boolean)
+      from.name,
+      [from.street1, from.street2].filter(Boolean).join(", "),
+      [from.city, from.state, from.zipcode].filter(Boolean).join(", "),
+      from.country,
+      from.phone,
+    ].filter(Boolean)
     : [];
   const toLines = to
     ? [
-        to.name,
-        [to.line1, to.line2].filter(Boolean).join(", "),
-        [to.city, to.state, to.zip].filter(Boolean).join(", "),
-        to.country,
-        to.phone,
-      ].filter(Boolean)
+      to.name,
+      [to.line1, to.line2].filter(Boolean).join(", "),
+      [to.city, to.state, to.zip].filter(Boolean).join(", "),
+      to.country,
+      to.phone,
+    ].filter(Boolean)
     : [];
   return (
     <div className="grid grid-cols-2 gap-2 mb-3">
@@ -1761,7 +1799,7 @@ function EasyPostDebugPanel({
       </div>
       {showRaw && (
         <pre className="text-[10px] leading-tight p-2 max-h-40 overflow-auto bg-gray-900 text-gray-100 rounded-b-lg font-mono">
-{JSON.stringify(debug, null, 2)}
+          {JSON.stringify(debug, null, 2)}
         </pre>
       )}
     </div>

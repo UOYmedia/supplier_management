@@ -1,33 +1,55 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, exists as sa_exists
+from sqlalchemy import select, exists as sa_exists, or_, func
 from datetime import datetime, timezone, timedelta
 import base64
+import io
+import os
+import re
+import asyncio
+import logging
+import pytesseract
+from PIL import Image, ImageDraw, ImageFont
 from app.core.database import get_db
-from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus, OrderFulfillmentItem
+from app.models.order import Order, OrderLineItem, ShippingLabel, FulfillStatus, OrderStatus, OrderFulfillmentItem, OrderEvent
 from app.models.product import Product, ProductSupplier, ProductComponent
 from app.models.supplier import Supplier, SupplierProduct
+from app.models.scan_log import ScanLog
 from app.schemas.order import (
     OrderCreate, OrderUpdate, OrderOut, OrderLineItemUpdate,
     OrderLineItemOut, ShippingLabelCreate, ShippingLabelOut, ShippingLabelUpdate,
-    AssignSupplierBody, MarkShippedBody, UploadLabelB64,
+    AssignSupplierBody, MarkShippedBody, UploadLabelB64, ScanLabelBody,
 )
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
+def _utc_day_bounds(date: str) -> tuple[datetime, datetime]:
+    """Parse YYYY-MM-DD as a UTC day → (start, end) tz-aware bounds.
 
-@router.get("", response_model=list[OrderOut])
-async def list_orders(
-    marketplace: str | None = Query(None),
-    status: str | None = Query(None),
-    supplier_id: int | None = Query(None),
-    from_date: datetime | None = Query(None),
-    to_date: datetime | None = Query(None),
-    skip: int = 0,
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db),
-):
-    q = select(Order)
+    purchased_at is stored in UTC everywhere, so date filters use UTC day boundaries
+    for consistency across the system.
+    """
+    try:
+        d = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Invalid date — use YYYY-MM-DD.")
+    start = d.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    end = d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+    return start, end
+logger = logging.getLogger("orders")
+
+
+def _apply_order_filters(q, *, marketplace, status, supplier_id, from_date, to_date, search):
+    """Áp dụng các điều kiện lọc dùng chung cho cả list và count."""
+    if search:
+        s = search.strip()
+        conds = [
+            Order.external_order_id.ilike(f"%{s}%"),
+            Order.order_name.ilike(f"%{s}%"),
+        ]
+        if s.isdigit():
+            conds.append(Order.id == int(s))
+        q = q.where(or_(*conds))
     if marketplace:
         q = q.where(Order.marketplace == marketplace)
     if status:
@@ -38,6 +60,45 @@ async def list_orders(
         q = q.where(Order.ordered_at >= from_date)
     if to_date:
         q = q.where(Order.ordered_at <= to_date)
+    return q
+
+
+@router.get("/count")
+async def count_orders(
+    marketplace: str | None = Query(None),
+    status: str | None = Query(None),
+    supplier_id: int | None = Query(None),
+    from_date: datetime | None = Query(None),
+    to_date: datetime | None = Query(None),
+    search: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    q = _apply_order_filters(
+        select(func.count(Order.id)),
+        marketplace=marketplace, status=status, supplier_id=supplier_id,
+        from_date=from_date, to_date=to_date, search=search,
+    )
+    total = (await db.execute(q)).scalar_one()
+    return {"total": total}
+
+
+@router.get("", response_model=list[OrderOut])
+async def list_orders(
+    marketplace: str | None = Query(None),
+    status: str | None = Query(None),
+    supplier_id: int | None = Query(None),
+    from_date: datetime | None = Query(None),
+    to_date: datetime | None = Query(None),
+    search: str | None = Query(None),
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    q = _apply_order_filters(
+        select(Order),
+        marketplace=marketplace, status=status, supplier_id=supplier_id,
+        from_date=from_date, to_date=to_date, search=search,
+    )
     effective_limit = 500 if (from_date or to_date) else limit
     result = await db.execute(q.order_by(Order.ordered_at.desc()).offset(skip).limit(effective_limit))
     orders = result.scalars().all()
@@ -88,6 +149,591 @@ async def create_order(body: OrderCreate, db: AsyncSession = Depends(get_db)):
     return await _order_out(order, db)
 
 
+# Full US state / territory name -> 2-letter code (labels use either form)
+_STATES = {
+    "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
+    "CALIFORNIA": "CA", "COLORADO": "CO", "CONNECTICUT": "CT", "DELAWARE": "DE",
+    "FLORIDA": "FL", "GEORGIA": "GA", "HAWAII": "HI", "IDAHO": "ID",
+    "ILLINOIS": "IL", "INDIANA": "IN", "IOWA": "IA", "KANSAS": "KS",
+    "KENTUCKY": "KY", "LOUISIANA": "LA", "MAINE": "ME", "MARYLAND": "MD",
+    "MASSACHUSETTS": "MA", "MICHIGAN": "MI", "MINNESOTA": "MN", "MISSISSIPPI": "MS",
+    "MISSOURI": "MO", "MONTANA": "MT", "NEBRASKA": "NE", "NEVADA": "NV",
+    "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ", "NEW MEXICO": "NM", "NEW YORK": "NY",
+    "NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND", "OHIO": "OH", "OKLAHOMA": "OK",
+    "OREGON": "OR", "PENNSYLVANIA": "PA", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC",
+    "SOUTH DAKOTA": "SD", "TENNESSEE": "TN", "TEXAS": "TX", "UTAH": "UT",
+    "VERMONT": "VT", "VIRGINIA": "VA", "WASHINGTON": "WA", "WEST VIRGINIA": "WV",
+    "WISCONSIN": "WI", "WYOMING": "WY", "DISTRICT OF COLUMBIA": "DC",
+    "PUERTO RICO": "PR",
+}
+_ABBRS = set(_STATES.values())
+
+
+def _parse_csz(line: str) -> dict | None:
+    """Parse a "CITY STATE ZIP" line. STATE may be a 2-letter code or full name."""
+    m = re.search(r"\b(\d{5})(?:-\d{4})?\s*$", line)
+    if not m:
+        return None
+    zipc = line[m.start():].strip()
+    head = line[:m.start()].strip(" ,.")
+    if not head:
+        return None
+    words = head.split()
+    state = city = None
+    # Two-word state name (e.g. "NEW JERSEY")
+    if len(words) >= 3 and " ".join(words[-2:]).upper() in _STATES:
+        state = _STATES[" ".join(words[-2:]).upper()]
+        city = " ".join(words[:-2])
+    elif words:
+        last = words[-1].upper()
+        if last in _STATES:                       # full single-word state name
+            state = _STATES[last]
+        elif len(last) == 2 and last.isalpha():    # 2-letter code (NJ, IA, ...)
+            state = last
+        if state:
+            city = " ".join(words[:-1])
+    if not state or not city:
+        return None
+    return {"city": city.strip(), "state": state, "zip": zipc}
+
+
+def _ocr_text(png_bytes: bytes) -> str:
+    """Run Tesseract OCR over a shipping-label PNG and return the raw text."""
+    img = Image.open(io.BytesIO(png_bytes)).convert("L")  # grayscale
+    # Upscale small images so Tesseract reads the smaller fonts more reliably
+    if img.width < 1200:
+        scale = 1200 / img.width
+        img = img.resize((int(img.width * scale), int(img.height * scale)))
+    return pytesseract.image_to_string(img)
+
+
+def _parse_ship_to(text: str) -> dict | None:
+    """Extract recipient name / street / city-state-zip from the SHIP TO block.
+
+    Handles labels where OCR splits the heading (e.g. "SHIP" on one line with the
+    name, "TO:" on the next with the street) and where the state is written out
+    in full (e.g. "MURRAY IOWA 50174-1003").
+    """
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    # Anchor on the first "SHIP" line that is not "SHIP FROM"
+    start = None
+    for i, ln in enumerate(lines):
+        up = ln.upper()
+        if "SHIP" in up and "FROM" not in up:
+            start = i
+            break
+    if start is None:
+        return None
+
+    block: list[str] = []
+    csz = None
+    for ln in lines[start:]:
+        # Strip the SHIP / SHIP TO / TO: labels off the start of the line
+        cleaned = re.sub(r"^\s*SHIP\b\s*(?:TO\b)?\s*:?\s*", "", ln, flags=re.I)
+        cleaned = re.sub(r"^\s*TO\b\s*:?\s*", "", cleaned, flags=re.I)
+        cleaned = cleaned.strip(" :,")
+        if not cleaned:
+            continue
+        parsed = _parse_csz(cleaned)
+        if parsed:
+            csz = parsed
+            break
+        # Skip OCR noise from nearby 2D barcodes (almost no letters/digits) and
+        # numeric reference lines (e.g. an order number printed above the name) —
+        # real name/street lines always contain letters.
+        if sum(c.isalnum() for c in cleaned) < 3 or not any(c.isalpha() for c in cleaned):
+            continue
+        block.append(cleaned)
+        if len(block) >= 6:  # safety stop
+            break
+
+    result: dict = {}
+    if block:
+        result["name"] = block[0]
+        if len(block) >= 2:
+            result["line1"] = block[1]
+        if len(block) >= 3:
+            result["line2"] = " ".join(block[2:])
+    if csz:
+        result["city"] = csz["city"]
+        result["state"] = csz["state"]
+        result["zip"] = csz["zip"]
+    return result or None
+
+
+# ---------------------------------------------------------------------------
+# Carrier / service / tracking number extracted from the scanned label.
+# FIRST PASS — refine the carrier/service normalization with real sample data.
+# ---------------------------------------------------------------------------
+
+# Service phrases as they appear on the label -> normalized service value.
+_SERVICE_MAP = [
+    ("GROUND ADVANTAGE", "GroundAdvantage"),
+    ("PRIORITY MAIL EXPRESS", "PriorityExpress"),
+    ("PRIORITY MAIL", "Priority"),
+    ("PRIORITY", "Priority"),
+    ("FIRST CLASS", "FirstClass"),
+    ("2ND DAY AIR", "2ndDayAir"),
+    ("NEXT DAY AIR", "NextDayAir"),
+    ("3 DAY SELECT", "3DaySelect"),
+    ("GROUND", "Ground"),
+]
+
+
+def _clean_tracking(s: str) -> str | None:
+    """Pull a UPS (1Z…) or numeric (USPS/FedEx) tracking number out of a string."""
+    up = s.upper()
+    m = re.search(r"1Z[0-9A-Z ]{12,}", up)   # UPS: 1Z + ~16 alnum
+    if m:
+        t = re.sub(r"\s+", "", m.group(0))
+        if 16 <= len(t) <= 20:
+            return t
+    digits = re.sub(r"[^0-9]", "", s)         # USPS/FedEx: long digit run
+    if len(digits) >= 12:
+        return digits
+    return None
+
+
+def _parse_tracking(lines: list[str]) -> str | None:
+    """Find the tracking number near a 'TRACKING #' line."""
+    for i, ln in enumerate(lines):
+        if "TRACKING" in ln.upper():
+            after = ln.split("#", 1)[1] if "#" in ln else ""
+            for c in [after, *lines[i + 1:i + 3]]:   # same line after #, or next 2 lines
+                t = _clean_tracking(c)
+                if t:
+                    return t
+    return None
+
+
+def _parse_label_meta(text: str) -> dict:
+    """Extract {carrier, service, tracking_number} from a shipping-label OCR text."""
+    up = text.upper()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    carrier = None
+    if "USPS" in up:
+        carrier = "USPS"
+    elif "UPS" in up:
+        carrier = "UPS"
+    elif "FEDEX" in up:
+        carrier = "FedEx"
+    elif "DHL" in up:
+        carrier = "DHL"
+
+    service = None
+    for phrase, norm in _SERVICE_MAP:
+        if phrase in up:
+            service = norm
+            break
+
+    return {"carrier": carrier, "service": service, "tracking_number": _parse_tracking(lines)}
+
+
+def _to_address_payload(addr: dict | None) -> dict | None:
+    """Build an EasyPost-style address object from a parsed order address.
+
+    Stores only the fields we actually have (empty ones are dropped), so a
+    partial address is fine.
+    """
+    if not isinstance(addr, dict):
+        return None
+    mapping = {
+        "name": addr.get("name"),
+        "company": addr.get("company"),
+        "street1": addr.get("line1"),
+        "street2": addr.get("line2"),
+        "city": addr.get("city"),
+        "state": addr.get("state"),
+        "zip": addr.get("zip"),
+        "country": addr.get("country") or "US",
+        "phone": addr.get("phone"),
+        "email": addr.get("email"),
+    }
+    payload = {k: v for k, v in mapping.items() if v not in (None, "")}
+    if not payload:
+        return None
+    payload["object"] = "Address"
+    return payload
+
+
+def _is_prestamped_label_url(url: str | None) -> bool:
+    """Scanned labels stored on our R2 CDN already have the product info stamped,
+    so the Print Label / bulk pipeline must NOT stamp them again."""
+    return bool(url) and "cdn.podgasus.com" in url
+
+
+async def _create_scan_shipping_label(order: Order, label_url: str | None, meta: dict, db: AsyncSession):
+    """Create a shipping_labels row from a scanned label and link the order's
+    assigned line items (label_id + tracking_number) — so the scanned label feeds
+    the existing bulk-print flow. Supplier = the order's (primary) assigned supplier.
+
+    Does NOT commit; the caller owns the transaction.
+    """
+    lis = (await db.execute(
+        select(OrderLineItem).where(OrderLineItem.order_id == order.id)
+    )).scalars().all()
+    assigned = [li for li in lis if li.supplier_id]
+    if not assigned:
+        return None
+
+    supplier_id = assigned[0].supplier_id   # one physical label per order → primary supplier
+    tracking = meta.get("tracking_number")
+    label = ShippingLabel(
+        supplier_id=supplier_id,
+        carrier=meta.get("carrier") or "",
+        service=meta.get("service"),
+        tracking_number=tracking,
+        label_url=label_url,
+        to_address=_to_address_payload(order.shipping_address),
+        purchased_at=datetime.now(timezone.utc),
+    )
+    db.add(label)
+    await db.flush()
+
+    for li in assigned:
+        li.label_id = label.id
+        if tracking:
+            li.tracking_number = tracking
+
+    print(
+        f"scan_label: order={order.external_order_id} shipping_label id={label.id} "
+        f"supplier={supplier_id} carrier={label.carrier!r} service={label.service!r} "
+        f"tracking={tracking!r}",
+        flush=True,
+    )
+    return label
+
+
+# ---------------------------------------------------------------------------
+# JOE label stamping: when a JOE order moves to "processing", draw the product
+# line(s) into the blank area at the bottom of its scanned label, then store it.
+# ---------------------------------------------------------------------------
+
+def _build_stamp_lines(items: list[tuple[int, str]], when: datetime, with_date: bool) -> list[str]:
+    """Build the stamp text — one line per catalog item.
+
+    Format: "<quantity> <NAME>" and, for JOE orders only, "<quantity> <NAME> - <DATE>"
+      - quantity : fulfillment quantity
+      - NAME     : supplier_products.short_name (upper-cased)
+      - DATE     : upload date, e.g. "JUN 26" (appended only when with_date)
+    """
+    date_str = when.strftime("%b").upper() + " " + str(when.day)
+    lines: list[str] = []
+    for qty, name in items:
+        nm = (name or "").strip().upper()
+        if not nm:
+            continue
+        line = f"{qty} {nm}"
+        if with_date:
+            line += f" - {date_str}"
+        lines.append(line)
+    return lines
+
+
+def _stamp_text_on_png(png_bytes: bytes, lines: list[str], color: str = "black") -> bytes:
+    """Draw the given text lines into the blank area at the bottom of a label PNG.
+
+    color is used to highlight orders that need manual review (red).
+    """
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+
+    font_size = max(16, int(w * 0.032))
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    margin = int(w * 0.05)
+    line_h = int(font_size * 1.35)
+    total_h = line_h * len(lines)
+    # Sit the block near the bottom edge with a small margin.
+    y = h - int(h * 0.04) - total_h
+    for ln in lines:
+        draw.text((margin, y), ln, fill=color, font=font)
+        y += line_h
+
+    out = io.BytesIO()
+    img.save(out, "PNG")
+    return out.getvalue()
+
+
+async def _stamp_items(order: Order, db: AsyncSession) -> tuple[list[tuple[int, str]], bool]:
+    """Collect (quantity, supplier_products.name) for an order's assigned items.
+
+    Applies to every supplier. Also returns is_joe = True when the order is
+    fulfilled by supplier JOE (used to decide whether to append the date).
+    """
+    lis = (await db.execute(
+        select(OrderLineItem).where(OrderLineItem.order_id == order.id)
+    )).scalars().all()
+
+    items: list[tuple[int, str]] = []
+    is_joe = False
+    for li in lis:
+        if not li.supplier_id:
+            continue
+        sup = await db.get(Supplier, li.supplier_id)
+        if sup and (sup.name or "").strip().upper() == "JOE":
+            is_joe = True
+        ofis = (await db.execute(
+            select(OrderFulfillmentItem).where(OrderFulfillmentItem.order_line_item_id == li.id)
+        )).scalars().all()
+        for ofi in ofis:
+            sp = await db.get(SupplierProduct, ofi.supplier_product_id)
+            if sp:
+                # Use short_name; fall back to name if it's empty
+                items.append((ofi.quantity, sp.short_name or sp.name))
+
+    # Drop exact-duplicate lines (guards against duplicate fulfillment items
+    # producing the same product line twice on the label)
+    seen: set = set()
+    deduped: list[tuple[int, str]] = []
+    for qty, name in items:
+        key = (qty, (name or "").strip().lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((qty, name))
+    return deduped, is_joe
+
+
+def _r2_put_object(key: str, png_bytes: bytes) -> None:
+    """Blocking R2 (S3-compatible) upload — run via asyncio.to_thread."""
+    import boto3
+    client = boto3.client(
+        "s3",
+        endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        region_name="auto",
+    )
+    client.put_object(
+        Bucket=os.environ["R2_BUCKET_NAME"],
+        Key=key,
+        Body=png_bytes,
+        ContentType="image/png",
+    )
+
+
+async def _upload_label_to_r2(order_id: str, png_bytes: bytes) -> str | None:
+    """Upload the stamped label PNG to Cloudflare R2 under MAGA/label/ and return
+    its public CDN URL. Returns None if R2 is not configured or the upload fails.
+    """
+    if not os.environ.get("R2_ACCOUNT_ID"):
+        print("stamp_label: R2 not configured — skipping upload", flush=True)
+        return None
+    key = f"MAGA/label/{order_id}.png"
+    try:
+        await asyncio.to_thread(_r2_put_object, key, png_bytes)
+    except Exception as e:
+        print(f"stamp_label: R2 upload failed for {key} — {e}", flush=True)
+        return None
+    cdn = (os.environ.get("R2_CDN") or "").rstrip("/")
+    url = f"{cdn}/{key}"
+    print(f"stamp_label: uploaded -> {url}", flush=True)
+    return url
+
+
+_MAX_STAMP_LINES = 3
+
+
+async def _stamp_label_for_processing(order: Order, raw: bytes | None, db: AsyncSession) -> dict | None:
+    """Stamp + store a JOE order's label when it has just moved to processing.
+
+    Prints one line per item (max 3). Orders with more than 3 lines are stamped
+    with the first 3 and flagged for manual editing (an OrderEvent is recorded so
+    they can be found later).
+
+    Returns a small summary, or None when nothing was stamped (no image, or the
+    order has no assigned items).
+    """
+    if not raw:
+        return None
+    items, is_joe = await _stamp_items(order, db)
+    if not items:
+        return None
+    # Date is appended only for JOE orders; other suppliers get name + qty only.
+    all_lines = _build_stamp_lines(items, datetime.now(), with_date=is_joe)
+    if not all_lines:
+        return None
+
+    needs_manual = len(all_lines) > _MAX_STAMP_LINES
+    lines = all_lines[:_MAX_STAMP_LINES]
+    # Red text highlights orders that need manual editing (> 3 item lines)
+    color = "red" if needs_manual else "black"
+
+    try:
+        stamped = _stamp_text_on_png(raw, lines, color=color)
+        url = await _upload_label_to_r2(order.external_order_id or str(order.id), stamped)
+    except Exception as e:
+        print(f"stamp_label: order={order.external_order_id} failed — {e}", flush=True)
+        return {"stamped": False, "error": str(e)}
+
+    # Persist the public label URL on the order
+    if url:
+        order.label_url = url
+
+    if needs_manual:
+        # More items than fit on the label — flag for manual editing.
+        db.add(OrderEvent(
+            order_id=order.id,
+            event_type="label_manual_review",
+            level="warn",
+            message=f"Label has {len(all_lines)} item lines (> {_MAX_STAMP_LINES}) — needs manual editing",
+            payload={"all_lines": all_lines},
+        ))
+        print(
+            f"stamp_label: order={order.external_order_id} NEEDS MANUAL — "
+            f"{len(all_lines)} item lines (printed first {_MAX_STAMP_LINES})",
+            flush=True,
+        )
+
+    return {
+        "stamped": True,
+        "lines": lines,
+        "label_url": url,
+        "item_count": len(all_lines),
+        "needs_manual_review": needs_manual,
+    }
+
+
+@router.post("/scan-label")
+async def scan_label_address(body: ScanLabelBody, db: AsyncSession = Depends(get_db)):
+    """Scan a shipping label, then record the outcome to the scan-log audit trail."""
+    result = await _scan_label_impl(body, db)
+    try:
+        db.add(ScanLog(
+            order_id=(result.get("order_id") or None),
+            status=result.get("status") or "unknown",
+            error=result.get("error"),
+            filled=result.get("filled"),
+            address=result.get("address"),
+        ))
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.warning(f"scan_label: failed to record scan log — {e}")
+    return result
+
+
+async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
+    """Read the SHIP TO block from a shipping-label PNG and, if the matching
+    Amazon order has no address yet, fill it in.
+
+    `order_id` is the Amazon order id (the PNG filename without extension).
+    Returns {order_id, status, address?} where status is one of:
+      not_found | already_has_address | updated | scan_failed | no_api_key
+    """
+    order_id = (body.order_id or "").strip()
+    if not order_id:
+        return {"order_id": order_id, "status": "not_found"}
+
+    # 1. Find the order by Amazon external id
+    res = await db.execute(select(Order).where(Order.external_order_id == order_id).limit(1))
+    order = res.scalar_one_or_none()
+    if not order:
+        return {"order_id": order_id, "status": "not_found"}
+
+    # Decode the uploaded label image up-front — used for OCR (address + tracking)
+    # and for the stamping step. None if it isn't a valid PNG.
+    raw = None
+    try:
+        _decoded = base64.b64decode(body.image_b64)
+        if _decoded[:8] == b"\x89PNG\r\n\x1a\n":
+            raw = _decoded
+    except Exception:
+        raw = None
+
+    # OCR once — the text feeds both address parsing and label-meta (carrier /
+    # service / tracking) extraction, so it must run even when the address is
+    # already complete.
+    ocr_text = ""
+    if raw is not None:
+        try:
+            ocr_text = _ocr_text(raw)
+        except Exception as e:
+            print(f"scan_label: order={order_id} OCR error — {e}", flush=True)
+            ocr_text = ""
+    label_meta = _parse_label_meta(ocr_text)
+
+    async def _finalize_label(order_obj, assignment, db):
+        """Stamp + store image, then create the shipping_labels row + link items.
+
+        shipping_labels.label_url points at the already-stamped R2 image; the
+        Print Label / bulk pipeline detects the cdn.podgasus.com host and skips
+        re-stamping it (see _is_prestamped_label_url).
+        """
+        stamp = None
+        if assignment.get("moved_to_processing"):
+            stamp = await _stamp_label_for_processing(order_obj, raw, db)
+            label_url = stamp.get("label_url") if stamp else None
+            await _create_scan_shipping_label(order_obj, label_url, label_meta, db)
+        return stamp
+
+    # 2. Skip only if the address is already complete. An address counts as
+    #    complete when all key fields are present — a partial record (e.g. only
+    #    city/state) should still be filled in from the label.
+    addr = order.shipping_address if isinstance(order.shipping_address, dict) else {}
+    required = ["name", "line1", "city", "state", "zip"]
+    missing = [k for k in required if not str(addr.get(k) or "").strip()]
+    if not missing:
+        # Address already complete — still advance assignment / status
+        assignment = await _post_scan_assign(order, db)
+        stamp = await _finalize_label(order, assignment, db)
+        await db.commit()
+        return {"order_id": order_id, "status": "already_has_address",
+                "assignment": assignment, "stamp": stamp, "label_meta": label_meta}
+
+    # 3. Need a valid PNG to OCR the address
+    if raw is None:
+        return {"order_id": order_id, "status": "scan_failed", "error": "not a PNG"}
+
+    # 4. Parse the SHIP TO block from the OCR text (local Tesseract — no AI)
+    data = _parse_ship_to(ocr_text)
+    if not data or not (data.get("line1") or data.get("city")):
+        # Dump OCR text only on failure, to help diagnose unreadable labels
+        print(f"scan_label: order={order_id} no address parsed; OCR text:\n{ocr_text}", flush=True)
+        return {"order_id": order_id, "status": "scan_failed", "error": "no address parsed"}
+
+    # 6. Merge: keep existing non-empty fields, fill only the missing ones
+    scanned = {
+        "name": data.get("name"),
+        "line1": data.get("line1"),
+        "line2": data.get("line2"),
+        "city": data.get("city"),
+        "state": data.get("state"),
+        "zip": data.get("zip"),
+    }
+    address = dict(addr)  # start from what's already there
+    filled = []
+    for k, v in scanned.items():
+        if not str(address.get(k) or "").strip() and v:
+            address[k] = v
+            filled.append(k)
+    address.setdefault("country", addr.get("country") or "US")
+    address.setdefault("phone", addr.get("phone"))
+
+    order.shipping_address = address
+    if not str(order.buyer_name or "").strip() and address.get("name"):
+        order.buyer_name = address.get("name")
+    order.updated_at = datetime.now(timezone.utc)
+
+    # Continue: assign supplier by SKU and/or move the order to processing
+    assignment = await _post_scan_assign(order, db)
+
+    # On transition to processing: stamp + store image, create shipping label
+    stamp = await _finalize_label(order, assignment, db)
+
+    await db.commit()
+    logger.info(f"scan_label: order={order_id} filled {filled or 'nothing'}")
+    return {"order_id": order_id, "status": "updated", "address": address,
+            "filled": filled, "assignment": assignment, "stamp": stamp, "label_meta": label_meta}
+
+
 @router.get("/bulk-labels")
 async def bulk_labels(
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
@@ -102,20 +748,15 @@ async def bulk_labels(
     from collections import defaultdict
     from app.integrations.pdf_labels import decode_label_data, concat_label_pdfs, image_to_label_pdf
 
-    try:
-        d = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "Invalid date — use YYYY-MM-DD.")
-    start = d.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-    end = d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+    start, end = _utc_day_bounds(date)
 
-    # Only labels linked to processing orders (via OrderLineItem → Order)
-    processing_label_ids_q = (
+    # Only labels linked to processing or fulfilled orders (via OrderLineItem → Order)
+    printable_label_ids_q = (
         select(OrderLineItem.label_id)
         .join(Order, Order.id == OrderLineItem.order_id)
         .where(
             OrderLineItem.label_id.isnot(None),
-            Order.status == OrderStatus.processing,
+            Order.status.in_([OrderStatus.processing, OrderStatus.fulfilled]),
         )
     )
     q = (
@@ -123,7 +764,7 @@ async def bulk_labels(
         .where(
             ShippingLabel.purchased_at >= start,
             ShippingLabel.purchased_at <= end,
-            ShippingLabel.id.in_(processing_label_ids_q),
+            ShippingLabel.id.in_(printable_label_ids_q),
         )
         .order_by(ShippingLabel.supplier_id)
     )
@@ -132,7 +773,7 @@ async def bulk_labels(
 
     labels = (await db.execute(q)).scalars().all()
     if not labels:
-        detail = f"No processing orders with labels on {date}"
+        detail = f"No processing/fulfilled orders with labels on {date}"
         if supplier_id:
             detail += f" for supplier {supplier_id}"
         raise HTTPException(404, detail)
@@ -152,6 +793,9 @@ async def bulk_labels(
                 if r.is_success and r.content:
                     carrier = (r.content if r.content[:5] == b"%PDF-"
                                else image_to_label_pdf(r.content))
+                    # Scanned labels on our CDN are already stamped — don't re-stamp.
+                    if _is_prestamped_label_url(label.label_url):
+                        return carrier
                     try:
                         return await _stamp_carrier_for_label(carrier, label, db)
                     except Exception as _se:
@@ -255,12 +899,7 @@ async def bulk_fulfill(
     db: AsyncSession = Depends(get_db),
 ):
     """Mark all labels (and their line items) for a given date/supplier as shipped."""
-    try:
-        d = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "Invalid date — use YYYY-MM-DD.")
-    start = d.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-    end = d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+    start, end = _utc_day_bounds(date)
 
     processing_label_ids_q = (
         select(OrderLineItem.label_id)
@@ -1258,73 +1897,141 @@ async def _order_out(order: Order, db: AsyncSession) -> OrderOut:
 
 
 async def _auto_assign_line_item(li: OrderLineItem, db: AsyncSession) -> bool:
-    """Auto-assign supplier product to a line item by matching li.sku → Product.sku → ProductComponent.
+    """Auto-assign a supplier catalog item to a line item by SKU.
 
-    Returns True if assignment was made, False if skipped (no match or already assigned).
-    Idempotent: skips if li.supplier_id is already set.
+    Two strategies, tried in order:
+      A. order SKU → Product.sku → ProductComponent → SupplierProduct (configured mapping)
+      B. order SKU == SupplierProduct.sku directly — only when EXACTLY ONE catalog
+         item matches; multiple suppliers with the same SKU are skipped to avoid
+         guessing wrong.
+
+    Returns True if assignment was made, False if skipped (no/ambiguous match or
+    already assigned). Idempotent: skips if li.supplier_id is already set.
     """
     if li.supplier_id or not li.sku:
         return False
 
     from sqlalchemy import func as sqlfunc
+    sku_norm = li.sku.strip().lower()
 
-    # Step 1: find Product by SKU (case-insensitive)
-    prod_res = await db.execute(
-        select(Product).where(sqlfunc.lower(sqlfunc.trim(Product.sku)) == li.sku.strip().lower())
-    )
-    product = prod_res.scalar_one_or_none()
+    sp = None
+    units = 1   # supplier-catalog units per ordered unit
+    via = None
+
+    # Strategy A: via configured Product → ProductComponent mapping
+    product = (await db.execute(
+        select(Product).where(sqlfunc.lower(sqlfunc.trim(Product.sku)) == sku_norm)
+    )).scalar_one_or_none()
     if product and not li.product_id:
         li.product_id = product.id
-    elif not product and not li.product_id:
+    if li.product_id:
+        comp = (await db.execute(
+            select(ProductComponent).where(ProductComponent.product_id == li.product_id)
+        )).scalars().first()
+        if comp:
+            sp = await db.get(SupplierProduct, comp.supplier_product_id)
+            if sp:
+                units = comp.quantity
+                via = "product"
+
+    # Strategy B: direct match against supplier catalog SKU (unique only)
+    if sp is None:
+        matches = (await db.execute(
+            select(SupplierProduct).where(sqlfunc.lower(sqlfunc.trim(SupplierProduct.sku)) == sku_norm)
+        )).scalars().all()
+        if len(matches) == 1:
+            sp = matches[0]
+            units = 1
+            via = "direct"
+        elif len(matches) > 1:
+            print(
+                f"auto_assign: line item {li.id} sku={li.sku!r} matches "
+                f"{len(matches)} catalog items — skipped (ambiguous)",
+                flush=True,
+            )
+            return False
+
+    if sp is None:
         return False
 
-    product_id = li.product_id
-
-    # Step 2: find ProductComponent for this product
-    comp_res = await db.execute(
-        select(ProductComponent).where(ProductComponent.product_id == product_id)
-    )
-    comp = comp_res.scalars().first()
-    if not comp:
-        return False
-
-    sp = await db.get(SupplierProduct, comp.supplier_product_id)
-    if not sp:
-        return False
-
-    # Step 3: assign supplier to line item
+    # Assign supplier to line item
     li.supplier_id = sp.supplier_id
 
     # Record the supplier cost so this order's COGS shows in the Daily Report
     # balance even when fulfilled externally (e.g. Amazon). Mirrors the manual
     # assign formula (unit_price × units). Only runs on a confirmed SKU→catalog
     # match, so no fuzzy/guessed costs.
-    li.base_cost = sp.unit_price * comp.quantity
+    li.base_cost = sp.unit_price * units
 
-    # Step 4: upsert OrderFulfillmentItem
+    # Upsert OrderFulfillmentItem
     ofi_res = await db.execute(
         select(OrderFulfillmentItem).where(
             OrderFulfillmentItem.order_line_item_id == li.id,
-            OrderFulfillmentItem.supplier_product_id == comp.supplier_product_id,
+            OrderFulfillmentItem.supplier_product_id == sp.id,
         )
     )
     ofi = ofi_res.scalar_one_or_none()
-    qty = li.quantity * comp.quantity
+    qty = li.quantity * units
     if ofi:
         ofi.quantity = qty
     else:
         db.add(OrderFulfillmentItem(
             order_line_item_id=li.id,
-            supplier_product_id=comp.supplier_product_id,
+            supplier_product_id=sp.id,
             quantity=qty,
         ))
 
     print(
-        f"Auto-assigned line item {li.id} (sku={li.sku!r}) → "
+        f"Auto-assigned line item {li.id} (sku={li.sku!r}) via {via} → "
         f"supplier_product {sp.id} (supplier_id={sp.supplier_id})",
         flush=True,
     )
     return True
+
+
+async def _post_scan_assign(order: Order, db: AsyncSession) -> dict:
+    """Advance an order right after its label was scanned.
+
+    - If every active line item already has a supplier → mark the order
+      "processing".
+    - Otherwise auto-assign suppliers by SKU (li.sku → catalog item); if that
+      completes the assignment, also mark it "processing".
+
+    Only promotes a "pending" order — never downgrades shipped/fulfilled/
+    cancelled ones. Does NOT commit; the caller owns the transaction.
+    Returns a small summary for the scan result.
+    """
+    items = (await db.execute(
+        select(OrderLineItem).where(OrderLineItem.order_id == order.id)
+    )).scalars().all()
+    active = [li for li in items if li.fulfill_status != FulfillStatus.cancelled]
+    if not active:
+        return {"assigned_before": False, "auto_assigned": 0,
+                "fully_assigned": False, "moved_to_processing": False}
+
+    assigned_before = all(li.supplier_id for li in active)
+
+    auto_assigned = 0
+    if not assigned_before:
+        for li in active:
+            if not li.supplier_id and await _auto_assign_line_item(li, db):
+                auto_assigned += 1
+
+    fully_assigned = all(li.supplier_id for li in active)
+    moved = False
+    if fully_assigned and order.status == OrderStatus.pending.value:
+        order.status = OrderStatus.processing.value
+        order.updated_at = datetime.now(timezone.utc)
+        moved = True
+
+    print(
+        f"post_scan_assign: order={order.external_order_id} "
+        f"assigned_before={assigned_before} auto_assigned={auto_assigned} "
+        f"fully_assigned={fully_assigned} -> processing={moved}",
+        flush=True,
+    )
+    return {"assigned_before": assigned_before, "auto_assigned": auto_assigned,
+            "fully_assigned": fully_assigned, "moved_to_processing": moved}
 
 
 @router.post("/backfill-auto-assign")

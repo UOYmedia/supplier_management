@@ -3,14 +3,16 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Plus, ChevronRight, Trash2, Search, X } from "lucide-react";
-import Link from "next/link";
+import { Plus, Pencil, Trash2, Search, X } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { SupplierModal } from "./supplier-modal";
 
 export default function SuppliersPage() {
+  const router = useRouter();
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
 
   const { data: suppliers = [], isLoading } = useQuery({
     queryKey: ["suppliers", search],
@@ -37,10 +39,16 @@ export default function SuppliersPage() {
         {search && <button onClick={() => setSearch("")}><X className="w-4 h-4 text-gray-400" /></button>}
       </div>
 
-      <div className="card table-wrapper">
+      <div className="card table-wrapper table-scroll max-h-[calc(100vh-165px)]">
         <table>
           <thead><tr>
-            <th>Name</th><th>Contact</th><th>Address</th><th>Products</th><th>Stock</th><th>Status</th><th></th>
+            <th>Name</th>
+            <th>Contact</th>
+            <th>Address</th>
+            <th>Products</th>
+            <th>Stock</th>
+            <th>Status</th>
+            <th className="flex justify-end">Actions</th>
           </tr></thead>
           <tbody>
             {isLoading ? (
@@ -48,7 +56,11 @@ export default function SuppliersPage() {
             ) : suppliers.length === 0 ? (
               <tr><td colSpan={7} className="text-center py-8 text-gray-400">No suppliers found.</td></tr>
             ) : suppliers.map((s: any) => (
-              <tr key={s.id}>
+              <tr
+                key={s.id}
+                onClick={() => router.push(`/suppliers/${s.id}`)}
+                className="cursor-pointer hover:bg-gray-50"
+              >
                 <td className="font-medium">{s.name}</td>
                 <td>
                   <div className="text-xs text-gray-600">{s.email || "—"}</div>
@@ -61,13 +73,14 @@ export default function SuppliersPage() {
                 <td>{s.product_count}</td>
                 <td>{s.total_stock}</td>
                 <td><span className={s.is_active ? "badge-green" : "badge-gray"}>{s.is_active ? "Active" : "Inactive"}</span></td>
-                <td>
+                <td onClick={(e) => e.stopPropagation()}>
                   <div className="flex gap-1 justify-end">
-                    <Link href={`/suppliers/${s.id}`} className="p-1 hover:bg-gray-100 rounded text-gray-500">
-                      <ChevronRight className="w-4 h-4" />
-                    </Link>
+                    <button className="p-1 hover:text-blue-500 text-gray-400 mr-3"
+                      onClick={() => setEditing(s)} title="Edit">
+                      <Pencil className="w-4 h-4" />
+                    </button>
                     <button className="p-1 hover:text-red-500 text-gray-400"
-                      onClick={() => confirm("Delete?") && deleteMut.mutate(s.id)}>
+                      onClick={() => confirm("Delete?") && deleteMut.mutate(s.id)} title="Delete">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
@@ -79,6 +92,7 @@ export default function SuppliersPage() {
       </div>
 
       {showCreate && <SupplierModal onClose={() => setShowCreate(false)} />}
+      {editing && <SupplierModal supplier={editing} onClose={() => setEditing(null)} />}
     </div>
   );
 }

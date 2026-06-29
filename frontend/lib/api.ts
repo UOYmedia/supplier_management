@@ -102,6 +102,7 @@ export const suppliersApi = {
 // Orders
 export const ordersApi = {
   list: (params?: object) => api.get("/orders", { params }).then((r) => r.data),
+  count: (params?: object) => api.get("/orders/count", { params }).then((r) => r.data),
   get: (id: number) => api.get(`/orders/${id}`).then((r) => r.data),
   create: (data: object) => api.post("/orders", data).then((r) => r.data),
   update: (id: number, data: object) => api.patch(`/orders/${id}`, data).then((r) => r.data),
@@ -141,6 +142,20 @@ export const ordersApi = {
     return `/api/v1/orders/bulk-labels?${qs}`;
   },
   listDelayed: () => api.get("/orders/delayed").then((r) => r.data),
+  scanLabel: (orderId: string, file: File) => {
+    return new Promise<any>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const b64 = result.includes(",") ? result.split(",")[1] : result;
+        api.post("/orders/scan-label", { order_id: orderId, image_b64: b64 })
+          .then((r) => resolve(r.data))
+          .catch(reject);
+      };
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsDataURL(file);
+    });
+  },
 };
 
 // Marketplace
@@ -177,6 +192,13 @@ export const usersApi = {
   create: (data: object) => api.post("/users", data).then((r) => r.data),
   update: (id: number, data: object) => api.patch(`/users/${id}`, data).then((r) => r.data),
   delete: (id: number) => api.delete(`/users/${id}`),
+};
+
+// Scan Logs (admin) — audit trail of label scans
+export const scanLogsApi = {
+  list: (params?: { status?: string; limit?: number }) =>
+    api.get("/scan-logs", { params }).then((r) => r.data),
+  clear: () => api.delete("/scan-logs"),
 };
 
 // Reports

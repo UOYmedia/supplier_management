@@ -126,7 +126,10 @@ export default function LiveSupplierPO() {
     queryFn: () => suppliersApi.list({ is_active: true, limit: 100 }),
   })
 
-  const suppliers = suppliersQuery.data ?? []
+  // The PO view is an inventory board (Stock / Oversold), which only makes sense
+  // for stock-type suppliers (e.g. JOE). Balance suppliers ship direct and are
+  // billed per order via invoices, so they don't belong here.
+  const suppliers = (suppliersQuery.data ?? []).filter((s) => s.supplier_type === "stock")
 
   // Default to the supplier with the most catalog items (most useful to look at)
   useEffect(() => {
@@ -283,7 +286,7 @@ export default function LiveSupplierPO() {
         {suppliersQuery.isLoading ? (
           <span className="text-sm text-gray-400">Loading suppliers…</span>
         ) : suppliers.length === 0 ? (
-          <span className="text-sm text-gray-400">No active suppliers found</span>
+          <span className="text-sm text-gray-400">No stock suppliers found</span>
         ) : (
           suppliers.map((s) => (
             <button

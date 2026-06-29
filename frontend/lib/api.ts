@@ -228,6 +228,7 @@ export const purchaseRequestsApi = {
   create: (data: object) => api.post("/purchase-orders/requests", data).then((r) => r.data),
   updateStatus: (id: number, data: { status: string; amount_paid?: number; approved_by?: string }) =>
     api.patch(`/purchase-orders/requests/${id}/status`, data).then((r) => r.data),
+  remove: (id: number) => api.delete(`/purchase-orders/requests/${id}`).then((r) => r.data),
 };
 
 // Daily stock snapshots (end-of-day frozen numbers, Pacific-time day)

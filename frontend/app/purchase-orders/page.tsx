@@ -83,6 +83,7 @@ function PurchaseOrdersPage() {
           <RequestList
             username={username}
             canApprove={canApprove}
+            isAdmin={userRole === "admin"}
             onPaidSuccess={() => {
               qc.invalidateQueries({ queryKey: ["live-catalog"] })
               qc.invalidateQueries({ queryKey: ["live-suppliers"] })

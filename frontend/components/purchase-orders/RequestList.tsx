@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import toast from "react-hot-toast"
-import { Plus, X } from "lucide-react"
+import { Plus, X, Trash2 } from "lucide-react"
 import { purchaseRequestsApi, suppliersApi } from "@/lib/api"
 
 interface PurchaseRequest {
@@ -204,10 +204,11 @@ const EMPTY_FORM = {
 interface RequestListProps {
   username: string
   canApprove?: boolean
+  isAdmin?: boolean
   onPaidSuccess?: () => void
 }
 
-export default function RequestList({ username, canApprove = false, onPaidSuccess }: RequestListProps) {
+export default function RequestList({ username, canApprove = false, isAdmin = false, onPaidSuccess }: RequestListProps) {
   const qc = useQueryClient()
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(EMPTY_FORM)
@@ -260,8 +261,24 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
     onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to create request"),
   })
 
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => purchaseRequestsApi.remove(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["purchase-requests"] })
+      toast.success("Request deleted")
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Delete failed"),
+  })
+
   function handleUpdate(id: number, status: string, extra?: { amount_paid?: number }) {
     mut.mutate({ id, status, extra })
+  }
+
+  function handleDelete(r: PurchaseRequest) {
+    const label = `${r.supplier} · ${r.sku}`
+    if (confirm(`Delete this request?\n\n${label}\n\nIf it was already Paid, the stock it added will be reversed.`)) {
+      deleteMut.mutate(r.id)
+    }
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -485,6 +502,7 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
                       {h}
                     </th>
                   ))}
+                  {isAdmin && <th className="px-4 py-3" />}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -519,6 +537,18 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
                           </span>
                         )}
                       </td>
+                      {isAdmin && (
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => handleDelete(r)}
+                            disabled={deleteMut.isPending}
+                            title="Delete request"
+                            className="p-1 text-gray-400 hover:text-red-500 transition-colors disabled:opacity-40"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   )
                 })}

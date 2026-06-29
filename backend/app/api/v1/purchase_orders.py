@@ -393,14 +393,43 @@ async def update_request_status(
     return po
 
 
-async def _increment_supplier_stock(db: AsyncSession, po: PurchaseOrder) -> None:
-    """Add a paid request's qty into the matching SupplierProduct catalog row.
+# ── DELETE /requests/{id} ─────────────────────────────────────────────────────
+
+@router.delete("/requests/{po_id}", status_code=204)
+async def delete_request(po_id: int, db: AsyncSession = Depends(get_db)):
+    """Delete a purchase request (admin only — enforced in the UI). If it was
+    already PAID, reverse the stock it added so no phantom inventory is left."""
+    po = (await db.execute(
+        select(PurchaseOrder).where(
+            PurchaseOrder.id == po_id,
+            PurchaseOrder.record_type == "request",
+        )
+    )).scalar_one_or_none()
+    if po is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    if po.status == "PAID":
+        await _adjust_supplier_stock(db, po, -(po.qty_ordered or 0))
+
+    await db.delete(po)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete request")
+    return None
+
+
+async def _adjust_supplier_stock(db: AsyncSession, po: PurchaseOrder, delta: int) -> None:
+    """Add `delta` units to the matching SupplierProduct catalog row (clamped at 0).
 
     Requests link the supplier by *supplier_id* (stable) and the item by *sku*.
     We match a stock-type supplier and its catalog SKU exactly; on no match we
     leave stock untouched rather than guess (a warning is logged). For older rows
     without a supplier_id we fall back to matching the supplier name.
     """
+    if not delta:
+        return
     sup = None
     if po.supplier_id is not None:
         sup = await db.get(Supplier, po.supplier_id)
@@ -420,12 +449,17 @@ async def _increment_supplier_stock(db: AsyncSession, po: PurchaseOrder) -> None
     if sp is None:
         import logging
         logging.getLogger(__name__).warning(
-            "PAID request %s: no catalog SKU '%s' for supplier '%s' — stock not incremented",
+            "request %s: no catalog SKU '%s' for supplier '%s' — stock not adjusted",
             po.id, po.sku, po.supplier,
         )
         return
 
-    sp.stock_quantity = (sp.stock_quantity or 0) + (po.qty_ordered or 0)
+    sp.stock_quantity = max(0, (sp.stock_quantity or 0) + delta)
+
+
+async def _increment_supplier_stock(db: AsyncSession, po: PurchaseOrder) -> None:
+    """Add a paid request's qty into the matching catalog row."""
+    await _adjust_supplier_stock(db, po, po.qty_ordered or 0)
 
 
 # ── Daily stock snapshots (end-of-day frozen numbers) ──────────────────────────

@@ -112,13 +112,16 @@ async def snapshot_daily_stock(business_date=None):
                 select(SupplierProduct).where(SupplierProduct.supplier_id == sup.id)
             )).scalars().all()
             for sp in products:
-                pending = (await db.execute(
-                    select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
+                def _qty(statuses):
+                    return select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
                         OrderFulfillmentItem.supplier_product_id == sp.id,
-                        OrderFulfillmentItem.fulfill_status.in_(
-                            [FulfillStatus.unfulfilled, FulfillStatus.pending]
-                        ),
+                        OrderFulfillmentItem.fulfill_status.in_(statuses),
                     )
+                pending = (await db.execute(
+                    _qty([FulfillStatus.unfulfilled, FulfillStatus.pending])
+                )).scalar()
+                sold = (await db.execute(
+                    _qty([FulfillStatus.shipped, FulfillStatus.delivered])
                 )).scalar()
                 available = sp.stock_quantity or 0
                 ordered = int(pending or 0)
@@ -134,6 +137,7 @@ async def snapshot_daily_stock(business_date=None):
                     available=available,
                     ordered=ordered,
                     oversold=oversold,
+                    sold=int(sold or 0),
                     unit_cost=unit_cost,
                     total_cost=ordered * unit_cost,
                     avail_value=avail_final * unit_cost,

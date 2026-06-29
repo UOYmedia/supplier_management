@@ -65,6 +65,8 @@ class DailyStockSnapshot(Base):
     available: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     ordered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     oversold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Units shipped/delivered as of this day (mirrors the catalog SOLD column).
+    sold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=0)
     total_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     avail_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)

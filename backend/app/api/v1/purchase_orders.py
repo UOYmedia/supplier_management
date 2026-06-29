@@ -469,6 +469,8 @@ async def get_snapshot(
             "available": r.available,
             "ordered": r.ordered,
             "oversold": r.oversold,
+            "sold": r.sold,
+            "total": r.available + r.ordered + r.sold,
             "unit_cost": float(r.unit_cost),
             "total_cost": float(r.total_cost),
             "avail_value": float(r.avail_value),

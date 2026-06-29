@@ -434,7 +434,7 @@ export default function ReportsPage() {
       )}
 
       {/* Data table */}
-      <div className="card table-wrapper mb-4">
+      <div className="card table-wrapper table-scroll max-h-[calc(100vh-320px)] mb-4">
         <table>
           <thead>
             <tr>

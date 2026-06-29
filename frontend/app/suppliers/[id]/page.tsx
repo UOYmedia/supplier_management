@@ -32,6 +32,8 @@ export default function SupplierDetailPage() {
     queryKey: ["snapshot-dates"],
     queryFn: () => snapshotsApi.dates(),
   });
+  // Dates come newest-first; the most recent saved snapshot is "yesterday".
+  const latestSnapshot = snapshotDates[0] ?? "";
   const { data: snapshotRows = [] } = useQuery<any[]>({
     queryKey: ["supplier-catalog-snapshot", sid, catalogDate],
     queryFn: () => snapshotsApi.get(catalogDate, sid),
@@ -139,17 +141,36 @@ export default function SupplierDetailPage() {
               >
                 Download CSV template
               </button>
-              <select
-                value={catalogDate}
-                onChange={(e) => setCatalogDate(e.target.value)}
-                title="View today's live numbers, or a saved end-of-day snapshot"
-                className="border border-gray-200 rounded-md py-1.5 px-2 text-xs text-gray-600 bg-white"
+              <button
+                onClick={() => setCatalogDate("")}
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+                  catalogDate === ""
+                    ? "bg-gray-800 text-white border-transparent"
+                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+                }`}
               >
-                <option value="">Today (live)</option>
-                {snapshotDates.map((d) => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
+                Today (live)
+              </button>
+              <button
+                onClick={() => latestSnapshot && setCatalogDate(latestSnapshot)}
+                disabled={!latestSnapshot}
+                title={latestSnapshot ? `Snapshot ${latestSnapshot}` : "No saved snapshot yet"}
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  catalogDate && catalogDate === latestSnapshot
+                    ? "bg-gray-800 text-white border-transparent"
+                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+                }`}
+              >
+                Yesterday
+              </button>
+              <input
+                type="date"
+                value={catalogDate}
+                max={latestSnapshot || undefined}
+                onChange={(e) => setCatalogDate(e.target.value)}
+                title="Pick a day to view its saved end-of-day snapshot"
+                className="border border-gray-200 rounded-md py-1 px-2 text-xs text-gray-600 bg-white"
+              />
             </div>
             {!catalogDate && (
               <div className="flex gap-2">

@@ -69,50 +69,12 @@ function toSKUItem(p: CatalogProduct, supplierName: string): SKUItem {
   }
 }
 
-type LivePeriod = "today" | "this_week" | "this_month" | "all"
-
-const PERIOD_OPTS: { key: LivePeriod; label: string }[] = [
-  { key: "today",      label: "Today" },
-  { key: "this_week",  label: "This Week" },
-  { key: "this_month", label: "This Month" },
-  { key: "all",        label: "All time" },
-]
-
-function getMonday(d: Date): Date {
-  const day = d.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  const m = new Date(d)
-  m.setDate(d.getDate() + diff)
-  return m
-}
-
-// Returns ISO start/end-of-day strings for the chosen period, or null for "all".
-function periodRange(period: LivePeriod): { from: string; to: string } | null {
-  if (period === "all") return null
-  const now = new Date()
-  let from = new Date(now)
-  let to = new Date(now)
-  if (period === "this_week") {
-    from = getMonday(now)
-    to = new Date(from)
-    to.setDate(from.getDate() + 6)
-  } else if (period === "this_month") {
-    from = new Date(now.getFullYear(), now.getMonth(), 1)
-    to = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-  }
-  from.setHours(0, 0, 0, 0)
-  to.setHours(23, 59, 59, 999)
-  return { from: from.toISOString(), to: to.toISOString() }
-}
-
 export default function LiveSupplierPO() {
   const [activeId, setActiveId] = useState<number | null>(null)
-  const [period, setPeriod] = useState<LivePeriod>("today")
   const [pdfLoading, setPdfLoading] = useState(false)
   // "" = current live numbers; a date = the frozen end-of-day snapshot for that
   // day. Drives both the on-screen table and the PO PDF.
   const [viewDate, setViewDate] = useState("")
-  const range = periodRange(period)
 
   // Dates that have a stored end-of-day snapshot, for the date picker.
   const datesQuery = useQuery<string[]>({
@@ -120,6 +82,8 @@ export default function LiveSupplierPO() {
     queryFn: () => snapshotsApi.dates(),
   })
   const snapshotDates = datesQuery.data ?? []
+  // Dates come newest-first; the most recent saved snapshot is "yesterday".
+  const latestSnapshot = snapshotDates[0] ?? ""
 
   const suppliersQuery = useQuery<RealSupplier[]>({
     queryKey: ["live-suppliers"],
@@ -141,13 +105,11 @@ export default function LiveSupplierPO() {
 
   const activeSupplier = suppliers.find((s) => s.id === activeId) ?? null
 
+  // Live = current real numbers (all-time pending/sold), so it matches the
+  // supplier catalog. Looking at a past day is done via the snapshot picker.
   const productsQuery = useQuery<CatalogProduct[]>({
-    queryKey: ["live-catalog", activeId, period],
-    queryFn: () =>
-      suppliersApi.listProducts(
-        activeId as number,
-        range ? { date_from: range.from, date_to: range.to } : undefined
-      ),
+    queryKey: ["live-catalog", activeId],
+    queryFn: () => suppliersApi.listProducts(activeId as number),
     enabled: activeId !== null && !viewDate,
   })
 
@@ -303,33 +265,38 @@ export default function LiveSupplierPO() {
             </button>
           ))
         )}
-        <select
-          value={viewDate || period}
-          onChange={(e) => {
-            const v = e.target.value
-            if (PERIOD_OPTS.some((p) => p.key === v)) {
-              setPeriod(v as LivePeriod)
-              setViewDate("")
-            } else {
-              setViewDate(v)
-            }
-          }}
-          title="Live period, or a saved end-of-day snapshot"
-          className="ml-auto border border-gray-200 rounded-md py-1.5 px-2 text-xs text-gray-600 bg-white"
-        >
-          <optgroup label="Live">
-            {PERIOD_OPTS.map((p) => (
-              <option key={p.key} value={p.key}>{p.label}</option>
-            ))}
-          </optgroup>
-          {snapshotDates.length > 0 && (
-            <optgroup label="Saved end-of-day">
-              {snapshotDates.map((d) => (
-                <option key={d} value={d}>{d}</option>
-              ))}
-            </optgroup>
-          )}
-        </select>
+        <div className="ml-auto flex items-center gap-1.5">
+          <button
+            onClick={() => setViewDate("")}
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+              viewDate === ""
+                ? "bg-gray-800 text-white border-transparent"
+                : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+            }`}
+          >
+            Today (live)
+          </button>
+          <button
+            onClick={() => latestSnapshot && setViewDate(latestSnapshot)}
+            disabled={!latestSnapshot}
+            title={latestSnapshot ? `Snapshot ${latestSnapshot}` : "No saved snapshot yet"}
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              viewDate && viewDate === latestSnapshot
+                ? "bg-gray-800 text-white border-transparent"
+                : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+            }`}
+          >
+            Yesterday
+          </button>
+          <input
+            type="date"
+            value={viewDate}
+            max={latestSnapshot || undefined}
+            onChange={(e) => setViewDate(e.target.value)}
+            title="Pick a day to view its saved end-of-day snapshot"
+            className="border border-gray-200 rounded-md py-1 px-2 text-xs text-gray-600 bg-white"
+          />
+        </div>
         <button
           className="btn-secondary py-1.5 text-xs"
           onClick={handlePDF}

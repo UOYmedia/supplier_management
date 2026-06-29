@@ -16,6 +16,7 @@ class SupplierBase(BaseModel):
     zipcode: str | None = None
     notes: str | None = None
     is_active: bool = True
+    supplier_type: str = "balance"
 
 
 class SupplierCreate(SupplierBase):
@@ -35,6 +36,7 @@ class SupplierUpdate(BaseModel):
     zipcode: str | None = None
     notes: str | None = None
     is_active: bool | None = None
+    supplier_type: str | None = None
     username: str | None = None
     password: str | None = None
 
@@ -57,6 +59,7 @@ class SupplierListOut(BaseModel):
     country: str | None
     zipcode: str | None
     is_active: bool
+    supplier_type: str = "balance"
     product_count: int = 0
     total_stock: int = 0
 
@@ -122,9 +125,14 @@ class InvoicePreviewResponse(BaseModel):
     total_amount: Decimal
 
 
+class InvoiceFromOrdersItem(BaseModel):
+    order_line_item_id: int
+    description: str
+    quantity: int
+    unit_amount: Decimal
+    total_amount: Decimal
+
+
 class InvoiceFromOrdersCreate(BaseModel):
-    supplier_id: int
-    period_start: datetime
-    period_end: datetime
-    order_line_item_ids: list[int]
+    items: list[InvoiceFromOrdersItem]
     notes: str | None = None

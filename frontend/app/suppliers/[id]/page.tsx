@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { suppliersApi } from "@/lib/api";
+import { suppliersApi, snapshotsApi } from "@/lib/api";
 import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
 import { ArrowLeft, Download, Package, Pencil, Plus, Printer, Trash2, Truck, Upload, X, Pencil as PencilIcon } from "lucide-react";
@@ -22,7 +22,34 @@ export default function SupplierDetailPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const { data: supplier } = useQuery({ queryKey: ["supplier", sid], queryFn: () => suppliersApi.get(sid) });
-  const { data: catalog = [] } = useQuery({ queryKey: ["supplier-catalog", sid], queryFn: () => suppliersApi.listProducts(sid) });
+  const { data: liveCatalog = [] } = useQuery({
+    queryKey: ["supplier-catalog", sid],
+    queryFn: () => suppliersApi.listProducts(sid),
+    enabled: !catalogDate,
+  });
+  const { data: snapshotDates = [] } = useQuery<string[]>({
+    queryKey: ["snapshot-dates"],
+    queryFn: () => snapshotsApi.dates(),
+  });
+  // Dates come newest-first; the most recent saved snapshot is "yesterday".
+  const latestSnapshot = snapshotDates[0] ?? "";
+  const { data: snapshotRows = [] } = useQuery<any[]>({
+    queryKey: ["supplier-catalog-snapshot", sid, catalogDate],
+    queryFn: () => snapshotsApi.get(catalogDate, sid),
+    enabled: !!catalogDate,
+  });
+  // Normalise a snapshot row into the same shape the catalog table expects.
+  const catalog = catalogDate
+    ? snapshotRows.map((r: any) => ({
+      id: r.sku,
+      name: r.product_name || r.sku,
+      sku: r.sku,
+      unit_price: r.unit_cost,
+      stock_quantity: r.available,
+      pending_quantity: r.ordered,
+      sold_quantity: r.sold,
+    }))
+    : liveCatalog;
   const { data: orders = [] } = useQuery({ queryKey: ["supplier-orders", sid], queryFn: () => suppliersApi.orders(sid) });
   const { data: invoices = [] } = useQuery({ queryKey: ["supplier-invoices", sid], queryFn: () => suppliersApi.invoices(sid) });
 
@@ -179,24 +206,74 @@ export default function SupplierDetailPage() {
                 }}
               />
               <button
-                className="btn-secondary"
-                onClick={() => fileRef.current?.click()}
-                disabled={importMut.isPending}
+                onClick={() => setCatalogDate("")}
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors ${catalogDate === ""
+                    ? "bg-gray-800 text-white border-transparent"
+                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+                  }`}
               >
-                <Upload className="w-4 h-4" /> {importMut.isPending ? "Importing…" : "Import CSV"}
+                Today (live)
               </button>
               <button
-                className="btn-secondary"
-                onClick={() => exportMut.mutate()}
-                disabled={exportMut.isPending || catalog.length === 0}
+                onClick={() => latestSnapshot && setCatalogDate(latestSnapshot)}
+                disabled={!latestSnapshot}
+                title={latestSnapshot ? `Snapshot ${latestSnapshot}` : "No saved snapshot yet"}
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${catalogDate && catalogDate === latestSnapshot
+                    ? "bg-gray-800 text-white border-transparent"
+                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+                  }`}
               >
-                <Download className="w-4 h-4" /> Export CSV
+                Yesterday
               </button>
-              <button className="btn-primary" onClick={() => setShowAddProduct(true)}>
-                <Plus className="w-4 h-4" /> Add Product
-              </button>
+              <input
+                type="date"
+                value={catalogDate}
+                max={latestSnapshot || undefined}
+                onChange={(e) => setCatalogDate(e.target.value)}
+                title="Pick a day to view its saved end-of-day snapshot"
+                className="border border-gray-200 rounded-md py-1 px-2 text-xs text-gray-600 bg-white"
+              />
             </div>
+            {!catalogDate && (
+              <div className="flex gap-2">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) importMut.mutate(file);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  className="btn-secondary"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={importMut.isPending}
+                >
+                  <Upload className="w-4 h-4" /> {importMut.isPending ? "Importing…" : "Import CSV"}
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => exportMut.mutate()}
+                  disabled={exportMut.isPending || catalog.length === 0}
+                >
+                  <Download className="w-4 h-4" /> Export CSV
+                </button>
+                <button className="btn-primary" onClick={() => setShowAddProduct(true)}>
+                  <Plus className="w-4 h-4" /> Add Product
+                </button>
+              </div>
+            )}
           </div>
+          {catalogDate && (
+            <div className="mb-3">
+              <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1">
+                Viewing saved end-of-day snapshot for {catalogDate} (read-only)
+              </span>
+            </div>
+          )}
           <div className="card table-wrapper table-scroll max-h-[calc(100vh-245px)]">
             <table>
               <thead>
@@ -352,9 +429,19 @@ export default function SupplierDetailPage() {
                     <td><InvoiceBadge status={inv.status} /></td>
                     <td className="text-xs text-gray-500">{inv.paid_at ? new Date(inv.paid_at).toLocaleDateString() : "—"}</td>
                     <td>
-                      {inv.status !== "paid" && (
-                        <button className="text-xs text-blue-600 hover:underline" onClick={() => markPaidMut.mutate(inv.id)}>Mark Paid</button>
-                      )}
+                      <div className="flex items-center gap-3">
+                        <a
+                          className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
+                          href={suppliersApi.invoicePdfUrl(sid, inv.id)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <Download className="w-3.5 h-3.5" /> PDF
+                        </a>
+                        {inv.status !== "paid" && (
+                          <button className="text-xs text-blue-600 hover:underline" onClick={() => markPaidMut.mutate(inv.id)}>Mark Paid</button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -491,10 +578,12 @@ function CatalogRow({ item, selected, onToggle, onEdit, onDelete }: { item: any;
       </td>
       <td className="text-gray-600">{total}</td>
       <td>
-        <div className="flex items-center gap-2">
-          <button className="p-1 hover:text-blue-600 text-gray-400" onClick={onEdit}><PencilIcon className="w-4 h-4" /></button>
-          <button className="p-1 hover:text-red-500 text-gray-400" onClick={onDelete}><Trash2 className="w-4 h-4" /></button>
-        </div>
+        {!readOnly && (
+          <div className="flex items-center gap-2">
+            <button className="p-1 hover:text-blue-600 text-gray-400" onClick={onEdit}><PencilIcon className="w-4 h-4" /></button>
+            <button className="p-1 hover:text-red-500 text-gray-400" onClick={onDelete}><Trash2 className="w-4 h-4" /></button>
+          </div>
+        )}
       </td>
     </tr>
   );

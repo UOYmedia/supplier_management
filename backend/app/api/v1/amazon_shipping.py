@@ -286,8 +286,38 @@ async def download_label(order_id: int, label_id: int, db: AsyncSession = Depend
         except Exception:
             raise HTTPException(500, "Failed to decode label data")
 
-    if label.label_url:
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=label.label_url)
+    # label_url present but fetch failed (expired) and no label_data — try to
+    # regenerate a fresh URL from EasyPost using shipment_id.
+    if label.shipment_id:
+        from app.core.config import settings
+        from app.integrations.pdf_labels import image_to_label_pdf
+        from app.api.v1.orders import _stamp_carrier_for_label
+        if settings.EASYPOST_API_KEY:
+            try:
+                from app.integrations.easypost.client import EasyPostClient
+                ep = EasyPostClient(settings.EASYPOST_API_KEY)
+                png_b64, png_url = await ep.regenerate_label(label.shipment_id, "4x6")
+                raw: bytes | None = None
+                if png_b64:
+                    raw = base64.b64decode(png_b64)
+                elif png_url:
+                    import httpx as _hx
+                    async with _hx.AsyncClient(timeout=20, follow_redirects=True) as _http:
+                        _r = await _http.get(png_url)
+                    if _r.is_success and _r.content:
+                        raw = _r.content
+                if raw:
+                    if png_url:
+                        label.label_url = png_url
+                    carrier = raw if raw[:5] == b"%PDF-" else image_to_label_pdf(raw)
+                    try:
+                        carrier = await _stamp_carrier_for_label(carrier, label, db)
+                    except Exception:
+                        pass
+                    label.label_data = base64.b64encode(carrier).decode()
+                    await db.commit()
+                    return _pdf_response(carrier)
+            except Exception as _ep_err:
+                print(f"download_label: EasyPost regenerate failed label={label_id} — {_ep_err}", flush=True)
 
-    raise HTTPException(404, "No label data available")
+    raise HTTPException(404, "No label data available — the carrier URL may have expired. Use 'Regenerate' to refresh it.")

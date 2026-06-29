@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
@@ -16,7 +16,9 @@ from app.schemas.supplier_product import (
 )
 import csv
 import io
+import os
 import re
+import tempfile
 import uuid
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
@@ -26,7 +28,56 @@ from pydantic import BaseModel
 class _ShortNameBody(BaseModel):
     short_name: str
 
+
+class BulkInvoiceResultItem(BaseModel):
+    supplier_id: int
+    supplier_name: str
+    invoice_number: str | None = None
+    item_count: int
+    total_amount: Decimal
+    status: str  # "created" | "skipped"
+    reason: str | None = None
+
+
+class BulkInvoiceResponse(BaseModel):
+    created_count: int
+    skipped_count: int
+    results: list[BulkInvoiceResultItem]
+
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
+
+
+async def _uninvoiced_fulfilled_items(
+    supplier_id: int, db: AsyncSession
+) -> list[tuple[OrderLineItem, "Order | None"]]:
+    """Fulfilled (shipped/delivered) line items for a supplier not yet on any invoice.
+
+    Single source of truth shared by the per-supplier preview and the bulk
+    generate-all endpoint, so both always agree on what is billable.
+    """
+    invoiced_ids = {
+        r for r in (await db.execute(
+            select(InvoiceLineItem.order_line_item_id).where(
+                InvoiceLineItem.order_line_item_id.isnot(None)
+            )
+        )).scalars().all()
+    }
+    line_items = (await db.execute(
+        select(OrderLineItem)
+        .where(
+            OrderLineItem.supplier_id == supplier_id,
+            OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
+        )
+        .order_by(OrderLineItem.order_id)
+    )).scalars().all()
+    line_items = [li for li in line_items if li.id not in invoiced_ids]
+
+    order_ids = {li.order_id for li in line_items}
+    orders_by_id: dict[int, Order] = {}
+    if order_ids:
+        for o in (await db.execute(select(Order).where(Order.id.in_(order_ids)))).scalars().all():
+            orders_by_id[o.id] = o
+    return [(li, orders_by_id.get(li.order_id)) for li in line_items]
 
 
 @router.get("", response_model=list[SupplierListOut])
@@ -47,14 +98,18 @@ async def list_suppliers(
 
     out = []
     for s in suppliers:
-        ps_q = await db.execute(select(ProductSupplier).where(ProductSupplier.supplier_id == s.id))
-        ps_list = ps_q.scalars().all()
+        # Count from SupplierProduct (the catalog table the Live PO view reads),
+        # not the legacy ProductSupplier link table, so the tab badge matches the
+        # SKU count shown when the supplier is opened.
+        sp_q = await db.execute(select(SupplierProduct).where(SupplierProduct.supplier_id == s.id))
+        sp_list = sp_q.scalars().all()
         out.append(SupplierListOut(
             id=s.id, name=s.name, email=s.email, phone=s.phone,
             city=s.city, state=s.state, country=s.country, zipcode=s.zipcode,
             is_active=s.is_active,
-            product_count=len(ps_list),
-            total_stock=sum(ps.stock for ps in ps_list),
+            supplier_type=s.supplier_type,
+            product_count=len(sp_list),
+            total_stock=sum(sp.stock_quantity or 0 for sp in sp_list),
         ))
     return out
 
@@ -147,13 +202,18 @@ async def update_stock(
 # --- Supplier product catalog ---
 
 @router.get("/{supplier_id}/products", response_model=list[SupplierProductOut])
-async def list_supplier_products(supplier_id: int, db: AsyncSession = Depends(get_db)):
+async def list_supplier_products(
+    supplier_id: int,
+    date_from: datetime | None = Query(None, description="Filter ordered/sold counts by Order.ordered_at >= this"),
+    date_to: datetime | None = Query(None, description="Filter ordered/sold counts by Order.ordered_at <= this"),
+    db: AsyncSession = Depends(get_db),
+):
     await _get_or_404(supplier_id, db)
     result = await db.execute(
         select(SupplierProduct).where(SupplierProduct.supplier_id == supplier_id)
     )
     products = result.scalars().all()
-    return [await _supplier_product_out(sp, db) for sp in products]
+    return [await _supplier_product_out(sp, db, date_from, date_to) for sp in products]
 
 
 @router.post("/{supplier_id}/products", response_model=SupplierProductOut, status_code=201)
@@ -616,6 +676,75 @@ async def supplier_orders(
 
 # --- Invoices ---
 
+@router.post("/invoices/generate-all", response_model=BulkInvoiceResponse)
+async def generate_all_invoices(db: AsyncSession = Depends(get_db)):
+    """Auto-create one invoice per active supplier from their uninvoiced fulfilled
+    orders. Idempotent: line items already on an invoice are never re-billed, so
+    this is safe to run daily — each run only picks up newly-fulfilled orders.
+    Suppliers with nothing new to bill are skipped (not an empty invoice)."""
+    suppliers = (await db.execute(
+        select(Supplier).where(Supplier.is_active == True).order_by(Supplier.name)
+    )).scalars().all()
+
+    now = datetime.now(timezone.utc)
+    results: list[BulkInvoiceResultItem] = []
+    created = skipped = 0
+
+    for sup in suppliers:
+        pairs = await _uninvoiced_fulfilled_items(sup.id, db)
+        if not pairs:
+            skipped += 1
+            results.append(BulkInvoiceResultItem(
+                supplier_id=sup.id, supplier_name=sup.name,
+                item_count=0, total_amount=Decimal(0),
+                status="skipped", reason="no uninvoiced fulfilled orders",
+            ))
+            continue
+
+        # Only bill items with a recorded supplier cost — auto-generation must
+        # never guess a price. Uncosted items stay billable later (manual flow)
+        # once a cost is entered, so they are not invoiced here, not dropped.
+        pairs = [(li, o) for li, o in pairs if (li.base_cost or Decimal(0)) > 0]
+        if not pairs:
+            skipped += 1
+            results.append(BulkInvoiceResultItem(
+                supplier_id=sup.id, supplier_name=sup.name,
+                item_count=0, total_amount=Decimal(0),
+                status="skipped", reason="fulfilled orders have no recorded cost yet",
+            ))
+            continue
+
+        dates = [li.fulfilled_at for li, _ in pairs if li.fulfilled_at]
+        period_start = min(dates) if dates else now
+        period_end = max(dates) if dates else now
+        total = sum(((li.base_cost or Decimal(0)) * li.quantity for li, _ in pairs), Decimal(0))
+
+        inv_number = f"INV-{sup.id}-{now.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+        invoice = Invoice(
+            supplier_id=sup.id, invoice_number=inv_number,
+            period_start=period_start, period_end=period_end, total_amount=total,
+        )
+        db.add(invoice)
+        await db.flush()
+
+        for li, _ in pairs:
+            unit = li.base_cost or Decimal(0)
+            desc = f"{li.product_name}{f' ({li.sku})' if li.sku else ''} — Order #{li.order_id}"
+            db.add(InvoiceLineItem(
+                invoice_id=invoice.id, order_line_item_id=li.id,
+                description=desc, quantity=li.quantity,
+                unit_amount=unit, total_amount=unit * li.quantity,
+            ))
+        created += 1
+        results.append(BulkInvoiceResultItem(
+            supplier_id=sup.id, supplier_name=sup.name, invoice_number=inv_number,
+            item_count=len(pairs), total_amount=total, status="created",
+        ))
+
+    await db.commit()
+    return BulkInvoiceResponse(created_count=created, skipped_count=skipped, results=results)
+
+
 @router.get("/{supplier_id}/invoices", response_model=list[InvoiceOut])
 async def list_invoices(supplier_id: int, db: AsyncSession = Depends(get_db)):
     await _get_or_404(supplier_id, db)
@@ -634,40 +763,69 @@ async def list_invoices(supplier_id: int, db: AsyncSession = Depends(get_db)):
     return out
 
 
+@router.get("/{supplier_id}/invoices/{invoice_id}/pdf")
+async def invoice_pdf(supplier_id: int, invoice_id: int, db: AsyncSession = Depends(get_db)):
+    """Render a single invoice as a downloadable PDF."""
+    supplier = await _get_or_404(supplier_id, db)
+    invoice = (await db.execute(
+        select(Invoice).where(Invoice.id == invoice_id, Invoice.supplier_id == supplier_id)
+    )).scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(404, "Invoice not found")
+
+    li_list = (await db.execute(
+        select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice.id)
+    )).scalars().all()
+
+    from generate_invoice import generate_invoice_pdf
+
+    addr_parts = [supplier.street1, supplier.street2]
+    city_parts = [supplier.city, supplier.state, supplier.zipcode]
+    supplier_info = {
+        "name": supplier.name,
+        "address": ", ".join(p for p in addr_parts if p),
+        "city": ", ".join(p for p in city_parts if p),
+        "email": supplier.email or "",
+    }
+    period = f"{invoice.period_start.strftime('%b %d, %Y')} — {invoice.period_end.strftime('%b %d, %Y')}"
+
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in invoice.invoice_number)
+    output_path = os.path.join(tempfile.gettempdir(), f"{safe_name}.pdf")
+    generate_invoice_pdf(
+        output_path=output_path,
+        invoice_number=invoice.invoice_number,
+        period=period,
+        status=invoice.status.value if hasattr(invoice.status, "value") else str(invoice.status),
+        supplier_info=supplier_info,
+        buyer_info={"name": "Maga Fulfillment", "company": "", "address": ""},
+        line_items=[
+            {
+                "description": li.description,
+                "quantity": li.quantity,
+                "unit_amount": float(li.unit_amount),
+                "total_amount": float(li.total_amount),
+            }
+            for li in li_list
+        ],
+        total_amount=float(invoice.total_amount),
+    )
+
+    return FileResponse(
+        path=output_path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{safe_name}.pdf"'},
+    )
+
+
 @router.get("/{supplier_id}/invoices/preview-from-orders", response_model=InvoicePreviewResponse)
 async def preview_invoice_from_orders(supplier_id: int, db: AsyncSession = Depends(get_db)):
     """Return fulfilled order line items for this supplier that have not yet been invoiced."""
     supplier = await _get_or_404(supplier_id, db)
 
-    invoiced_ids_result = await db.execute(
-        select(InvoiceLineItem.order_line_item_id).where(InvoiceLineItem.order_line_item_id.isnot(None))
-    )
-    invoiced_ids = {r for r in invoiced_ids_result.scalars().all()}
-
-    result = await db.execute(
-        select(OrderLineItem)
-        .where(
-            OrderLineItem.supplier_id == supplier_id,
-            OrderLineItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
-        )
-        .order_by(OrderLineItem.order_id)
-    )
-    line_items = result.scalars().all()
-
-    order_ids = {li.order_id for li in line_items}
-    orders_by_id: dict[int, Order] = {}
-    if order_ids:
-        ord_result = await db.execute(select(Order).where(Order.id.in_(order_ids)))
-        for o in ord_result.scalars().all():
-            orders_by_id[o.id] = o
-
     items = []
-    for li in line_items:
-        if li.id in invoiced_ids:
-            continue
+    for li, order in await _uninvoiced_fulfilled_items(supplier_id, db):
         unit_cost = li.base_cost
         total_cost = unit_cost * li.quantity
-        order = orders_by_id.get(li.order_id)
         items.append(InvoicePreviewItem(
             order_line_item_id=li.id,
             order_id=li.order_id,
@@ -815,18 +973,36 @@ async def _get_sp_or_404(supplier_id: int, sp_id: int, db: AsyncSession) -> Supp
     return sp
 
 
-async def _supplier_product_out(sp: SupplierProduct, db: AsyncSession) -> SupplierProductOut:
-    pending_result = await db.execute(
-        select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
+async def _supplier_product_out(
+    sp: SupplierProduct,
+    db: AsyncSession,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> SupplierProductOut:
+    # When a date range is given, filter fulfillment by the parent order's
+    # ordered_at (join OrderFulfillmentItem -> OrderLineItem -> Order). This is
+    # what lets the PO page honour the Today / This Week / This Month pills.
+    def _qty_for(statuses):
+        q = select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
             OrderFulfillmentItem.supplier_product_id == sp.id,
-            OrderFulfillmentItem.fulfill_status.in_([FulfillStatus.unfulfilled, FulfillStatus.pending]),
+            OrderFulfillmentItem.fulfill_status.in_(statuses),
         )
+        if date_from is not None or date_to is not None:
+            q = (
+                q.join(OrderLineItem, OrderFulfillmentItem.order_line_item_id == OrderLineItem.id)
+                .join(Order, OrderLineItem.order_id == Order.id)
+            )
+            if date_from is not None:
+                q = q.where(Order.ordered_at >= date_from)
+            if date_to is not None:
+                q = q.where(Order.ordered_at <= date_to)
+        return q
+
+    pending_result = await db.execute(
+        _qty_for([FulfillStatus.unfulfilled, FulfillStatus.pending])
     )
     sold_result = await db.execute(
-        select(func.coalesce(func.sum(OrderFulfillmentItem.quantity), 0)).where(
-            OrderFulfillmentItem.supplier_product_id == sp.id,
-            OrderFulfillmentItem.fulfill_status.in_([FulfillStatus.shipped, FulfillStatus.delivered]),
-        )
+        _qty_for([FulfillStatus.shipped, FulfillStatus.delivered])
     )
     return SupplierProductOut(
         id=sp.id,

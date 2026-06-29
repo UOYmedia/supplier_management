@@ -1,0 +1,188 @@
+"use client"
+
+import { useState } from "react"
+import { Copy, Download, Loader2 } from "lucide-react"
+import toast from "react-hot-toast"
+
+import { Supplier, SKUItem, SUPPLIER_INFO, computeBalance, supplierType, fmt } from "@/lib/purchase-orders"
+import SKUTable from "./SKUTable"
+import OversoldNotice from "./OversoldNotice"
+import RemittanceSlip from "./RemittanceSlip"
+
+interface Props {
+  supplier: Supplier
+  items: SKUItem[]
+  poNumber: string
+  date?: string
+}
+
+const PILL: Record<Supplier, string> = {
+  JOE:   "bg-blue-100 text-blue-700",
+  SKY:   "bg-green-100 text-green-700",
+  FAIRY: "bg-purple-100 text-purple-700",
+}
+
+const SUPPLIER_NAME: Record<Supplier, string> = {
+  JOE:   "Terry Panter Nursery",
+  SKY:   "Sky Nursery",
+  FAIRY: "Fairy Garden Nursery",
+}
+
+const BUYER_INFO = {
+  name:    "Purchasing Manager",
+  company: "Maga Fulfillment",
+  email:   "purchasing@maga.com",
+  address: "123 Fulfillment Blvd, Nashville, TN 37201",
+}
+
+export default function SupplierPOCard({ supplier, items, poNumber, date }: Props) {
+  const [pdfLoading, setPdfLoading] = useState(false)
+  const type = supplierType(supplier)
+  const isStock = type === "stock"
+
+  // goodsValue = value of everything sold today (ordered × price)
+  // oversoldValue = units sold beyond available stock × price
+  // inventoryValue = value of stock still left
+  const goodsValue    = items.reduce((s, i) => s + i.total_cost, 0)
+  const oversoldValue = items.reduce((s, i) => s + i.oversold_value, 0)
+  const inventoryValue = items.reduce((s, i) => s + i.avail_value, 0)
+
+  // What this supplier is actually owed right now:
+  //  - stock:   only the oversold shortage (in-stock sales were pre-paid)
+  //  - balance: every unit sold, deducted from balance
+  const amountDue = isStock ? oversoldValue : goodsValue
+  const balance = computeBalance(items, 0)
+
+  function handleCopy() {
+    const header = `${SUPPLIER_NAME[supplier]} — ${poNumber} — ${date ?? ""}`
+    const divider = "─".repeat(48)
+    const rows = items.map((i) =>
+      `${i.sku.padEnd(28)} x${String(i.ordered).padStart(3)}  $${fmt(i.unit_cost).padStart(7)}  Total: $${fmt(i.total_cost)}`
+    )
+    const oversoldRows = items
+      .filter((i) => i.oversold > 0)
+      .map((i) => `  ⚠ ${i.sku}: short ${i.oversold} × $${fmt(i.unit_cost)} = $${fmt(i.oversold_value)}`)
+    const subtotal = `Order value: $${fmt(goodsValue)}`
+    const balanceDue = isStock
+      ? `Debt owed (oversold): $${fmt(amountDue)}`
+      : `Balance Due: $${fmt(amountDue)}`
+    const parts = [header, divider, ...rows]
+    if (oversoldRows.length) parts.push("", "Oversold:", ...oversoldRows)
+    parts.push("", divider, subtotal, balanceDue)
+    navigator.clipboard.writeText(parts.join("\n"))
+      .then(() => toast.success("Copied to clipboard"))
+      .catch(() => toast.error("Copy failed"))
+  }
+
+  async function handlePDF() {
+    setPdfLoading(true)
+    try {
+      const res = await fetch("/api/v1/purchase-orders/generate-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          supplier,
+          po_number: poNumber,
+          date: date ?? new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }),
+          items,
+          supplier_info: SUPPLIER_INFO[supplier],
+          buyer_info: BUYER_INFO,
+          balance,
+        }),
+      })
+
+      const contentType = res.headers.get("content-type") ?? ""
+
+      if (res.ok && contentType.includes("application/pdf")) {
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        window.open(url, "_blank")
+      } else {
+        toast.error("PDF generation failed")
+      }
+    } catch {
+      toast.error("Could not reach server")
+    } finally {
+      setPdfLoading(false)
+    }
+  }
+
+  return (
+    <div className="card mb-5 overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-gray-50/50">
+        <div className="flex items-center gap-3">
+          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${PILL[supplier]}`}>
+            {supplier}
+          </span>
+          <span className="font-semibold text-gray-800">{SUPPLIER_NAME[supplier]}</span>
+          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${
+            isStock ? "bg-amber-100 text-amber-700" : "bg-sky-100 text-sky-700"
+          }`}>
+            {isStock ? "Stock" : "Balance"}
+          </span>
+          <span className="text-xs text-gray-400">{poNumber}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="text-right leading-tight">
+            <span className={`block font-bold ${isStock && amountDue > 0 ? "text-red-600" : "text-gray-900"}`}>
+              ${fmt(amountDue)}
+            </span>
+            <span className="block text-[10px] text-gray-400">
+              {isStock ? "debt owed" : "from balance"}
+            </span>
+          </div>
+          <button className="btn-secondary py-1.5 text-xs" onClick={handleCopy}>
+            <Copy className="w-3.5 h-3.5" /> Copy
+          </button>
+          <button
+            className="btn-primary py-1.5 text-xs"
+            onClick={handlePDF}
+            disabled={pdfLoading}
+          >
+            {pdfLoading
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <Download className="w-3.5 h-3.5" />}
+            PDF
+          </button>
+        </div>
+      </div>
+
+      <div className="px-5 py-4">
+        <SKUTable items={items} supplierType={type} />
+        <div className="my-4 border-t border-dashed border-gray-200" />
+        {isStock && <OversoldNotice items={items} />}
+        <RemittanceSlip supplier={supplier} poNumber={poNumber} items={items} />
+
+        <div className="mt-3 text-sm space-y-1 text-right">
+          {isStock ? (
+            <>
+              <div className="flex justify-end gap-8 text-gray-500">
+                <span>Sold from stock (pre-paid)</span>
+                <span className="font-medium w-28">${fmt(goodsValue)}</span>
+              </div>
+              <div className="flex justify-end gap-8 text-green-700">
+                <span>Inventory value remaining</span>
+                <span className="font-medium w-28">${fmt(inventoryValue)}</span>
+              </div>
+              <div className="flex justify-end gap-8 font-semibold pt-1 border-t border-gray-200 text-red-600">
+                <span>Debt owed (shortage)</span>
+                <span className="w-28">${fmt(oversoldValue)}</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex justify-end gap-8 text-gray-600">
+                <span>Order value</span>
+                <span className="font-medium w-28">${fmt(goodsValue)}</span>
+              </div>
+              <div className="flex justify-end gap-8 font-semibold text-gray-900 pt-1 border-t border-gray-200">
+                <span>Deducted from balance</span>
+                <span className="w-28">${fmt(goodsValue)}</span>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -72,13 +72,16 @@ export const suppliersApi = {
   invoices: (id: number) => api.get(`/suppliers/${id}/invoices`).then((r) => r.data),
   createInvoice: (id: number, data: object) => api.post(`/suppliers/${id}/invoices`, data).then((r) => r.data),
   updateInvoice: (id: number, invId: number, data: object) => api.patch(`/suppliers/${id}/invoices/${invId}`, data).then((r) => r.data),
-  listProducts: (id: number) => api.get(`/suppliers/${id}/products`).then((r) => r.data),
+  listProducts: (id: number, params?: { date_from?: string; date_to?: string }) =>
+    api.get(`/suppliers/${id}/products`, { params }).then((r) => r.data),
   createProduct: (id: number, data: object) => api.post(`/suppliers/${id}/products`, data).then((r) => r.data),
   updateProduct: (id: number, spId: number, data: object) => api.patch(`/suppliers/${id}/products/${spId}`, data).then((r) => r.data),
   deleteProduct: (id: number, spId: number) => api.delete(`/suppliers/${id}/products/${spId}`),
   bulkDeleteProducts: (id: number, ids: number[]) => api.post(`/suppliers/${id}/products/bulk-delete`, { ids }).then((r) => r.data),
   previewInvoiceFromOrders: (id: number) => api.get(`/suppliers/${id}/invoices/preview-from-orders`).then((r) => r.data),
   createInvoiceFromOrders: (id: number, data: object) => api.post(`/suppliers/${id}/invoices/create-from-orders`, data).then((r) => r.data),
+  generateAllInvoices: () => api.post(`/suppliers/invoices/generate-all`).then((r) => r.data),
+  invoicePdfUrl: (id: number, invId: number) => `/api/v1/suppliers/${id}/invoices/${invId}/pdf`,
   importCatalog: (id: number, file: File) => {
     const fd = new FormData(); fd.append("file", file);
     return api.post(`/suppliers/${id}/products/import/csv`, fd).then((r) => r.data);
@@ -218,6 +221,21 @@ export const easypostApi = {
   getRates: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/rates`, data).then((r) => r.data),
   buyLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/buy`, data).then((r) => r.data),
   refundLabel: (orderId: number, data: object) => api.post(`/orders/${orderId}/easypost/refund`, data).then((r) => r.data),
+};
+
+// Purchase Requests
+export const purchaseRequestsApi = {
+  list: () => api.get("/purchase-orders/requests").then((r) => r.data),
+  create: (data: object) => api.post("/purchase-orders/requests", data).then((r) => r.data),
+  updateStatus: (id: number, data: { status: string; amount_paid?: number; approved_by?: string }) =>
+    api.patch(`/purchase-orders/requests/${id}/status`, data).then((r) => r.data),
+};
+
+// Daily stock snapshots (end-of-day frozen numbers, Pacific-time day)
+export const snapshotsApi = {
+  dates: () => api.get("/purchase-orders/snapshots/dates").then((r) => r.data as string[]),
+  get: (date: string, supplier_id?: number) =>
+    api.get("/purchase-orders/snapshots", { params: { date, supplier_id } }).then((r) => r.data),
 };
 
 // Amazon Shipping (admin)

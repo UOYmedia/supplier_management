@@ -48,7 +48,10 @@
     @apply overflow-y-auto;
   }
   .table-scroll thead th {
-    @apply sticky top-0 z-10 bg-white border-b border-gray-200;
+    @apply sticky top-0 z-10 bg-white;
+    /* box-shadow (not border) so the divider stays pinned with the sticky
+       header instead of dropping out under border-collapse while scrolling */
+    box-shadow: inset 0 -1px 0 0 #e5e7eb;
   }
   table { @apply w-full text-sm; }
   thead tr { @apply border-b border-gray-200; }

@@ -1,9 +1,9 @@
 "use client";
 import { useState, useMemo, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ordersApi, reportsApi } from "@/lib/api";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { ordersApi, reportsApi, suppliersApi } from "@/lib/api";
 import toast from "react-hot-toast";
-import { Copy, Check, ShoppingCart, TrendingDown, Wallet, DollarSign, PlusCircle } from "lucide-react";
+import { Copy, Check, ShoppingCart, TrendingDown, Wallet, DollarSign, PlusCircle, FileText, X } from "lucide-react";
 
 const LS_BALANCE_KEY = "ending_balance_yesterday";
 
@@ -80,6 +80,17 @@ export default function ReportsPage() {
   const [extCogs, setExtCogs] = useState("");
   const [balanceAutoLoaded, setBalanceAutoLoaded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [invoiceResult, setInvoiceResult] = useState<any | null>(null);
+
+  const genInvoicesMut = useMutation({
+    mutationFn: () => suppliersApi.generateAllInvoices(),
+    onSuccess: (data: any) => {
+      setInvoiceResult(data);
+      if (data.created_count > 0) toast.success(`Created ${data.created_count} invoice(s)`);
+      else toast(`No new fulfilled orders to invoice`);
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to generate invoices"),
+  });
 
   const { from, to } = useMemo(
     () => computeDateRange(period, customFrom, customTo),
@@ -219,15 +230,29 @@ export default function ReportsPage() {
           <h1 className="page-title">Daily Reports</h1>
           <p className="text-sm text-gray-500 mt-0.5">COGS and balance summary by period</p>
         </div>
-        <button
-          className="flex items-center gap-1.5 btn-secondary text-sm"
-          onClick={handleCopy}
-          disabled={orderCount === 0}
-        >
-          {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
-          {copied ? "Copied!" : "Copy text"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="flex items-center gap-1.5 btn-secondary text-sm"
+            onClick={() => genInvoicesMut.mutate()}
+            disabled={genInvoicesMut.isPending}
+          >
+            <FileText className="w-4 h-4" />
+            {genInvoicesMut.isPending ? "Generating…" : "Generate supplier invoices"}
+          </button>
+          <button
+            className="flex items-center gap-1.5 btn-secondary text-sm"
+            onClick={handleCopy}
+            disabled={orderCount === 0}
+          >
+            {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+            {copied ? "Copied!" : "Copy text"}
+          </button>
+        </div>
       </div>
+
+      {invoiceResult && (
+        <InvoiceResultModal result={invoiceResult} onClose={() => setInvoiceResult(null)} />
+      )}
 
       {/* Period filter */}
       <div className="card mb-4 px-4 py-3">
@@ -409,7 +434,7 @@ export default function ReportsPage() {
       )}
 
       {/* Data table */}
-      <div className="card table-wrapper mb-4">
+      <div className="card table-wrapper table-scroll max-h-[calc(100vh-320px)] mb-4">
         <table>
           <thead>
             <tr>
@@ -439,11 +464,11 @@ export default function ReportsPage() {
           </tbody>
           {groups.length > 0 && (
             <tfoot>
-              <tr className="border-t-2 border-gray-200 bg-gray-50">
-                <td colSpan={3} className="py-3 px-4 text-xs text-gray-500 font-medium">
+              <tr>
+                <td colSpan={3} className="sticky bottom-0 z-20 bg-gray-50 shadow-[inset_0_2px_0_0_#e5e7eb] py-3 px-4 text-xs text-gray-500 font-medium">
                   {orderCount} ORDER{orderCount !== 1 ? "S" : ""} · {groups.length} product{groups.length !== 1 ? "s" : ""}
                 </td>
-                <td colSpan={3} className="py-3 px-4 text-right font-bold text-gray-900">
+                <td colSpan={3} className="sticky bottom-0 z-20 bg-gray-50 shadow-[inset_0_2px_0_0_#e5e7eb] py-3 px-4 text-right font-bold text-gray-900">
                   TOTAL ${totalCOGS.toFixed(0)}
                 </td>
               </tr>
@@ -463,6 +488,70 @@ export default function ReportsPage() {
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+function InvoiceResultModal({ result, onClose }: { result: any; onClose: () => void }) {
+  const created = (result.results || []).filter((r: any) => r.status === "created");
+  const skipped = (result.results || []).filter((r: any) => r.status === "skipped");
+  const grandTotal = created.reduce((s: number, r: any) => s + (parseFloat(r.total_amount) || 0), 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="card w-full max-w-lg p-6 max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Invoice generation summary</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+
+        <div className="flex items-center gap-4 mb-4 text-sm">
+          <span className="text-green-700 font-medium">{result.created_count} created</span>
+          <span className="text-gray-400">·</span>
+          <span className="text-gray-500">{result.skipped_count} skipped</span>
+          {grandTotal > 0 && (
+            <span className="ml-auto font-semibold">Total: ${grandTotal.toFixed(2)}</span>
+          )}
+        </div>
+
+        <div className="overflow-auto flex-1">
+          {created.length > 0 && (
+            <table className="w-full text-sm mb-4">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs text-gray-500">
+                  <th className="pb-2 pr-2">Supplier</th>
+                  <th className="pb-2 pr-2">Invoice #</th>
+                  <th className="pb-2 pr-2 text-center">Items</th>
+                  <th className="pb-2 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {created.map((r: any) => (
+                  <tr key={r.supplier_id} className="border-b border-gray-100 last:border-0">
+                    <td className="py-2 pr-2 font-medium">{r.supplier_name}</td>
+                    <td className="py-2 pr-2 font-mono text-xs text-gray-500">{r.invoice_number}</td>
+                    <td className="py-2 pr-2 text-center">{r.item_count}</td>
+                    <td className="py-2 text-right font-medium">${parseFloat(r.total_amount).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {skipped.length > 0 && (
+            <div className="text-xs text-gray-400">
+              <p className="font-medium text-gray-500 mb-1">Skipped ({skipped.length})</p>
+              {skipped.map((r: any) => (
+                <div key={r.supplier_id}>{r.supplier_name} — {r.reason}</div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end pt-4 border-t border-gray-200 mt-2">
+          <button className="btn-primary" onClick={onClose}>Done</button>
+        </div>
+      </div>
     </div>
   );
 }

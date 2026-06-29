@@ -32,6 +32,12 @@ async def run_migrations():
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS hashed_password VARCHAR(255)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_suppliers_username ON suppliers(username) WHERE username IS NOT NULL",
         "ALTER TABLE shipping_labels ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ",
+        # new columns added 2026-06-23
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS pic VARCHAR(100) NOT NULL DEFAULT ''",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS amount_paid FLOAT NOT NULL DEFAULT 0.0",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS requested_date DATE NOT NULL DEFAULT CURRENT_DATE",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_by VARCHAR(100)",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_date DATE",
     ]
     async with engine.begin() as conn:
         for sql in migrations:

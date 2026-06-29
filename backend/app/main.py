@@ -122,6 +122,9 @@ async def _run_migrations():
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_suppliers_username ON suppliers(username) WHERE username IS NOT NULL",
         # suppliers: portal toggle for self-service EasyPost label purchase
         "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS can_buy_labels BOOLEAN NOT NULL DEFAULT FALSE",
+        # suppliers: 'balance' (pay-per-order, default) vs 'stock' (pre-paid inventory, e.g. JOE)
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS supplier_type VARCHAR(10) NOT NULL DEFAULT 'balance'",
+        "UPDATE suppliers SET supplier_type = 'stock' WHERE name = 'JOE' AND supplier_type = 'balance'",
         # supplier_products: short label for PDF overlays
         "ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS short_name VARCHAR(100)",
         # supplier_products: per-unit shipping dimensions for parcel auto-estimate
@@ -154,6 +157,21 @@ async def _run_migrations():
         "ALTER TABLE daily_balances ADD COLUMN IF NOT EXISTS top_up NUMERIC(12, 2) NOT NULL DEFAULT 0",
         # daily_balances: manual COGS for externally-fulfilled (Amazon) orders without recorded cost
         "ALTER TABLE daily_balances ADD COLUMN IF NOT EXISTS external_cogs NUMERIC(12, 2) NOT NULL DEFAULT 0",
+        # purchase_orders: PIC-driven request workflow fields
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS pic VARCHAR(100) NOT NULL DEFAULT ''",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS amount_paid FLOAT NOT NULL DEFAULT 0.0",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS requested_date DATE NOT NULL DEFAULT CURRENT_DATE",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_by VARCHAR(100)",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS approved_date DATE",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS record_type VARCHAR(10) NOT NULL DEFAULT 'daily'",
+        # Backfill: rows with a non-empty pic were created as requests, not daily POs
+        "UPDATE purchase_orders SET record_type = 'request' WHERE pic IS NOT NULL AND pic != '' AND record_type = 'daily'",
+        # purchase_orders: stable FK to the supplier (stock increment matches on id, not name)
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS supplier_id INTEGER REFERENCES suppliers(id)",
+        # Backfill supplier_id from the existing supplier name
+        "UPDATE purchase_orders SET supplier_id = s.id FROM suppliers s WHERE purchase_orders.supplier_id IS NULL AND s.name = purchase_orders.supplier",
+        # daily_stock_snapshots: sold column added after the table shipped
+        "ALTER TABLE daily_stock_snapshots ADD COLUMN IF NOT EXISTS sold INTEGER NOT NULL DEFAULT 0",
     ]
     ok, failed = 0, 0
     for sql in migrations:

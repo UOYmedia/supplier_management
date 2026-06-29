@@ -221,11 +221,19 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
 
   // Catalog SKUs for the chosen supplier — the request item is picked from here
   // so its sku matches a SupplierProduct exactly (stock increment on PAID relies on it).
-  const { data: catalog = [] } = useQuery<{ sku: string; name: string; unit_price: number | string }[]>({
+  const { data: catalog = [] } = useQuery<{ sku: string; name: string; short_name?: string | null; unit_price: number | string }[]>({
     queryKey: ["supplier-catalog", selectedSupplier?.id],
     queryFn: () => suppliersApi.listProducts(selectedSupplier!.id),
     enabled: !!selectedSupplier,
   })
+
+  // Product names are full marketplace titles; a native <select> grows as wide
+  // as its longest option and overflows. Show the short name (or a clipped name).
+  function optionLabel(c: { name: string; short_name?: string | null }) {
+    const short = c.short_name?.trim()
+    if (short) return short
+    return c.name.length > 55 ? c.name.slice(0, 55).trimEnd() + "…" : c.name
+  }
 
   const { data: requests = [], isLoading } = useQuery<PurchaseRequest[]>({
     queryKey: ["purchase-requests"],
@@ -426,7 +434,7 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                         >
                           <option value="">{selectedSupplier ? "Select product…" : "Select a supplier first"}</option>
                           {catalog.map((c) => (
-                            <option key={c.sku} value={c.sku}>{c.name} ({c.sku})</option>
+                            <option key={c.sku} value={c.sku} title={c.name}>{optionLabel(c)} ({c.sku})</option>
                           ))}
                         </select>
                       </div>

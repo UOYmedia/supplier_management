@@ -18,8 +18,12 @@ export default function SupplierDetailPage() {
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
   const [catalogSearch, setCatalogSearch] = useState("");
+  const [catalogDate, setCatalogDate] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
+  // Snapshot rows are historical (keyed by SKU, not DB id) so editing/deleting
+  // and bulk-selection are disabled while viewing a saved day.
+  const readOnly = !!catalogDate;
 
   const { data: supplier } = useQuery({ queryKey: ["supplier", sid], queryFn: () => suppliersApi.get(sid) });
   const { data: liveCatalog = [] } = useQuery({
@@ -185,7 +189,7 @@ export default function SupplierDetailPage() {
               </button>
             </div>
             <div className="flex gap-2">
-              {selected.size > 0 && (
+              {!readOnly && selected.size > 0 && (
                 <button
                   className="btn-secondary text-red-600 hover:bg-red-50 border-red-200"
                   onClick={handleBulkDelete}
@@ -279,12 +283,14 @@ export default function SupplierDetailPage() {
               <thead>
                 <tr>
                   <th className="w-8">
-                    <input
-                      type="checkbox"
-                      checked={allVisibleSelected}
-                      onChange={toggleSelectAll}
-                      disabled={filteredCatalog.length === 0}
-                    />
+                    {!readOnly && (
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        onChange={toggleSelectAll}
+                        disabled={filteredCatalog.length === 0}
+                      />
+                    )}
                   </th>
                   <th>Name</th>
                   <th>SKU</th>
@@ -305,6 +311,7 @@ export default function SupplierDetailPage() {
                   <CatalogRow
                     key={item.id}
                     item={item}
+                    readOnly={readOnly}
                     selected={selected.has(item.id)}
                     onToggle={() => toggleSelected(item.id)}
                     onEdit={() => setEditingProduct(item)}
@@ -551,12 +558,12 @@ function groupOrders(items: any[]) {
   });
 }
 
-function CatalogRow({ item, selected, onToggle, onEdit, onDelete }: { item: any; selected: boolean; onToggle: () => void; onEdit: () => void; onDelete: () => void }) {
+function CatalogRow({ item, readOnly, selected, onToggle, onEdit, onDelete }: { item: any; readOnly: boolean; selected: boolean; onToggle: () => void; onEdit: () => void; onDelete: () => void }) {
   const total = item.stock_quantity + item.pending_quantity + item.sold_quantity;
   return (
     <tr className={selected ? "bg-blue-50" : undefined}>
       <td>
-        <input type="checkbox" checked={selected} onChange={onToggle} />
+        {!readOnly && <input type="checkbox" checked={selected} onChange={onToggle} />}
       </td>
       <td className="font-medium">{item.name}</td>
       <td className="font-mono text-xs text-gray-500">{item.sku}</td>

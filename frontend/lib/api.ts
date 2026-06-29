@@ -77,6 +77,7 @@ export const suppliersApi = {
   createProduct: (id: number, data: object) => api.post(`/suppliers/${id}/products`, data).then((r) => r.data),
   updateProduct: (id: number, spId: number, data: object) => api.patch(`/suppliers/${id}/products/${spId}`, data).then((r) => r.data),
   deleteProduct: (id: number, spId: number) => api.delete(`/suppliers/${id}/products/${spId}`),
+  bulkDeleteProducts: (id: number, ids: number[]) => api.post(`/suppliers/${id}/products/bulk-delete`, { ids }).then((r) => r.data),
   previewInvoiceFromOrders: (id: number) => api.get(`/suppliers/${id}/invoices/preview-from-orders`).then((r) => r.data),
   createInvoiceFromOrders: (id: number, data: object) => api.post(`/suppliers/${id}/invoices/create-from-orders`, data).then((r) => r.data),
   generateAllInvoices: () => api.post(`/suppliers/invoices/generate-all`).then((r) => r.data),

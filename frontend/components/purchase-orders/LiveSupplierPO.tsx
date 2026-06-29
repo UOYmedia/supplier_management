@@ -301,15 +301,31 @@ export default function LiveSupplierPO() {
           ))
         )}
         <select
-          value={viewDate}
-          onChange={(e) => setViewDate(e.target.value)}
-          title="View today's live numbers, or a saved end-of-day snapshot"
+          value={viewDate || period}
+          onChange={(e) => {
+            const v = e.target.value
+            if (PERIOD_OPTS.some((p) => p.key === v)) {
+              setPeriod(v as LivePeriod)
+              setViewDate("")
+            } else {
+              setViewDate(v)
+            }
+          }}
+          title="Live period, or a saved end-of-day snapshot"
           className="ml-auto border border-gray-200 rounded-md py-1.5 px-2 text-xs text-gray-600 bg-white"
         >
-          <option value="">Today (live)</option>
-          {snapshotDates.map((d) => (
-            <option key={d} value={d}>{d}</option>
-          ))}
+          <optgroup label="Live">
+            {PERIOD_OPTS.map((p) => (
+              <option key={p.key} value={p.key}>{p.label}</option>
+            ))}
+          </optgroup>
+          {snapshotDates.length > 0 && (
+            <optgroup label="Saved end-of-day">
+              {snapshotDates.map((d) => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+            </optgroup>
+          )}
         </select>
         <button
           className="btn-secondary py-1.5 text-xs"
@@ -334,29 +350,12 @@ export default function LiveSupplierPO() {
         </button>
       </div>
 
-      {/* Period filter applies to live numbers only; a frozen snapshot ignores it. */}
-      {viewDate ? (
+      {/* A frozen snapshot ignores the live period; flag it so the numbers read clearly. */}
+      {viewDate && (
         <div className="flex items-center gap-1.5 mb-4">
           <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1">
             Viewing saved end-of-day snapshot for {viewDate}
           </span>
-        </div>
-      ) : (
-        <div className="flex items-center gap-1.5 mb-4">
-          <span className="text-xs text-gray-400 mr-1">Period</span>
-          {PERIOD_OPTS.map((p) => (
-            <button
-              key={p.key}
-              onClick={() => setPeriod(p.key)}
-              className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
-                period === p.key
-                  ? "bg-gray-800 text-white border-transparent"
-                  : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
         </div>
       )}
 

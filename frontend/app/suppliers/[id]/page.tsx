@@ -18,8 +18,7 @@ export default function SupplierDetailPage() {
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
   const [catalogSearch, setCatalogSearch] = useState("");
-  // "" = current live numbers; a date = frozen end-of-day snapshot for that day.
-  const [catalogDate, setCatalogDate] = useState("");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
 
   const { data: supplier } = useQuery({ queryKey: ["supplier", sid], queryFn: () => suppliersApi.get(sid) });
@@ -42,14 +41,14 @@ export default function SupplierDetailPage() {
   // Normalise a snapshot row into the same shape the catalog table expects.
   const catalog = catalogDate
     ? snapshotRows.map((r: any) => ({
-        id: r.sku,
-        name: r.product_name || r.sku,
-        sku: r.sku,
-        unit_price: r.unit_cost,
-        stock_quantity: r.available,
-        pending_quantity: r.ordered,
-        sold_quantity: r.sold,
-      }))
+      id: r.sku,
+      name: r.product_name || r.sku,
+      sku: r.sku,
+      unit_price: r.unit_cost,
+      stock_quantity: r.available,
+      pending_quantity: r.ordered,
+      sold_quantity: r.sold,
+    }))
     : liveCatalog;
   const { data: orders = [] } = useQuery({ queryKey: ["supplier-orders", sid], queryFn: () => suppliersApi.orders(sid) });
   const { data: invoices = [] } = useQuery({ queryKey: ["supplier-invoices", sid], queryFn: () => suppliersApi.invoices(sid) });
@@ -66,6 +65,49 @@ export default function SupplierDetailPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["supplier-catalog", sid] }); toast.success("Deleted"); },
     onError: () => toast.error("Cannot delete — product is used by components"),
   });
+
+  const bulkDeleteMut = useMutation({
+    mutationFn: (ids: number[]) => suppliersApi.bulkDeleteProducts(sid, ids),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: ["supplier-catalog", sid] });
+      setSelected(new Set());
+      const skipped = data.skipped?.length || 0;
+      if (skipped > 0) {
+        toast.error(`Deleted ${data.deleted}. ${skipped} skipped — in use by orders.`);
+      } else {
+        toast.success(`Deleted ${data.deleted} product(s)`);
+      }
+    },
+    onError: () => toast.error("Bulk delete failed"),
+  });
+
+  const toggleSelected = (spId: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(spId) ? next.delete(spId) : next.add(spId);
+      return next;
+    });
+  };
+
+  const allVisibleSelected = filteredCatalog.length > 0 && filteredCatalog.every((i: any) => selected.has(i.id));
+  const toggleSelectAll = () => {
+    setSelected((prev) => {
+      if (filteredCatalog.every((i: any) => prev.has(i.id))) {
+        const next = new Set(prev);
+        filteredCatalog.forEach((i: any) => next.delete(i.id));
+        return next;
+      }
+      const next = new Set(prev);
+      filteredCatalog.forEach((i: any) => next.add(i.id));
+      return next;
+    });
+  };
+
+  const handleBulkDelete = () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (confirm(`Delete ${ids.length} selected product(s)?`)) bulkDeleteMut.mutate(ids);
+  };
 
   const importMut = useMutation({
     mutationFn: (file: File) => suppliersApi.importCatalog(sid, file),
@@ -141,13 +183,34 @@ export default function SupplierDetailPage() {
               >
                 Download CSV template
               </button>
+            </div>
+            <div className="flex gap-2">
+              {selected.size > 0 && (
+                <button
+                  className="btn-secondary text-red-600 hover:bg-red-50 border-red-200"
+                  onClick={handleBulkDelete}
+                  disabled={bulkDeleteMut.isPending}
+                >
+                  <Trash2 className="w-4 h-4" /> Delete selected ({selected.size})
+                </button>
+              )}
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) importMut.mutate(file);
+                  e.target.value = "";
+                }}
+              />
               <button
                 onClick={() => setCatalogDate("")}
-                className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors ${
-                  catalogDate === ""
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors ${catalogDate === ""
                     ? "bg-gray-800 text-white border-transparent"
                     : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
-                }`}
+                  }`}
               >
                 Today (live)
               </button>
@@ -155,11 +218,10 @@ export default function SupplierDetailPage() {
                 onClick={() => latestSnapshot && setCatalogDate(latestSnapshot)}
                 disabled={!latestSnapshot}
                 title={latestSnapshot ? `Snapshot ${latestSnapshot}` : "No saved snapshot yet"}
-                className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                  catalogDate && catalogDate === latestSnapshot
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${catalogDate && catalogDate === latestSnapshot
                     ? "bg-gray-800 text-white border-transparent"
                     : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
-                }`}
+                  }`}
               >
                 Yesterday
               </button>
@@ -216,6 +278,14 @@ export default function SupplierDetailPage() {
             <table>
               <thead>
                 <tr>
+                  <th className="w-8">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={toggleSelectAll}
+                      disabled={filteredCatalog.length === 0}
+                    />
+                  </th>
                   <th>Name</th>
                   <th>SKU</th>
                   <th>Unit Price</th>
@@ -228,16 +298,15 @@ export default function SupplierDetailPage() {
               </thead>
               <tbody>
                 {catalog.length === 0 ? (
-                  <tr><td colSpan={8} className="text-center py-6 text-gray-400">
-                    {catalogDate ? `No snapshot saved for ${catalogDate}.` : "No products in catalog. Add one to start tracking inventory."}
-                  </td></tr>
+                  <tr><td colSpan={9} className="text-center py-6 text-gray-400">No products in catalog. Add one to start tracking inventory.</td></tr>
                 ) : filteredCatalog.length === 0 ? (
-                  <tr><td colSpan={8} className="text-center py-6 text-gray-400">No products match "{catalogSearch}".</td></tr>
+                  <tr><td colSpan={9} className="text-center py-6 text-gray-400">No products match "{catalogSearch}".</td></tr>
                 ) : filteredCatalog.map((item: any) => (
                   <CatalogRow
                     key={item.id}
                     item={item}
-                    readOnly={!!catalogDate}
+                    selected={selected.has(item.id)}
+                    onToggle={() => toggleSelected(item.id)}
                     onEdit={() => setEditingProduct(item)}
                     onDelete={() => {
                       if (confirm(`Delete "${item.name}"?`)) deleteMut.mutate(item.id);
@@ -482,10 +551,13 @@ function groupOrders(items: any[]) {
   });
 }
 
-function CatalogRow({ item, onEdit, onDelete, readOnly = false }: { item: any; onEdit: () => void; onDelete: () => void; readOnly?: boolean }) {
+function CatalogRow({ item, selected, onToggle, onEdit, onDelete }: { item: any; selected: boolean; onToggle: () => void; onEdit: () => void; onDelete: () => void }) {
   const total = item.stock_quantity + item.pending_quantity + item.sold_quantity;
   return (
-    <tr>
+    <tr className={selected ? "bg-blue-50" : undefined}>
+      <td>
+        <input type="checkbox" checked={selected} onChange={onToggle} />
+      </td>
       <td className="font-medium">{item.name}</td>
       <td className="font-mono text-xs text-gray-500">{item.sku}</td>
       <td>${parseFloat(item.unit_price).toFixed(2)}</td>

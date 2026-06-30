@@ -212,8 +212,8 @@ export default function SupplierDetailPage() {
               <button
                 onClick={() => setCatalogDate("")}
                 className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors ${catalogDate === ""
-                    ? "bg-gray-800 text-white border-transparent"
-                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+                  ? "bg-gray-800 text-white border-transparent"
+                  : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
                   }`}
               >
                 Today (live)
@@ -223,8 +223,8 @@ export default function SupplierDetailPage() {
                 disabled={!latestSnapshot}
                 title={latestSnapshot ? `Snapshot ${latestSnapshot}` : "No saved snapshot yet"}
                 className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${catalogDate && catalogDate === latestSnapshot
-                    ? "bg-gray-800 text-white border-transparent"
-                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+                  ? "bg-gray-800 text-white border-transparent"
+                  : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
                   }`}
               >
                 Yesterday
@@ -299,7 +299,7 @@ export default function SupplierDetailPage() {
                   <th>Pending</th>
                   <th>Sold</th>
                   <th>Total</th>
-                  <th></th>
+                  <th className="text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>

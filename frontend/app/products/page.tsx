@@ -11,7 +11,7 @@ export default function ProductsPage() {
   const [search, setSearch] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
-  const [editingShortName, setEditingShortName] = useState<{id: number, name: string} | null>(null)
+  const [editingShortName, setEditingShortName] = useState<{ id: number, name: string } | null>(null)
   const [shortNameInput, setShortNameInput] = useState("")
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [loadingSuggestions, setLoadingSuggestions] = useState(false)
@@ -28,7 +28,7 @@ export default function ProductsPage() {
   });
 
   const openShortNameEditor = async (spId: number, spName: string) => {
-    setEditingShortName({id: spId, name: spName})
+    setEditingShortName({ id: spId, name: spName })
     setShortNameInput("")
     setSuggestions([])
     setLoadingSuggestions(true)
@@ -49,12 +49,12 @@ export default function ProductsPage() {
     try {
       await fetch(`/api/v1/suppliers/supplier-products/${editingShortName.id}/short-name`, {
         method: "PATCH",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({short_name: shortNameInput})
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ short_name: shortNameInput })
       })
       toast.success("Đã lưu tên ngắn")
       setEditingShortName(null)
-      qc.invalidateQueries({queryKey: ["mappings"]})
+      qc.invalidateQueries({ queryKey: ["mappings"] })
     } catch {
       toast.error("Lưu thất bại")
     }
@@ -96,7 +96,7 @@ export default function ProductsPage() {
         {search && <button onClick={() => setSearch("")}><X className="w-4 h-4 text-gray-400" /></button>}
       </div>
 
-      <div className="card table-wrapper">
+      <div className="card table-wrapper table-scroll max-h-[calc(100vh-174px)] relative">
         <table>
           <thead>
             <tr>
@@ -183,11 +183,10 @@ export default function ProductsPage() {
                   <button
                     key={s}
                     onClick={() => setShortNameInput(s)}
-                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                      shortNameInput === s
-                        ? "bg-blue-500 text-white border-blue-500"
-                        : "border-gray-200 text-gray-600 hover:border-blue-400"
-                    }`}
+                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${shortNameInput === s
+                      ? "bg-blue-500 text-white border-blue-500"
+                      : "border-gray-200 text-gray-600 hover:border-blue-400"
+                      }`}
                   >
                     {s}
                   </button>
@@ -338,9 +337,9 @@ function AddMappingModal({ onClose }: { onClose: () => void }) {
 
   const filtered = spQuery
     ? catalog.filter((sp: any) =>
-        sp.name.toLowerCase().includes(spQuery.toLowerCase()) ||
-        sp.sku.toLowerCase().includes(spQuery.toLowerCase())
-      )
+      sp.name.toLowerCase().includes(spQuery.toLowerCase()) ||
+      sp.sku.toLowerCase().includes(spQuery.toLowerCase())
+    )
     : catalog;
 
   const selectedSp = catalog.find((sp: any) => sp.id === selectedSpId);

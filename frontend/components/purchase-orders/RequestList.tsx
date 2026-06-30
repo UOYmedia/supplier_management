@@ -412,80 +412,72 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                 </div>
 
                 {/* Column labels */}
-                <div className="grid grid-cols-12 gap-2 px-1 mb-1 text-[10px] font-medium text-gray-400 uppercase tracking-wide">
-                  <div className="col-span-5">Product / SKU</div>
-                  <div className="col-span-2 text-center">Qty</div>
-                  <div className="col-span-2">Unit Cost</div>
-                  <div className="col-span-2 text-right">Total</div>
-                  <div className="col-span-1" />
+                <div className="flex items-center gap-2 mb-1 text-[10px] font-medium text-gray-400 uppercase tracking-wide">
+                  <div className="flex-1 min-w-0">Product / SKU</div>
+                  <div className="w-16 text-center shrink-0">Qty</div>
+                  <div className="w-24 shrink-0">Unit Cost</div>
+                  <div className="w-24 text-right shrink-0">Total</div>
+                  <div className="w-7 shrink-0" />
                 </div>
 
                 <div className="space-y-2">
                   {lines.map((l, idx) => {
                     const lineTotal = (parseFloat(l.qty_ordered) || 0) * (parseFloat(l.unit_cost) || 0)
                     return (
-                    <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                      <div className="col-span-5">
-                        <select
-                          value={l.sku}
-                          onChange={(e) => pickSkuLine(idx, e.target.value)}
-                          disabled={!selectedSupplier}
-                          className={`w-full border rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:bg-gray-50 disabled:text-gray-400 ${errors[`line_${idx}_sku`] ? "border-red-500" : "border-gray-300"}`}
-                        >
-                          <option value="">{selectedSupplier ? "Select product…" : "Select a supplier first"}</option>
-                          {catalog.map((c) => (
-                            <option key={c.sku} value={c.sku} title={c.name}>{optionLabel(c)} ({c.sku})</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="col-span-2">
-                        <input
-                          type="number"
-                          min={1}
-                          value={l.qty_ordered}
-                          onChange={(e) => setLine(idx, "qty_ordered", e.target.value)}
-                          className={`w-full border rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`line_${idx}_qty`] ? "border-red-500" : "border-gray-300"}`}
-                          placeholder="0"
-                        />
-                      </div>
-                      <div className="col-span-2">
-                        <input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={l.unit_cost}
-                          onChange={(e) => setLine(idx, "unit_cost", e.target.value)}
-                          className={`w-full border rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`line_${idx}_cost`] ? "border-red-500" : "border-gray-300"}`}
-                          placeholder="0.00"
-                        />
-                      </div>
-                      <div className="col-span-2 text-right text-sm font-medium text-gray-800 tabular-nums">
+                    <div key={idx} className="flex items-center gap-2">
+                      <select
+                        value={l.sku}
+                        onChange={(e) => pickSkuLine(idx, e.target.value)}
+                        disabled={!selectedSupplier}
+                        className={`flex-1 min-w-0 h-10 border rounded-lg px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:bg-gray-50 disabled:text-gray-400 ${errors[`line_${idx}_sku`] ? "border-red-500" : "border-gray-300"}`}
+                      >
+                        <option value="">{selectedSupplier ? "Select product…" : "Select a supplier first"}</option>
+                        {catalog.map((c) => (
+                          <option key={c.sku} value={c.sku} title={c.name}>{optionLabel(c)} ({c.sku})</option>
+                        ))}
+                      </select>
+                      <input
+                        type="number"
+                        min={1}
+                        value={l.qty_ordered}
+                        onChange={(e) => setLine(idx, "qty_ordered", e.target.value)}
+                        className={`w-16 shrink-0 h-10 border rounded-lg px-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`line_${idx}_qty`] ? "border-red-500" : "border-gray-300"}`}
+                        placeholder="0"
+                      />
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={l.unit_cost}
+                        onChange={(e) => setLine(idx, "unit_cost", e.target.value)}
+                        className={`w-24 shrink-0 h-10 border rounded-lg px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`line_${idx}_cost`] ? "border-red-500" : "border-gray-300"}`}
+                        placeholder="0.00"
+                      />
+                      <div className="w-24 shrink-0 text-right text-sm font-medium text-gray-800 tabular-nums">
                         ${fmt(lineTotal)}
                       </div>
-                      <div className="col-span-1 flex justify-center">
-                        <button
-                          type="button"
-                          onClick={() => removeLine(idx)}
-                          disabled={lines.length === 1}
-                          title="Remove"
-                          className="p-1 text-gray-400 hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeLine(idx)}
+                        disabled={lines.length === 1}
+                        title="Remove"
+                        className="w-7 shrink-0 flex justify-center p-1 text-gray-400 hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   )})}
                 </div>
 
                 {/* Grand total */}
-                <div className="grid grid-cols-12 gap-2 px-1 mt-2 pt-2 border-t border-gray-200">
-                  <div className="col-span-9 text-right text-xs font-medium text-gray-500 uppercase tracking-wide self-center">
+                <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-200">
+                  <div className="flex-1 min-w-0 text-right text-xs font-medium text-gray-500 uppercase tracking-wide">
                     Total ({lines.length} product{lines.length !== 1 ? "s" : ""})
                   </div>
-                  <div className="col-span-2 text-right text-sm font-bold text-gray-900 tabular-nums self-center">
+                  <div className="w-24 shrink-0 text-right text-sm font-bold text-gray-900 tabular-nums">
                     ${fmt(grandTotal)}
                   </div>
-                  <div className="col-span-1" />
+                  <div className="w-7 shrink-0" />
                 </div>
               </div>
 

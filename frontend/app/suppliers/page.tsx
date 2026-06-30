@@ -48,7 +48,7 @@ export default function SuppliersPage() {
             <th>Products</th>
             <th>Stock</th>
             <th>Status</th>
-            <th className="flex justify-end">Actions</th>
+            <th className="text-right">Actions</th>
           </tr></thead>
           <tbody>
             {isLoading ? (
@@ -60,6 +60,7 @@ export default function SuppliersPage() {
                 key={s.id}
                 onClick={() => router.push(`/suppliers/${s.id}`)}
                 className="cursor-pointer hover:bg-gray-50"
+                title="Click to view catalog details"
               >
                 <td className="font-medium">{s.name}</td>
                 <td>

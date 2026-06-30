@@ -198,9 +198,9 @@ export default function DashboardPage() {
     : "prev period";
 
   return (
-    <div>
-      {/* Header + filter */}
-      <div className="page-header">
+    <div className="h-[calc(100vh-2.5rem)] flex flex-col">
+      {/* Header + filter (fixed) */}
+      <div className="page-header shrink-0">
         <h1 className="page-title">Dashboard</h1>
         <PeriodSelector
           period={period}
@@ -212,6 +212,8 @@ export default function DashboardPage() {
         />
       </div>
 
+      {/* Scrollable content */}
+      <div className="flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
       {/* KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {kpis.map((k) => {
@@ -313,6 +315,7 @@ export default function DashboardPage() {
 
       {/* Row 4: Order Summary */}
       <OrderSummaryWidget period={period} fromISO={fromISO} toISO={toISO_} from={from} />
+      </div>
 
       {/* Drill-down: Low Stock & Reorder */}
       <DrillDownDrawer

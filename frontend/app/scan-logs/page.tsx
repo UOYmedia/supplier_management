@@ -69,19 +69,22 @@ export default function ScanLogsPage() {
 
       <div className="card table-wrapper table-scroll max-h-[calc(100vh-150px)]">
         <table>
-          <thead><tr>
-            <th>Time</th>
-            <th>Order ID</th>
-            <th>Status</th>
-            <th>Address</th>
-            <th>Filled</th>
-            <th>Error</th>
-          </tr></thead>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Order ID</th>
+              <th>Status</th>
+              <th>Order Status</th>
+              <th>Address</th>
+              <th>Filled</th>
+              <th>Error</th>
+            </tr>
+          </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={6} className="text-center py-8 text-gray-400">Loading…</td></tr>
+              <tr><td colSpan={7} className="text-center py-8 text-gray-400">Loading…</td></tr>
             ) : logs.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-8 text-gray-400">No scans yet</td></tr>
+              <tr><td colSpan={7} className="text-center py-8 text-gray-400">No scans yet</td></tr>
             ) : logs.map((l: any) => {
               const { cls, Icon } = statusBadge(l.status);
               return (
@@ -94,6 +97,11 @@ export default function ScanLogsPage() {
                     <span className={`badge text-xs ${cls} inline-flex items-center gap-1`}>
                       <Icon className="w-3 h-3" />{l.status}
                     </span>
+                  </td>
+                  <td className="text-xs whitespace-nowrap">
+                    {l.order_status
+                      ? <span className="badge badge-blue text-xs">{l.order_status}</span>
+                      : <span className="text-gray-400">—</span>}
                   </td>
                   <td className="text-xs text-gray-600 max-w-xs truncate" title={fmtAddress(l.address)}>
                     {fmtAddress(l.address)}

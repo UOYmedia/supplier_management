@@ -835,7 +835,7 @@ async def preview_invoice_from_orders(supplier_id: int, db: AsyncSession = Depen
             quantity=li.quantity,
             unit_cost=unit_cost,
             total_cost=total_cost,
-            fulfill_status=li.fulfill_status.value,
+            fulfill_status=getattr(li.fulfill_status, "value", li.fulfill_status),
             fulfilled_at=li.fulfilled_at,
         ))
 

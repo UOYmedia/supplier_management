@@ -309,7 +309,20 @@ async def list_requests(db: AsyncSession = Depends(get_db)):
         .where(PurchaseOrder.record_type == "request")
         .order_by(PurchaseOrder.requested_date.desc())
     )
-    return result.scalars().all()
+    pos = result.scalars().all()
+
+    # Requests store only the sku; look up the product name from the supplier
+    # catalog (by supplier_id + sku) so the list can show it above the SKU.
+    sids = {po.supplier_id for po in pos if po.supplier_id is not None}
+    name_map: dict[tuple[int, str], str] = {}
+    if sids:
+        sp_rows = (await db.execute(
+            select(SupplierProduct).where(SupplierProduct.supplier_id.in_(sids))
+        )).scalars().all()
+        name_map = {(sp.supplier_id, sp.sku): sp.name for sp in sp_rows}
+    for po in pos:
+        po.product_name = name_map.get((po.supplier_id, po.sku))
+    return pos
 
 
 # ── POST /requests ─────────────────────────────────────────────────────────────

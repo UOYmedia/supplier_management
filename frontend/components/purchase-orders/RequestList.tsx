@@ -10,6 +10,7 @@ interface PurchaseRequest {
   id: number
   supplier: string
   sku: string
+  product_name?: string | null
   qty_ordered: number
   unit_cost: string
   amount_paid: number
@@ -654,7 +655,16 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                         <PicBadge name={r.pic} />
                       </td>
                       <td className="px-4 py-3 font-medium text-gray-800">{r.supplier}</td>
-                      <td className="px-4 py-3 text-gray-700 max-w-[200px] truncate" title={r.sku}>{r.sku}</td>
+                      <td className="px-4 py-3 max-w-[240px]" title={r.product_name || r.sku}>
+                        {r.product_name ? (
+                          <div className="leading-tight">
+                            <div className="text-gray-800 truncate">{r.product_name}</div>
+                            <div className="text-[11px] text-gray-400 font-mono truncate">{r.sku}</div>
+                          </div>
+                        ) : (
+                          <span className="text-gray-700 font-mono text-xs">{r.sku}</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-gray-700 text-right">{r.qty_ordered}</td>
                       <td className="px-4 py-3 text-gray-700 text-right">${fmt(total)}</td>
                       <td className="px-4 py-3 text-right">

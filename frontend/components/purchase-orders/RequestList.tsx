@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import toast from "react-hot-toast"
-import { Plus, X, Trash2 } from "lucide-react"
+import { Plus, X, Trash2, ChevronDown } from "lucide-react"
 import { purchaseRequestsApi, suppliersApi } from "@/lib/api"
 
 interface PurchaseRequest {
@@ -194,6 +194,104 @@ const EMPTY_HEADER = { supplier: "", pic: "", requested_date: today(), notes: ""
 const EMPTY_LINE = { sku: "", qty_ordered: "", unit_cost: "" }
 type Line = typeof EMPTY_LINE
 
+type CatalogItem = { sku: string; name: string; short_name?: string | null; unit_price: number | string }
+
+// Searchable product picker: a button that opens a panel with a type-to-filter
+// search box and the matching products below. Uses fixed positioning so the
+// panel escapes the modal's scroll clipping (like StatusDropdown).
+function ProductCombobox({
+  products, value, onSelect, disabled, error, getLabel,
+}: {
+  products: CatalogItem[]
+  value: string
+  onSelect: (sku: string) => void
+  disabled?: boolean
+  error?: boolean
+  getLabel: (c: CatalogItem) => string
+}) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const [pos, setPos] = useState({ top: 0, left: 0, width: 0 })
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (
+        panelRef.current && !panelRef.current.contains(e.target as Node) &&
+        btnRef.current && !btnRef.current.contains(e.target as Node)
+      ) setOpen(false)
+    }
+    document.addEventListener("mousedown", onDoc)
+    return () => document.removeEventListener("mousedown", onDoc)
+  }, [])
+
+  const selected = products.find((p) => p.sku === value)
+  const q = query.trim().toLowerCase()
+  const filtered = q
+    ? products.filter((p) => `${p.name} ${p.sku}`.toLowerCase().includes(q))
+    : products
+
+  function toggle() {
+    if (disabled) return
+    if (btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect()
+      setPos({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX, width: r.width })
+    }
+    setQuery("")
+    setOpen((o) => !o)
+  }
+
+  return (
+    <div className="flex-1 min-w-0">
+      <button
+        type="button"
+        ref={btnRef}
+        onClick={toggle}
+        disabled={disabled}
+        className={`w-full h-10 border rounded-lg px-2 text-sm text-left flex items-center justify-between gap-1 bg-white disabled:bg-gray-50 disabled:text-gray-400 ${error ? "border-red-500" : "border-gray-300"}`}
+      >
+        <span className={`truncate ${selected ? "text-gray-900" : "text-gray-400"}`}>
+          {selected ? getLabel(selected) : (disabled ? "Select a supplier first" : "Select product…")}
+        </span>
+        <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+      </button>
+      {open && (
+        <div
+          ref={panelRef}
+          style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width }}
+          className="z-50 bg-white border border-gray-200 rounded-lg shadow-lg"
+        >
+          <div className="p-2 border-b border-gray-100">
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search product…"
+              className="w-full h-8 px-2 text-sm border border-gray-200 rounded focus:outline-none focus:border-blue-400"
+            />
+          </div>
+          <div className="max-h-60 overflow-y-auto py-1">
+            {filtered.length === 0 ? (
+              <p className="px-3 py-2 text-sm text-gray-400">No match</p>
+            ) : filtered.map((p) => (
+              <button
+                type="button"
+                key={p.sku}
+                onClick={() => { onSelect(p.sku); setOpen(false) }}
+                title={p.name}
+                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 truncate ${p.sku === value ? "bg-blue-50 text-blue-700" : "text-gray-700"}`}
+              >
+                {getLabel(p)} <span className="text-gray-400">({p.sku})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 interface RequestListProps {
   username: string
   canApprove?: boolean
@@ -221,11 +319,19 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
 
   // Catalog SKUs for the chosen supplier — the request item is picked from here
   // so its sku matches a SupplierProduct exactly (stock increment on PAID relies on it).
-  const { data: catalog = [] } = useQuery<{ sku: string; name: string; unit_price: number | string }[]>({
+  const { data: catalog = [] } = useQuery<{ sku: string; name: string; short_name?: string | null; unit_price: number | string }[]>({
     queryKey: ["supplier-catalog", selectedSupplier?.id],
     queryFn: () => suppliersApi.listProducts(selectedSupplier!.id),
     enabled: !!selectedSupplier,
   })
+
+  // Product names are full marketplace titles; a native <select> grows as wide
+  // as its longest option and overflows. Show the short name (or a clipped name).
+  function optionLabel(c: { name: string; short_name?: string | null }) {
+    const short = c.short_name?.trim()
+    if (short) return short
+    return c.name.length > 55 ? c.name.slice(0, 55).trimEnd() + "…" : c.name
+  }
 
   const { data: requests = [], isLoading } = useQuery<PurchaseRequest[]>({
     queryKey: ["purchase-requests"],
@@ -327,6 +433,11 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
   function addLine() { setLines((ls) => [...ls, { ...EMPTY_LINE }]) }
   function removeLine(idx: number) { setLines((ls) => (ls.length > 1 ? ls.filter((_, i) => i !== idx) : ls)) }
 
+  const grandTotal = lines.reduce(
+    (s, l) => s + (parseFloat(l.qty_ordered) || 0) * (parseFloat(l.unit_cost) || 0),
+    0,
+  )
+
   return (
     <div>
       {/* Header row */}
@@ -399,63 +510,69 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                 </div>
 
                 {/* Column labels */}
-                <div className="grid grid-cols-12 gap-2 px-1 mb-1 text-[10px] font-medium text-gray-400 uppercase tracking-wide">
-                  <div className="col-span-7">Product / SKU</div>
-                  <div className="col-span-2 text-center">Qty</div>
-                  <div className="col-span-2">Unit Cost</div>
-                  <div className="col-span-1" />
+                <div className="flex items-center gap-2 mb-1 text-[10px] font-medium text-gray-400 uppercase tracking-wide">
+                  <div className="flex-1 min-w-0">Product / SKU</div>
+                  <div className="w-16 text-center shrink-0">Qty</div>
+                  <div className="w-24 shrink-0">Unit Cost</div>
+                  <div className="w-24 text-right shrink-0">Total</div>
+                  <div className="w-7 shrink-0" />
                 </div>
 
                 <div className="space-y-2">
-                  {lines.map((l, idx) => (
-                    <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                      <div className="col-span-7">
-                        <select
-                          value={l.sku}
-                          onChange={(e) => pickSkuLine(idx, e.target.value)}
-                          disabled={!selectedSupplier}
-                          className={`w-full border rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:bg-gray-50 disabled:text-gray-400 ${errors[`line_${idx}_sku`] ? "border-red-500" : "border-gray-300"}`}
-                        >
-                          <option value="">{selectedSupplier ? "Select product…" : "Select a supplier first"}</option>
-                          {catalog.map((c) => (
-                            <option key={c.sku} value={c.sku}>{c.name} ({c.sku})</option>
-                          ))}
-                        </select>
+                  {lines.map((l, idx) => {
+                    const lineTotal = (parseFloat(l.qty_ordered) || 0) * (parseFloat(l.unit_cost) || 0)
+                    return (
+                    <div key={idx} className="flex items-center gap-2">
+                      <ProductCombobox
+                        products={catalog}
+                        value={l.sku}
+                        onSelect={(sku) => pickSkuLine(idx, sku)}
+                        disabled={!selectedSupplier}
+                        error={!!errors[`line_${idx}_sku`]}
+                        getLabel={optionLabel}
+                      />
+                      <input
+                        type="number"
+                        min={1}
+                        value={l.qty_ordered}
+                        onChange={(e) => setLine(idx, "qty_ordered", e.target.value)}
+                        className={`w-16 shrink-0 h-10 border rounded-lg px-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`line_${idx}_qty`] ? "border-red-500" : "border-gray-300"}`}
+                        placeholder="0"
+                      />
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={l.unit_cost}
+                        onChange={(e) => setLine(idx, "unit_cost", e.target.value)}
+                        className={`w-24 shrink-0 h-10 border rounded-lg px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`line_${idx}_cost`] ? "border-red-500" : "border-gray-300"}`}
+                        placeholder="0.00"
+                      />
+                      <div className="w-24 shrink-0 text-right text-sm font-medium text-gray-800 tabular-nums">
+                        ${fmt(lineTotal)}
                       </div>
-                      <div className="col-span-2">
-                        <input
-                          type="number"
-                          min={1}
-                          value={l.qty_ordered}
-                          onChange={(e) => setLine(idx, "qty_ordered", e.target.value)}
-                          className={`w-full border rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`line_${idx}_qty`] ? "border-red-500" : "border-gray-300"}`}
-                          placeholder="0"
-                        />
-                      </div>
-                      <div className="col-span-2">
-                        <input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={l.unit_cost}
-                          onChange={(e) => setLine(idx, "unit_cost", e.target.value)}
-                          className={`w-full border rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`line_${idx}_cost`] ? "border-red-500" : "border-gray-300"}`}
-                          placeholder="0.00"
-                        />
-                      </div>
-                      <div className="col-span-1 flex justify-center">
-                        <button
-                          type="button"
-                          onClick={() => removeLine(idx)}
-                          disabled={lines.length === 1}
-                          title="Remove"
-                          className="p-1 text-gray-400 hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeLine(idx)}
+                        disabled={lines.length === 1}
+                        title="Remove"
+                        className="w-7 shrink-0 flex justify-center p-1 text-gray-400 hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
-                  ))}
+                  )})}
+                </div>
+
+                {/* Grand total */}
+                <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-200">
+                  <div className="flex-1 min-w-0 text-right text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Total ({lines.length} product{lines.length !== 1 ? "s" : ""})
+                  </div>
+                  <div className="w-24 shrink-0 text-right text-sm font-bold text-gray-900 tabular-nums">
+                    ${fmt(grandTotal)}
+                  </div>
+                  <div className="w-7 shrink-0" />
                 </div>
               </div>
 

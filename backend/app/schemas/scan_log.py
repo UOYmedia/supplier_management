@@ -8,6 +8,7 @@ class ScanLogOut(BaseModel):
     id: int
     order_id: str | None
     status: str
+    order_status: str | None
     error: str | None
     filled: list | None
     address: dict | None

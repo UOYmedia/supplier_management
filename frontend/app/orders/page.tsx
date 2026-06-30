@@ -162,9 +162,9 @@ function OrdersPageInner() {
   const refetch = showDelayed
     ? refetchDelayed
     : () => {
-        qc.invalidateQueries({ queryKey: ["orders"] });
-        qc.invalidateQueries({ queryKey: ["orders-count"] });
-      };
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["orders-count"] });
+    };
   const urgentCount = (delayedOrders as any[]).filter((o) => o.status === "urgent").length;
 
   // Hiện overlay khi đang fetch nền (chuyển trang HOẶC bấm Refresh), trừ lần load đầu
@@ -204,7 +204,7 @@ function OrdersPageInner() {
               e.target.value = ""; // reset để chọn lại cùng file vẫn trigger
             }}
           />
-          <button className="btn-secondary" onClick={() => fileInputRef.current?.click()}><Upload className="w-4 h-4" />Upload</button>
+          <button className="btn-secondary" onClick={() => fileInputRef.current?.click()} title="Upload/Scan shipping labels"><Upload className="w-4 h-4" />Upload Label</button>
           <button className="btn-secondary" onClick={() => setShowBulkPrint(true)}><Printer className="w-4 h-4" />Bulk Print</button>
           <button className="btn-primary" onClick={() => setShowCreate(true)}><Plus className="w-4 h-4" />Create Order</button>
         </div>
@@ -285,22 +285,24 @@ function OrdersPageInner() {
               ) : orders.map((o: any) => (
                 <tr
                   key={`${o.order_id}-${o.purchased_at}`}
-                  className={o.status === "urgent" ? "bg-red-50 hover:bg-red-100" : "bg-yellow-50 hover:bg-yellow-100"}
+                  className={o.status === "urgent" ? "bg-red-50 hover:bg-red-100 cursor-pointer" : "bg-yellow-50 hover:bg-yellow-100 cursor-pointer"}
+                  title="Click to view order details"
+                  onClick={() => router.push(`/orders/${o.id}`)}
                 >
-                  <td>
+                  <td className="py-1">
                     <div className="font-medium">#{o.order_id}</div>
                     {o.order_name && o.order_name !== `#${o.order_id}` && (
                       <div className="text-xs text-gray-400 font-mono">{o.order_name}</div>
                     )}
                   </td>
-                  <td>{o.supplier_name || "—"}</td>
-                  <td className="text-xs text-gray-600">{new Date(o.purchased_at).toLocaleDateString()}</td>
-                  <td>
+                  <td className="py-1">{o.supplier_name || "—"}</td>
+                  <td className="text-xs text-gray-600 py-1">{new Date(o.purchased_at).toLocaleDateString()}</td>
+                  <td className="py-1">
                     <span className={`font-semibold ${o.status === "urgent" ? "text-red-600" : "text-yellow-600"}`}>
                       {o.days_delayed}d
                     </span>
                   </td>
-                  <td>
+                  <td className="py-1">
                     {o.status === "urgent" ? (
                       <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
                         <AlertTriangle className="w-3 h-3" />URGENT
@@ -311,7 +313,7 @@ function OrdersPageInner() {
                       </span>
                     )}
                   </td>
-                  <td>
+                  <td className="py-1">
                     <Link href={`/orders/${o.order_id}`} className="p-1 hover:bg-gray-100 rounded text-gray-500">
                       <ChevronRight className="w-4 h-4" />
                     </Link>
@@ -331,21 +333,26 @@ function OrdersPageInner() {
               ) : orders.length === 0 ? (
                 <tr><td colSpan={8} className="text-center py-8 text-gray-400">No orders found.</td></tr>
               ) : orders.map((o: any) => (
-                <tr key={o.id}>
-                  <td>
+                <tr
+                  key={o.id}
+                  className="cursor-pointer hover:bg-gray-50"
+                  title="Click to view order details"
+                  onClick={() => router.push(`/orders/${o.id}`)}
+                >
+                  <td className="py-1">
                     <div className="font-medium">#{o.id}</div>
                     {o.external_order_id && <div className="text-xs text-gray-400 font-mono">{o.external_order_id}</div>}
                   </td>
-                  <td><span className="capitalize badge-gray">{o.marketplace}</span></td>
-                  <td>
+                  <td className="py-1"><span className="capitalize badge-gray">{o.marketplace}</span></td>
+                  <td className="py-1">
                     <div>{o.buyer_name || "—"}</div>
                     <div className="text-xs text-gray-400">{o.buyer_email}</div>
                   </td>
-                  <td className="font-medium">${parseFloat(o.total).toFixed(2)} <span className="text-xs text-gray-400">{o.currency}</span></td>
-                  <td><OrderStatusBadge status={o.status} /></td>
-                  <td>{o.line_items?.length ?? 0}</td>
-                  <td className="text-xs text-gray-500">{new Date(o.ordered_at).toLocaleDateString()}</td>
-                  <td>
+                  <td className="font-medium py-1">${parseFloat(o.total).toFixed(2)} <span className="text-xs text-gray-400">{o.currency}</span></td>
+                  <td className="py-1"><OrderStatusBadge status={o.status} /></td>
+                  <td className="py-1">{o.line_items?.length ?? 0}</td>
+                  <td className="text-xs text-gray-500 py-1">{new Date(o.ordered_at).toLocaleDateString()}</td>
+                  <td className="py-1">
                     <Link href={`/orders/${o.id}`} className="p-1 hover:bg-gray-100 rounded text-gray-500">
                       <ChevronRight className="w-4 h-4" />
                     </Link>
@@ -645,14 +652,14 @@ function CreateOrderModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="card w-full max-w-2xl max-h-[92vh] overflow-y-auto p-6">
+      <div className="card w-full max-w-2xl max-h-[92vh] flex flex-col p-6">
         {/* Header */}
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex items-center justify-between mb-5 shrink-0">
           <h2 className="font-semibold text-lg">Create Custom Order</h2>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
 
-        <div className="space-y-5">
+        <div className="space-y-5 flex-1 overflow-y-auto -mx-1 px-1">
           {/* Buyer */}
           <section>
             <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Buyer</div>
@@ -776,7 +783,7 @@ function CreateOrderModal({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-100">
+        <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-100 shrink-0">
           <div className="text-sm font-semibold text-gray-700">
             Total: <span className="text-gray-900">${total.toFixed(2)} {currency}</span>
           </div>

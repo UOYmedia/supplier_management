@@ -583,13 +583,13 @@ function EditOrderInfoModal({ order, onClose, onSave, saving }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="card w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
+      <div className="card w-full max-w-lg p-6 max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between mb-4 shrink-0">
           <h2 className="font-semibold">Edit Buyer & Address</h2>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
 
-        <div className="space-y-4">
+        <div className="space-y-4 flex-1 overflow-y-auto -mx-1 px-1">
           <div>
             <h3 className="text-xs font-semibold text-gray-500 uppercase mb-2">Customer</h3>
             <div className="space-y-2">
@@ -647,7 +647,7 @@ function EditOrderInfoModal({ order, onClose, onSave, saving }: {
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 mt-5">
+        <div className="flex justify-end gap-2 mt-5 shrink-0">
           <button className="btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn-primary" disabled={saving} onClick={handleSave}>
             {saving ? "Saving…" : "Save"}

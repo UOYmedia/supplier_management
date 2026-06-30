@@ -13,6 +13,9 @@ class ScanLog(Base):
     order_id: Mapped[str | None] = mapped_column(String(100), index=True)
     # updated | already_has_address | not_found | scan_failed | no_api_key | ...
     status: Mapped[str] = mapped_column(String(30), index=True)
+    # Order status transition caused by this scan, e.g. "pending → processing".
+    # NULL when the scan did not change the order's status.
+    order_status: Mapped[str | None] = mapped_column(String(60))
     error: Mapped[str | None] = mapped_column(Text)
     filled: Mapped[list | None] = mapped_column(JSON)   # address fields filled in
     address: Mapped[dict | None] = mapped_column(JSON)  # parsed / merged address

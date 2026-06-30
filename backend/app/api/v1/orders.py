@@ -609,6 +609,7 @@ async def scan_label_address(body: ScanLabelBody, db: AsyncSession = Depends(get
         db.add(ScanLog(
             order_id=(result.get("order_id") or None),
             status=result.get("status") or "unknown",
+            order_status=result.get("order_status"),
             error=result.get("error"),
             filled=result.get("filled"),
             address=result.get("address"),
@@ -637,6 +638,13 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     order = res.scalar_one_or_none()
     if not order:
         return {"order_id": order_id, "status": "not_found"}
+
+    # Remember the order status before the scan so we can record any transition
+    # (e.g. pending → processing) into the scan-log audit trail.
+    status_before = order.status
+
+    def _status_change() -> str | None:
+        return f"{status_before} → {order.status}" if order.status != status_before else None
 
     # Decode the uploaded label image up-front — used for OCR (address + tracking)
     # and for the stamping step. None if it isn't a valid PNG.
@@ -686,6 +694,7 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
         stamp = await _finalize_label(order, assignment, db)
         await db.commit()
         return {"order_id": order_id, "status": "already_has_address",
+                "order_status": _status_change(),
                 "assignment": assignment, "stamp": stamp, "label_meta": label_meta}
 
     # 3. Need a valid PNG to OCR the address
@@ -731,6 +740,7 @@ async def _scan_label_impl(body: ScanLabelBody, db: AsyncSession) -> dict:
     await db.commit()
     logger.info(f"scan_label: order={order_id} filled {filled or 'nothing'}")
     return {"order_id": order_id, "status": "updated", "address": address,
+            "order_status": _status_change(),
             "filled": filled, "assignment": assignment, "stamp": stamp, "label_meta": label_meta}
 
 

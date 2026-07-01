@@ -95,15 +95,17 @@ class ShopifySync(MarketplaceSyncer):
                         product.name = title
                         product.weight = weight
 
-                    # Upsert MarketplaceListing
+                    # Upsert MarketplaceListing keyed on the unique identity
+                    # (connection_id, marketplace_sku) — matching on external_id
+                    # too used to spawn a duplicate row whenever Shopify returned
+                    # a different product id for the same SKU.
                     listing_result = await db.execute(
                         select(MarketplaceListing).where(
-                            MarketplaceListing.external_id == external_id,
                             MarketplaceListing.connection_id == self.connection.id,
                             MarketplaceListing.marketplace_sku == sku,
-                        )
+                        ).order_by(MarketplaceListing.id).limit(1)
                     )
-                    listing = listing_result.scalar_one_or_none()
+                    listing = listing_result.scalars().first()
                     if not listing:
                         db.add(MarketplaceListing(
                             product_id=product.id,
@@ -116,6 +118,8 @@ class ShopifySync(MarketplaceSyncer):
                             synced_at=datetime.now(timezone.utc),
                         ))
                     else:
+                        listing.product_id = product.id
+                        listing.external_id = external_id
                         listing.title = title
                         listing.price = price
                         listing.synced_at = datetime.now(timezone.utc)
@@ -238,9 +242,9 @@ class ShopifySync(MarketplaceSyncer):
             select(MarketplaceListing).where(
                 MarketplaceListing.marketplace_sku == sku,
                 MarketplaceListing.connection_id == self.connection.id,
-            )
+            ).order_by(MarketplaceListing.id).limit(1)
         )
-        listing_obj = listing_res.scalar_one_or_none()
+        listing_obj = listing_res.scalars().first()
         if listing_obj:
             return listing_obj.product_id, listing_obj.id
 

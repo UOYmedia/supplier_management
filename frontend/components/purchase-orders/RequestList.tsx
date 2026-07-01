@@ -52,6 +52,17 @@ function PicBadge({ name }: { name: string }) {
   )
 }
 
+// Read-only status pill.
+function StatusBadge({ status }: { status: string }) {
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_STYLES[status] ?? "bg-gray-100 text-gray-600"}`}>
+      {STATUS_LABELS[status] ?? status}
+    </span>
+  )
+}
+
+// Admin-only actions menu: lists the payment-status transitions. Renders nothing
+// once the request is in a terminal state (PAID / CANCELLED).
 function StatusDropdown({
   request,
   onUpdate,
@@ -87,25 +98,18 @@ function StatusDropdown({
     setShowPartialInput(false)
   }
 
+  // Terminal states have no further actions — hide the menu entirely.
   const canClick = request.status === "PENDING" || request.status === "PARTIALLY_PAID"
-  if (!canClick) {
-    return (
-      <span
-        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_STYLES[request.status] ?? "bg-gray-100 text-gray-600"}`}
-      >
-        {STATUS_LABELS[request.status] ?? request.status}
-      </span>
-    )
-  }
+  if (!canClick) return <span className="text-gray-300">—</span>
 
   return (
     <div className="inline-block">
       <button
         ref={btnRef}
         onClick={handleOpen}
-        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${STATUS_STYLES[request.status] ?? "bg-gray-100 text-gray-600"}`}
+        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-gray-200 text-xs font-medium text-gray-600 hover:border-blue-300 hover:text-blue-600 transition-colors"
       >
-        {STATUS_LABELS[request.status] ?? request.status}
+        Update
         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
@@ -119,7 +123,9 @@ function StatusDropdown({
           <button
             className="w-full text-left px-3 py-2 text-sm text-green-700 hover:bg-green-50 transition-colors"
             onClick={() => {
-              onUpdate(request.id, "PAID")
+              if (confirm("Mark this request as PAID? Stock will be added to inventory.")) {
+                onUpdate(request.id, "PAID")
+              }
               setOpen(false)
             }}
           >
@@ -163,7 +169,9 @@ function StatusDropdown({
           <button
             className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
             onClick={() => {
-              onUpdate(request.id, "CANCELLED")
+              if (confirm("Cancel this request?")) {
+                onUpdate(request.id, "CANCELLED")
+              }
               setOpen(false)
             }}
           >
@@ -296,11 +304,10 @@ function ProductCombobox({
 interface RequestListProps {
   username: string
   canApprove?: boolean
-  isAdmin?: boolean
   onPaidSuccess?: () => void
 }
 
-export default function RequestList({ username, canApprove = false, isAdmin = false, onPaidSuccess }: RequestListProps) {
+export default function RequestList({ username, canApprove = false, onPaidSuccess }: RequestListProps) {
   const qc = useQueryClient()
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(EMPTY_HEADER)
@@ -363,24 +370,8 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
     onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to create requests"),
   })
 
-  const deleteMut = useMutation({
-    mutationFn: (id: number) => purchaseRequestsApi.remove(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["purchase-requests"] })
-      toast.success("Request deleted")
-    },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Delete failed"),
-  })
-
   function handleUpdate(id: number, status: string, extra?: { amount_paid?: number }) {
     mut.mutate({ id, status, extra })
-  }
-
-  function handleDelete(r: PurchaseRequest) {
-    const label = `${r.supplier} · ${r.sku}`
-    if (confirm(`Delete this request?\n\n${label}\n\nIf it was already Paid, the stock it added will be reversed.`)) {
-      deleteMut.mutate(r.id)
-    }
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -641,7 +632,11 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                       {h}
                     </th>
                   ))}
-                  {isAdmin && <th className="px-4 py-3" />}
+                  {canApprove && (
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
+                      ACTIONS
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -675,26 +670,11 @@ export default function RequestList({ username, canApprove = false, isAdmin = fa
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        {canApprove ? (
-                          <StatusDropdown request={r} onUpdate={handleUpdate} />
-                        ) : (
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_STYLES[r.status] ?? "bg-gray-100 text-gray-600"}`}
-                          >
-                            {STATUS_LABELS[r.status] ?? r.status}
-                          </span>
-                        )}
+                        <StatusBadge status={r.status} />
                       </td>
-                      {isAdmin && (
-                        <td className="px-4 py-3 text-right">
-                          <button
-                            onClick={() => handleDelete(r)}
-                            disabled={deleteMut.isPending}
-                            title="Delete request"
-                            className="p-1 text-gray-400 hover:text-red-500 transition-colors disabled:opacity-40"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                      {canApprove && (
+                        <td className="px-4 py-3">
+                          <StatusDropdown request={r} onUpdate={handleUpdate} />
                         </td>
                       )}
                     </tr>

@@ -480,6 +480,23 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
     })
   }
 
+  // Filters (client-side, over the already-loaded list)
+  const [fStatus, setFStatus] = useState("")
+  const [fPic, setFPic] = useState("")
+  const [fSupplier, setFSupplier] = useState("")
+
+  const picOptions = useMemo(() => Array.from(new Set(requests.map((r) => r.pic).filter(Boolean))).sort(), [requests])
+  const supplierOptions = useMemo(() => Array.from(new Set(requests.map((r) => r.supplier).filter(Boolean))).sort(), [requests])
+
+  const visibleGroups = groups.filter((g) => {
+    const first = g.items[0]
+    if (fStatus && g.groupStatus !== fStatus) return false
+    if (fPic && first.pic !== fPic) return false
+    if (fSupplier && first.supplier !== fSupplier) return false
+    return true
+  })
+  const hasFilter = !!(fStatus || fPic || fSupplier)
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const newErrors: Record<string, boolean> = {
@@ -728,6 +745,47 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
           <p className="text-gray-400 font-medium">No purchase requests yet</p>
         </div>
       ) : (
+        <>
+        {/* Filters */}
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <select
+            value={fStatus}
+            onChange={(e) => setFStatus(e.target.value)}
+            className="border border-gray-200 rounded-md py-1.5 px-2 text-xs text-gray-600 bg-white"
+          >
+            <option value="">All statuses</option>
+            <option value="PENDING">Pending</option>
+            <option value="PARTIALLY_PAID">Partially Paid</option>
+            <option value="PAID">Paid</option>
+            <option value="CANCELLED">Cancelled</option>
+          </select>
+          <select
+            value={fPic}
+            onChange={(e) => setFPic(e.target.value)}
+            className="border border-gray-200 rounded-md py-1.5 px-2 text-xs text-gray-600 bg-white"
+          >
+            <option value="">All PICs</option>
+            {picOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <select
+            value={fSupplier}
+            onChange={(e) => setFSupplier(e.target.value)}
+            className="border border-gray-200 rounded-md py-1.5 px-2 text-xs text-gray-600 bg-white"
+          >
+            <option value="">All suppliers</option>
+            {supplierOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          {hasFilter && (
+            <button
+              onClick={() => { setFStatus(""); setFPic(""); setFSupplier("") }}
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-red-500 transition-colors"
+            >
+              <X className="w-3 h-3" /> Clear
+            </button>
+          )}
+          <span className="ml-auto text-xs text-gray-400">{visibleGroups.length} request(s)</span>
+        </div>
+
         <div className="card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -746,7 +804,13 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {groups.map((g) => {
+                {visibleGroups.length === 0 ? (
+                  <tr>
+                    <td colSpan={canApprove ? 9 : 8} className="px-4 py-8 text-center text-sm text-gray-400">
+                      No requests match the current filters
+                    </td>
+                  </tr>
+                ) : visibleGroups.map((g) => {
                   const open = expanded.has(g.key)
                   const first = g.items[0]
                   const multi = g.items.length > 1
@@ -825,6 +889,7 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
             </table>
           </div>
         </div>
+        </>
       )}
     </div>
   )

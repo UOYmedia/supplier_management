@@ -258,13 +258,17 @@ class AmazonSync(MarketplaceSyncer):
             try:
                 items_data = await self.client.get(f"/orders/v0/orders/{ext_id}/orderItems")
                 for item in items_data.get("payload", {}).get("OrderItems", []):
+                    # A SKU may (wrongly) map to more than one listing on the same
+                    # connection — there's no DB uniqueness guard — so take the
+                    # earliest match instead of scalar_one_or_none(), which would
+                    # raise MultipleResultsFound and abort the whole sync.
                     listing = await db.execute(
                         select(MarketplaceListing).where(
                             MarketplaceListing.marketplace_sku == item.get("SellerSKU"),
                             MarketplaceListing.connection_id == self.connection.id,
-                        )
+                        ).order_by(MarketplaceListing.id).limit(1)
                     )
-                    listing_obj = listing.scalar_one_or_none()
+                    listing_obj = listing.scalars().first()
                     li = OrderLineItem(
                         order_id=order.id,
                         product_id=listing_obj.product_id if listing_obj else None,

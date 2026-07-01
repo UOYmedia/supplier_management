@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import String, ForeignKey, DateTime, Text, Enum as SAEnum, JSON, Boolean
+from sqlalchemy import String, ForeignKey, DateTime, Text, Enum as SAEnum, JSON, Boolean, Index, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 import enum
@@ -43,6 +43,15 @@ class MarketplaceConnection(Base):
 
 class MarketplaceListing(Base):
     __tablename__ = "marketplace_listings"
+    # One listing per (connection, marketplace SKU). Partial index skips rows
+    # with no SKU. Prevents the duplicate listings that made Amazon order sync
+    # raise MultipleResultsFound when a SellerSKU matched more than one row.
+    __table_args__ = (
+        Index(
+            "uq_listing_conn_sku", "connection_id", "marketplace_sku",
+            unique=True, postgresql_where=text("marketplace_sku IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))

@@ -187,6 +187,65 @@ function StatusDropdown({
   )
 }
 
+// Group-level actions menu ("Update ▾") — same look as the per-line menu so the
+// bulk "Mark all Paid" isn't a stray primary button that reads as the main CTA.
+function GroupActionsMenu({ count, onMarkAllPaid }: { count: number; onMarkAllPaid: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+  const ref = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const MENU_W = 180
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node) &&
+          btnRef.current && !btnRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", onDoc)
+    return () => document.removeEventListener("mousedown", onDoc)
+  }, [])
+
+  function toggle() {
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setPos({ top: rect.bottom + window.scrollY + 4, left: Math.max(8, rect.right + window.scrollX - MENU_W) })
+    }
+    setOpen((o) => !o)
+  }
+
+  return (
+    <div className="inline-block">
+      <button
+        ref={btnRef}
+        onClick={toggle}
+        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-gray-200 text-xs font-medium text-gray-600 hover:border-blue-300 hover:text-blue-600 transition-colors"
+      >
+        Update
+        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div
+          ref={ref}
+          style={{ position: "fixed", top: pos.top, left: pos.left, width: MENU_W }}
+          className="z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1"
+        >
+          <button
+            className="w-full text-left px-3 py-2 text-sm text-green-700 hover:bg-green-50 transition-colors"
+            onClick={() => {
+              if (confirm(`Mark all ${count} open product(s) in this request as PAID?`)) onMarkAllPaid()
+              setOpen(false)
+            }}
+          >
+            Mark all Paid ({count})
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
@@ -726,13 +785,7 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
                             {!multi ? (
                               <StatusDropdown request={first} onUpdate={handleUpdate} />
                             ) : g.actionable.length > 0 ? (
-                              <button
-                                onClick={() => { if (confirm(`Mark all ${g.actionable.length} open product(s) as PAID?`)) groupPayMut.mutate(g.key) }}
-                                disabled={groupPayMut.isPending}
-                                className="px-2.5 py-1 rounded-md bg-green-600 text-white text-xs font-medium hover:bg-green-700 transition-colors disabled:opacity-50"
-                              >
-                                Mark all Paid
-                              </button>
+                              <GroupActionsMenu count={g.actionable.length} onMarkAllPaid={() => groupPayMut.mutate(g.key)} />
                             ) : <span className="text-gray-300">—</span>}
                           </td>
                         )}

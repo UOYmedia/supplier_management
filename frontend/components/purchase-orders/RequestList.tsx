@@ -791,6 +791,7 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 bg-gray-50">
+                  <th className="w-8 px-2 py-3" />
                   {["DATE", "PIC", "SUPPLIER", "PRODUCT", "QTY", "COST", "AMOUNT PAID", "STATUS"].map((h) => (
                     <th
                       key={h}
@@ -811,7 +812,7 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
               <tbody className="divide-y divide-gray-50">
                 {visibleGroups.length === 0 ? (
                   <tr>
-                    <td colSpan={canApprove ? 9 : 8} className="px-4 py-8 text-center text-sm text-gray-400">
+                    <td colSpan={canApprove ? 10 : 9} className="px-4 py-8 text-center text-sm text-gray-400">
                       No requests match the current filters
                     </td>
                   </tr>
@@ -827,14 +828,10 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
                         className={`hover:bg-gray-50 transition-colors ${multi ? "cursor-pointer" : ""}`}
                         onClick={multi ? () => toggleGroup(g.key) : undefined}
                       >
-                        <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
-                          <span className="inline-flex items-center gap-1">
-                            {multi
-                              ? (open ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />)
-                              : <span className="w-3.5 inline-block" />}
-                            {fmtDate(first.requested_date)}
-                          </span>
+                        <td className="w-8 px-2 py-3 text-gray-400 align-middle">
+                          {multi && (open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />)}
                         </td>
+                        <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fmtDate(first.requested_date)}</td>
                         <td className="px-4 py-3 whitespace-nowrap"><PicBadge name={first.pic} /></td>
                         <td className="px-4 py-3 font-medium text-gray-800">{first.supplier}</td>
                         <td className="px-4 py-3 max-w-[240px] truncate text-gray-800" title={productLabel}>{productLabel}</td>
@@ -863,6 +860,7 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
                       {/* Detail rows (accordion) */}
                       {open && g.items.map((r) => (
                         <tr key={r.id} className="bg-gray-50/40">
+                          <td className="w-8 px-2 py-2" />
                           <td className="px-4 py-2" />
                           <td className="px-4 py-2" />
                           <td className="px-4 py-2" />

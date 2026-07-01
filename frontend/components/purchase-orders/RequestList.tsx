@@ -89,10 +89,13 @@ function StatusDropdown({
     return () => document.removeEventListener("mousedown", handleClick)
   }, [])
 
+  const MENU_W = 180
   function handleOpen() {
     if (btnRef.current) {
       const rect = btnRef.current.getBoundingClientRect()
-      setDropdownPos({ top: rect.bottom + window.scrollY + 4, left: rect.left + window.scrollX })
+      // Right-align the menu to the button so it never runs off the right edge.
+      const left = Math.max(8, rect.right + window.scrollX - MENU_W)
+      setDropdownPos({ top: rect.bottom + window.scrollY + 4, left })
     }
     setOpen((o) => !o)
     setShowPartialInput(false)
@@ -118,8 +121,8 @@ function StatusDropdown({
       {open && (
         <div
           ref={ref}
-          style={{ position: "fixed", top: dropdownPos.top, left: dropdownPos.left }}
-          className="z-50 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[170px] py-1">
+          style={{ position: "fixed", top: dropdownPos.top, left: dropdownPos.left, width: MENU_W }}
+          className="z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
           <button
             className="w-full text-left px-3 py-2 text-sm text-green-700 hover:bg-green-50 transition-colors"
             onClick={() => {

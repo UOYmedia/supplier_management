@@ -88,6 +88,7 @@ class RequestRead(BaseModel):
     supplier_id: int | None
     sku: str
     product_name: str | None = None
+    request_group: str | None = None
     qty_ordered: int
     qty_available: int
     unit_cost: Decimal

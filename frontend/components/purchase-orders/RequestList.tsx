@@ -1,9 +1,9 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import toast from "react-hot-toast"
-import { Plus, X, Trash2, ChevronDown } from "lucide-react"
+import { Plus, X, Trash2, ChevronDown, ChevronRight } from "lucide-react"
 import { purchaseRequestsApi, suppliersApi } from "@/lib/api"
 
 interface PurchaseRequest {
@@ -11,6 +11,7 @@ interface PurchaseRequest {
   supplier: string
   sku: string
   product_name?: string | null
+  request_group?: string | null
   qty_ordered: number
   unit_cost: string
   amount_paid: number
@@ -373,8 +374,51 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
     onError: (e: any) => toast.error(e.response?.data?.detail || "Failed to create requests"),
   })
 
+  const groupPayMut = useMutation({
+    mutationFn: (request_group: string) => purchaseRequestsApi.markGroupPaid({ request_group }),
+    onSuccess: (res: any) => {
+      qc.invalidateQueries({ queryKey: ["purchase-requests"] })
+      toast.success(`${res?.paid ?? 0} product(s) marked paid`)
+      onPaidSuccess?.()
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Mark all paid failed"),
+  })
+
   function handleUpdate(id: number, status: string, extra?: { amount_paid?: number }) {
     mut.mutate({ id, status, extra })
+  }
+
+  // Group the flat request rows by request_group (fallback: each row on its own).
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const groups = useMemo(() => {
+    const map = new Map<string, PurchaseRequest[]>()
+    for (const r of requests) {
+      const key = r.request_group || `solo-${r.id}`
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(r)
+    }
+    return Array.from(map.entries()).map(([key, items]) => {
+      const totalCost = items.reduce((s, i) => s + parseFloat(i.unit_cost) * i.qty_ordered, 0)
+      const totalQty = items.reduce((s, i) => s + i.qty_ordered, 0)
+      const totalPaid = items.reduce((s, i) => s + (i.amount_paid || 0), 0)
+      const paidCount = items.filter((i) => i.status === "PAID").length
+      const actionable = items.filter((i) => i.status === "PENDING" || i.status === "PARTIALLY_PAID")
+      const allCancelled = items.every((i) => i.status === "CANCELLED")
+      const groupStatus =
+        paidCount === items.length ? "PAID"
+        : allCancelled ? "CANCELLED"
+        : paidCount > 0 || items.some((i) => i.status === "PARTIALLY_PAID") ? "PARTIALLY_PAID"
+        : "PENDING"
+      return { key, items, totalCost, totalQty, totalPaid, paidCount, actionable, groupStatus }
+    })
+  }, [requests])
+
+  function toggleGroup(key: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -643,44 +687,85 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {requests.map((r) => {
-                  const unitCost = parseFloat(r.unit_cost)
-                  const total = unitCost * r.qty_ordered
+                {groups.map((g) => {
+                  const open = expanded.has(g.key)
+                  const first = g.items[0]
+                  const multi = g.items.length > 1
+                  const productLabel = multi ? `${g.items.length} products` : (first.product_name || first.sku)
                   return (
-                    <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fmtDate(r.requested_date)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <PicBadge name={r.pic} />
-                      </td>
-                      <td className="px-4 py-3 font-medium text-gray-800">{r.supplier}</td>
-                      <td className="px-4 py-3 max-w-[240px]" title={r.product_name || r.sku}>
-                        {r.product_name ? (
-                          <div className="leading-tight">
-                            <div className="text-gray-800 truncate">{r.product_name}</div>
-                            <div className="text-[11px] text-gray-400 font-mono truncate">{r.sku}</div>
-                          </div>
-                        ) : (
-                          <span className="text-gray-700 font-mono text-xs">{r.sku}</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-gray-700 text-right">{r.qty_ordered}</td>
-                      <td className="px-4 py-3 text-gray-700 text-right">${fmt(total)}</td>
-                      <td className="px-4 py-3 text-right">
-                        {r.amount_paid > 0 ? (
-                          <span className="text-green-700 font-medium">${fmt(r.amount_paid)}</span>
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <StatusBadge status={r.status} />
-                      </td>
-                      {canApprove && (
-                        <td className="px-4 py-3">
-                          <StatusDropdown request={r} onUpdate={handleUpdate} />
+                    <Fragment key={g.key}>
+                      {/* Summary row */}
+                      <tr
+                        className={`hover:bg-gray-50 transition-colors ${multi ? "cursor-pointer" : ""}`}
+                        onClick={multi ? () => toggleGroup(g.key) : undefined}
+                      >
+                        <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1">
+                            {multi
+                              ? (open ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />)
+                              : <span className="w-3.5 inline-block" />}
+                            {fmtDate(first.requested_date)}
+                          </span>
                         </td>
-                      )}
-                    </tr>
+                        <td className="px-4 py-3 whitespace-nowrap"><PicBadge name={first.pic} /></td>
+                        <td className="px-4 py-3 font-medium text-gray-800">{first.supplier}</td>
+                        <td className="px-4 py-3 max-w-[240px] truncate text-gray-800" title={productLabel}>{productLabel}</td>
+                        <td className="px-4 py-3 text-gray-700 text-right">{g.totalQty}</td>
+                        <td className="px-4 py-3 text-gray-700 text-right">${fmt(g.totalCost)}</td>
+                        <td className="px-4 py-3 text-right">
+                          {g.totalPaid > 0 ? <span className="text-green-700 font-medium">${fmt(g.totalPaid)}</span> : <span className="text-gray-400">—</span>}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="inline-flex items-center gap-1.5">
+                            <StatusBadge status={g.groupStatus} />
+                            {multi && <span className="text-[11px] text-gray-400">{g.paidCount}/{g.items.length}</span>}
+                          </span>
+                        </td>
+                        {canApprove && (
+                          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                            {!multi ? (
+                              <StatusDropdown request={first} onUpdate={handleUpdate} />
+                            ) : g.actionable.length > 0 ? (
+                              <button
+                                onClick={() => { if (confirm(`Mark all ${g.actionable.length} open product(s) as PAID?`)) groupPayMut.mutate(g.key) }}
+                                disabled={groupPayMut.isPending}
+                                className="px-2.5 py-1 rounded-md bg-green-600 text-white text-xs font-medium hover:bg-green-700 transition-colors disabled:opacity-50"
+                              >
+                                Mark all Paid
+                              </button>
+                            ) : <span className="text-gray-300">—</span>}
+                          </td>
+                        )}
+                      </tr>
+
+                      {/* Detail rows (accordion) */}
+                      {open && g.items.map((r) => (
+                        <tr key={r.id} className="bg-gray-50/40">
+                          <td className="px-4 py-2" />
+                          <td className="px-4 py-2" />
+                          <td className="px-4 py-2" />
+                          <td className="px-4 py-2 max-w-[240px]" title={r.product_name || r.sku}>
+                            {r.product_name ? (
+                              <div className="leading-tight">
+                                <div className="text-gray-800 truncate">{r.product_name}</div>
+                                <div className="text-[11px] text-gray-400 font-mono truncate">{r.sku}</div>
+                              </div>
+                            ) : <span className="text-gray-700 font-mono text-xs">{r.sku}</span>}
+                          </td>
+                          <td className="px-4 py-2 text-gray-700 text-right">{r.qty_ordered}</td>
+                          <td className="px-4 py-2 text-gray-700 text-right">${fmt(parseFloat(r.unit_cost) * r.qty_ordered)}</td>
+                          <td className="px-4 py-2 text-right">
+                            {r.amount_paid > 0 ? <span className="text-green-700 font-medium">${fmt(r.amount_paid)}</span> : <span className="text-gray-400">—</span>}
+                          </td>
+                          <td className="px-4 py-2"><StatusBadge status={r.status} /></td>
+                          {canApprove && (
+                            <td className="px-4 py-2">
+                              <StatusDropdown request={r} onUpdate={handleUpdate} />
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </Fragment>
                   )
                 })}
               </tbody>

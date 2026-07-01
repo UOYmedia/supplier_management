@@ -231,6 +231,8 @@ export const purchaseRequestsApi = {
   updateStatus: (id: number, data: { status: string; amount_paid?: number; approved_by?: string }) =>
     api.patch(`/purchase-orders/requests/${id}/status`, data).then((r) => r.data),
   remove: (id: number) => api.delete(`/purchase-orders/requests/${id}`).then((r) => r.data),
+  markGroupPaid: (data: { request_group: string; approved_by?: string }) =>
+    api.post("/purchase-orders/requests/group/mark-paid", data).then((r) => r.data),
 };
 
 // Daily stock snapshots (end-of-day frozen numbers, Pacific-time day)

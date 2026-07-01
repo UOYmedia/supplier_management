@@ -172,6 +172,8 @@ async def _run_migrations():
         "UPDATE purchase_orders SET supplier_id = s.id FROM suppliers s WHERE purchase_orders.supplier_id IS NULL AND s.name = purchase_orders.supplier",
         # daily_stock_snapshots: sold column added after the table shipped
         "ALTER TABLE daily_stock_snapshots ADD COLUMN IF NOT EXISTS sold INTEGER NOT NULL DEFAULT 0",
+        # purchase_orders: group id tying together products submitted in one request
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS request_group VARCHAR(64)",
     ]
     ok, failed = 0, 0
     for sql in migrations:

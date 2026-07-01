@@ -23,6 +23,9 @@ class PurchaseOrder(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
     po_number: Mapped[str] = mapped_column(String(100), nullable=False, index=True, default="")
     record_type: Mapped[str] = mapped_column(String(10), nullable=False, default="daily", index=True)
+    # Groups the line items submitted together in one request (many products,
+    # one submit). Each line stays its own row; this ties them for display.
+    request_group: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     paid_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     pic: Mapped[str] = mapped_column(String(100), nullable=False)

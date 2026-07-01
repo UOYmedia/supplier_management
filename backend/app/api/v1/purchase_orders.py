@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Any
@@ -353,6 +354,7 @@ async def create_request(body: RequestCreate, db: AsyncSession = Depends(get_db)
         created_date=today,
         notes=body.notes,
         record_type="request",
+        request_group=str(uuid.uuid4()),
     )
     db.add(po)
     await db.commit()
@@ -378,6 +380,7 @@ async def create_requests_batch(body: RequestBatchCreate, db: AsyncSession = Dep
         )).scalar_one_or_none()
         supplier_id = sup.id if sup else None
 
+    group = str(uuid.uuid4())
     created: list[PurchaseOrder] = []
     for it in body.items:
         po = PurchaseOrder(
@@ -395,6 +398,7 @@ async def create_requests_batch(body: RequestBatchCreate, db: AsyncSession = Dep
             created_date=today,
             notes=body.notes,
             record_type="request",
+            request_group=group,
         )
         db.add(po)
         created.append(po)
@@ -407,6 +411,47 @@ async def create_requests_batch(body: RequestBatchCreate, db: AsyncSession = Dep
     for po in created:
         await db.refresh(po)
     return created
+
+
+# ── POST /requests/group/mark-paid ────────────────────────────────────────────
+
+class GroupPayRequest(BaseModel):
+    request_group: str
+    approved_by: str | None = None
+
+
+@router.post("/requests/group/mark-paid")
+async def mark_group_paid(body: GroupPayRequest, db: AsyncSession = Depends(get_db)):
+    """Mark every still-open line in a request group as PAID (bulk approve),
+    incrementing catalog stock for each — all in one transaction."""
+    rows = (await db.execute(
+        select(PurchaseOrder).where(
+            PurchaseOrder.request_group == body.request_group,
+            PurchaseOrder.record_type == "request",
+        )
+    )).scalars().all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Request group not found")
+
+    today = date.today()
+    paid = 0
+    for po in rows:
+        if po.status in ("PAID", "CANCELLED"):
+            continue
+        po.status = "PAID"
+        po.approved_date = today
+        po.paid_date = today
+        if body.approved_by:
+            po.approved_by = body.approved_by
+        await _increment_supplier_stock(db, po)
+        paid += 1
+
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to mark group paid")
+    return {"paid": paid}
 
 
 # ── PATCH /requests/{id}/status ───────────────────────────────────────────────

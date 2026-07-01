@@ -792,7 +792,12 @@ export default function RequestList({ username, canApprove = false, onPaidSucces
               <thead>
                 <tr className="border-b border-gray-100 bg-gray-50">
                   {["DATE", "PIC", "SUPPLIER", "PRODUCT", "QTY", "COST", "AMOUNT PAID", "STATUS"].map((h) => (
-                    <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
+                    <th
+                      key={h}
+                      className={`px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap ${
+                        ["QTY", "COST", "AMOUNT PAID"].includes(h) ? "text-right" : "text-left"
+                      }`}
+                    >
                       {h}
                     </th>
                   ))}
